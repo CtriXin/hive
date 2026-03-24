@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.js.map
+
+# Internal planning docs — do not publish
+tasks/
+CLI_BRIDGE_IMPLEMENTATION_PLAN.md
+SELF_CONTAINED_ADDENDUM.md
+ACCEPTANCE_TEST.md
+.ai/
+
+# Secrets
+.env
+*.key
