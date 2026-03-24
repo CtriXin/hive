@@ -1,0 +1,161 @@
+{
+  "_doc": "Model capability scoring table. Scores 0.0–1.0. Used by ModelRegistry.assignModel().",
+  "models": {
+    "qwen-3.5": {
+      "provider": "qwen",
+      "speed_tier": "balanced",
+      "strengths": ["general", "coding", "planning"],
+      "avoid_tags": [],
+      "scores": {
+        "general": 0.85,
+        "coding": 0.80,
+        "planning": 0.78,
+        "review": 0.72,
+        "translation": 0.75
+      },
+      "context_window": 32000,
+      "cost_per_1k": 0.001
+    },
+    "qwen-max": {
+      "provider": "qwen",
+      "speed_tier": "strong",
+      "strengths": ["general", "planning", "complex reasoning"],
+      "avoid_tags": ["coordination-heavy", "path-sensitive", "unsupervised"],
+      "scores": {
+        "general": 0.92,
+        "coding": 0.85,
+        "planning": 0.90,
+        "review": 0.82,
+        "translation": 0.85
+      },
+      "context_window": 32000,
+      "cost_per_1k": 0.01
+    },
+    "kimi-k2.5": {
+      "provider": "kimi",
+      "speed_tier": "balanced",
+      "strengths": ["coding", "general", "long-context"],
+      "avoid_tags": ["strict-boundary"],
+      "scores": {
+        "general": 0.82,
+        "coding": 0.88,
+        "planning": 0.75,
+        "review": 0.78,
+        "translation": 0.80
+      },
+      "context_window": 128000,
+      "cost_per_1k": 0.012
+    },
+    "glm-5-turbo": {
+      "provider": "glm-cn",
+      "speed_tier": "fast",
+      "strengths": ["general", "coding", "multilingual"],
+      "avoid_tags": ["coordination-heavy"],
+      "scores": {
+        "general": 0.80,
+        "coding": 0.78,
+        "planning": 0.76,
+        "review": 0.74,
+        "translation": 0.82
+      },
+      "context_window": 128000,
+      "cost_per_1k": 0.001
+    },
+    "minimax-2.7": {
+      "provider": "minimax-cn",
+      "speed_tier": "strong",
+      "strengths": ["config", "scripts", "repo-structure", "operational"],
+      "avoid_tags": [],
+      "scores": {
+        "general": 0.84,
+        "coding": 0.79,
+        "planning": 0.76,
+        "review": 0.74,
+        "translation": 0.72
+      },
+      "context_window": 128000,
+      "cost_per_1k": 0.0015
+    },
+    "deepseek-v3": {
+      "provider": "deepseek",
+      "speed_tier": "balanced",
+      "strengths": ["coding", "general", "reasoning"],
+      "avoid_tags": [],
+      "scores": {
+        "general": 0.82,
+        "coding": 0.90,
+        "planning": 0.78,
+        "review": 0.76,
+        "translation": 0.70
+      },
+      "context_window": 64000,
+      "cost_per_1k": 0.0007
+    }
+  },
+  "claude_tiers": {
+    "sonnet": {
+      "id": "claude-sonnet-4-6",
+      "role": "review & arbitration",
+      "strengths": ["review", "reasoning", "code quality"],
+      "scores": {
+        "general": 0.88,
+        "coding": 0.85,
+        "planning": 0.82,
+        "review": 0.95,
+        "translation": 0.80
+      },
+      "context_window": 200000,
+      "cost_per_1k": 0.003
+    },
+    "opus": {
+      "id": "claude-opus-4-6",
+      "role": "planning & final review",
+      "strengths": ["planning", "complex reasoning", "architecture", "final review"],
+      "scores": {
+        "general": 0.95,
+        "coding": 0.90,
+        "planning": 0.98,
+        "review": 0.92,
+        "translation": 0.88
+      },
+      "context_window": 200000,
+      "cost_per_1k": 0.015
+    },
+    "haiku": {
+      "id": "claude-haiku-4-5-20251001",
+      "role": "fast execution & translation",
+      "strengths": ["speed", "translation", "simple tasks"],
+      "scores": {
+        "general": 0.75,
+        "coding": 0.70,
+        "planning": 0.65,
+        "review": 0.68,
+        "translation": 0.88
+      },
+      "context_window": 200000,
+      "cost_per_1k": 0.00025
+    }
+  },
+  "complexity_mapping": {
+    "low": {
+      "max_cost_per_1k": 0.002,
+      "preferred_tier": "haiku",
+      "timeout_ms": 30000
+    },
+    "medium": {
+      "max_cost_per_1k": 0.01,
+      "preferred_tier": "sonnet",
+      "timeout_ms": 60000
+    },
+    "medium-high": {
+      "max_cost_per_1k": 0.015,
+      "preferred_tier": "opus",
+      "timeout_ms": 120000
+    },
+    "high": {
+      "max_cost_per_1k": 0.02,
+      "preferred_tier": "opus",
+      "timeout_ms": 300000
+    }
+  }
+}

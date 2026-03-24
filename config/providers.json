@@ -1,0 +1,85 @@
+{
+  "_doc": "CLI2CLI self-contained provider registry. API keys via env vars, not stored here.",
+  "providers": {
+    "bailian-codingplan": {
+      "id": "bailian-codingplan",
+      "display_name": "百炼 CodingPlan",
+      "anthropic_base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+      "openai_base_url": "https://coding.dashscope.aliyuncs.com/v1",
+      "api_key_env": "BAILIAN_API_KEY",
+      "protocol": "both",
+      "note": "阿里百炼 CodingPlan，sk-sp-* key，同时支持 Anthropic 和 OpenAI"
+    },
+    "qwen": {
+      "id": "qwen",
+      "display_name": "Qwen",
+      "anthropic_base_url": "https://dashscope.aliyuncs.com/apps/anthropic",
+      "openai_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "QWEN_API_KEY",
+      "protocol": "both",
+      "note": "通义千问标准端点"
+    },
+    "kimi": {
+      "id": "kimi",
+      "display_name": "Kimi",
+      "anthropic_base_url": "https://api.moonshot.ai/anthropic/",
+      "openai_base_url": "https://api.moonshot.cn/v1",
+      "api_key_env": "KIMI_API_KEY",
+      "protocol": "both",
+      "note": "Moonshot Kimi"
+    },
+    "kimi-codingplan": {
+      "id": "kimi-codingplan",
+      "display_name": "Kimi CodingPlan",
+      "anthropic_base_url": "https://api.kimi.com/coding/",
+      "openai_base_url": "https://api.kimi.com/coding/v1",
+      "api_key_env": "KIMI_CODING_API_KEY",
+      "protocol": "both",
+      "note": "Kimi CodingPlan 套餐 (sk-kimi-*)"
+    },
+    "glm-cn": {
+      "id": "glm-cn",
+      "display_name": "GLM CN (BigModel)",
+      "anthropic_base_url": "https://open.bigmodel.cn/api/anthropic",
+      "openai_base_url": "https://open.bigmodel.cn/api/paas/v4/",
+      "api_key_env": "GLM_CN_API_KEY",
+      "protocol": "both",
+      "note": "智谱 BigModel"
+    },
+    "glm-en": {
+      "id": "glm-en",
+      "display_name": "GLM EN (Z.ai)",
+      "anthropic_base_url": "https://api.z.ai/api/anthropic",
+      "openai_base_url": "https://api.z.ai/api/paas/v4/",
+      "api_key_env": "GLM_EN_API_KEY",
+      "protocol": "both",
+      "note": "Z.ai 国际站"
+    },
+    "minimax-cn": {
+      "id": "minimax-cn",
+      "display_name": "MiniMax CN",
+      "anthropic_base_url": "https://api.minimaxi.com/anthropic",
+      "openai_base_url": "https://api.minimaxi.com/v1",
+      "api_key_env": "MINIMAX_CN_API_KEY",
+      "protocol": "both",
+      "note": "MiniMax 国内"
+    },
+    "minimax-en": {
+      "id": "minimax-en",
+      "display_name": "MiniMax EN",
+      "anthropic_base_url": "https://api.minimax.io/anthropic",
+      "openai_base_url": "https://api.minimax.io/v1",
+      "api_key_env": "MINIMAX_EN_API_KEY",
+      "protocol": "both",
+      "note": "MiniMax 国际"
+    },
+    "deepseek": {
+      "id": "deepseek",
+      "display_name": "DeepSeek",
+      "openai_base_url": "https://api.deepseek.com/v1",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "protocol": "openai_only",
+      "note": "仅 OpenAI 协议，需要 protocol-adapter"
+    }
+  }
+}

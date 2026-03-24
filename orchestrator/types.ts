@@ -171,7 +171,12 @@ export interface ReviewFinding {
 export interface CrossReviewResult {
   passed: boolean;
   confidence: number; // 0-1
-  flagged_issues: string[];
+  flagged_issues: Array<{
+    severity: FindingSeverity;
+    file: string;
+    line?: number;
+    issue: string;
+  }>;
   reviewer_model: string;
 }
 
@@ -262,4 +267,29 @@ export interface AdaptedRequest {
   url: string;
   headers: Record<string, string>;
   body: string;
+}
+
+// ── Hive Config (双层: global + project) ──
+
+export interface HiveConfig {
+  orchestrator: string;
+  high_tier: string;
+  review_tier: string;
+  default_worker: string;
+  fallback_worker: string;
+  translator_model?: string;
+  overrides: Record<string, string>;
+  budget: {
+    monthly_limit_usd: number;
+    warn_at: number;
+    block: boolean;
+    current_spent_usd: number;
+    reset_day: number;
+  };
+  host: 'claude-code' | 'codex' | 'mms';
+  providers_path?: string;
+  gateway?: {
+    url: string;            // e.g. "http://82.156.121.141:4001"
+    auth_token_env: string; // env var name, e.g. "MMS_GATEWAY_TOKEN"
+  };
 }

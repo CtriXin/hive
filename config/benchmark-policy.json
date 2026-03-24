@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "min_samples_for_confidence": 3,
+  "half_life_days": 30,
+  "default_score": 0.5,
+  "hard_filters": {
+    "strict_boundary_min_scope_discipline": 0.4,
+    "integration_min_confidence": 0.5
+  },
+  "base_weights": {
+    "implementation": 1.0,
+    "review": 1.0,
+    "repair": 1.0,
+    "integration": 1.0,
+    "spec_adherence": 1.0,
+    "scope_discipline": 1.0,
+    "turnaround_speed": 0.8
+  },
+  "role_boost": 2.0,
+  "strict_boundary_boost": 1.5,
+  "fast_turnaround_boost": 1.0
+}

@@ -1,0 +1,57 @@
+{
+  "_doc": "Cross-model review policy. Controls when to escalate, how many lenses, and verdict thresholds.",
+  "escalation": {
+    "confidence_threshold": 0.85,
+    "min_lenses": {
+      "light": 1,
+      "medium": 2,
+      "heavy": 3
+    },
+    "max_findings_per_lens": 10,
+    "max_chars_per_finding": 300
+  },
+  "verdict": {
+    "pass": {
+      "condition": "no_findings",
+      "or": "no_red_findings"
+    },
+    "contested": {
+      "condition": "red_but_lenses_disagree"
+    },
+    "reject": {
+      "condition": "multiple_red_same_file"
+    },
+    "escalate_to_sonnet": {
+      "condition": "contested_after_2_retries"
+    },
+    "escalate_to_opus": {
+      "condition": "sonnet_unresolvable_2pct"
+    }
+  },
+  "cross_review": {
+    "reviewer_must_differ": true,
+    "skip_a2a_if": {
+      "confidence_gte": 0.85,
+      "complexity_eq": "low"
+    }
+  },
+  "a2a_lens": {
+    "correctness": {
+      "description": "Logic, edge cases, error handling",
+      "weight": 0.4
+    },
+    "maintainability": {
+      "description": "Code structure, naming, documentation",
+      "weight": 0.3
+    },
+    "performance": {
+      "description": "Algorithm efficiency, resource usage",
+      "weight": 0.3
+    }
+  },
+  "retry": {
+    "max_worker_retries": 2,
+    "max_sonnet_rechecks": 1,
+    "escalate_after": 2
+  }
+}
