@@ -1,0 +1,42 @@
+{
+  "_doc": "A2A lens configuration for cross-model review. Determines how many lenses per task scale.",
+  "lens_definitions": {
+    "correctness": {
+      "name": "Correctness",
+      "prompt_template": "Review this code for correctness:\n- Logic errors\n- Edge case handling\n- Input validation\n- Error propagation\n\nCode:\n```{lang}\n{code}\n```\n\nRespond in JSON: { \"lens\": \"correctness\", \"findings\": [{\"severity\": \"red|yellow|green\", \"location\": \"file:line\", \"description\": \"...\", \"suggestion\": \"...\"}] }",
+      "max_findings": 10
+    },
+    "maintainability": {
+      "name": "Maintainability",
+      "prompt_template": "Review this code for maintainability:\n- Code structure and organization\n- Naming conventions\n- Documentation quality\n- Cyclomatic complexity\n\nCode:\n```{lang}\n{code}\n```\n\nRespond in JSON: { \"lens\": \"maintainability\", \"findings\": [{\"severity\": \"red|yellow|green\", \"location\": \"file:line\", \"description\": \"...\", \"suggestion\": \"...\"}] }",
+      "max_findings": 10
+    },
+    "performance": {
+      "name": "Performance",
+      "prompt_template": "Review this code for performance:\n- Algorithm efficiency (O complexity)\n- Unnecessary allocations or copies\n- Blocking operations\n- Scalability concerns\n\nCode:\n```{lang}\n{code}\n```\n\nRespond in JSON: { \"lens\": \"performance\", \"findings\": [{\"severity\": \"red|yellow|green\", \"location\": \"file:line\", \"description\": \"...\", \"suggestion\": \"...\"}] }",
+      "max_findings": 10
+    }
+  },
+  "scale_thresholds": {
+    "light": {
+      "description": "Single file, simple logic, low complexity",
+      "lenses": ["correctness"],
+      "max_time_ms": 30000
+    },
+    "medium": {
+      "description": "2-3 files, moderate logic, medium complexity",
+      "lenses": ["correctness", "maintainability"],
+      "max_time_ms": 60000
+    },
+    "heavy": {
+      "description": "Multiple files, complex logic, high complexity",
+      "lenses": ["correctness", "maintainability", "performance"],
+      "max_time_ms": 120000
+    }
+  },
+  "output": {
+    "format": "json",
+    "severity_levels": ["red", "yellow", "green"],
+    "require_valid_json": true
+  }
+}

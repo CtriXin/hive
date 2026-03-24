@@ -1,0 +1,149 @@
+{
+  "benchmark_id": "parallel-orchestration-session-001",
+  "project": "hive",
+  "date": "2026-03-24",
+  "scenario": "5-way parallel implementation of a self-contained TypeScript orchestration system with ERRATA-driven spec resolution, isolated worktrees, and one repair round.",
+  "scoring_model": {
+    "scale": "0-100",
+    "dimensions": {
+      "spec_comprehension": 20,
+      "delivery_completeness": 15,
+      "code_control": 20,
+      "scope_discipline": 10,
+      "integration_readiness": 15,
+      "repair_ability": 10,
+      "turnaround_speed": 10
+    },
+    "notes": [
+      "turnaround_speed is relative and observational, not based on exact wall-clock telemetry",
+      "integration_readiness measures whether the output can be merged with neighboring modules without hidden interface breakage",
+      "code_control includes API usage accuracy, import/path correctness, and avoidance of speculative or invented interfaces"
+    ]
+  },
+  "results": [
+    {
+      "worker": "D",
+      "model_label": "GLM5-Turbo",
+      "status": "strong_pass",
+      "total_score": 90,
+      "scores": {
+        "spec_comprehension": 18,
+        "delivery_completeness": 14,
+        "code_control": 18,
+        "scope_discipline": 10,
+        "integration_readiness": 13,
+        "repair_ability": 8,
+        "turnaround_speed": 9
+      },
+      "summary": "Strong infrastructure delivery. Scope held. TypeScript passed. Some downstream interface mismatches existed, but most were caused by neighboring workers integrating against different assumptions.",
+      "evidence": [
+        "Delivered provider-resolver, protocol-adapter, model-registry, context-recycler",
+        "Standalone tsc passed in its own worktree",
+        "No shared-contract overreach observed",
+        "Main integration gap was naming/signature mismatch with A2 rather than obvious self-contradiction"
+      ]
+    },
+    {
+      "worker": "E",
+      "model_label": "MiniMax-2.7",
+      "status": "strong_pass",
+      "total_score": 91,
+      "scores": {
+        "spec_comprehension": 18,
+        "delivery_completeness": 15,
+        "code_control": 18,
+        "scope_discipline": 10,
+        "integration_readiness": 13,
+        "repair_ability": 8,
+        "turnaround_speed": 9
+      },
+      "summary": "Strong config/script/rules delivery with high discipline. Good fit for structured config-heavy work and repository hygiene.",
+      "evidence": [
+        "Delivered config, scripts, rules, CLAUDE.md, .ai manifest, and worktree-manager",
+        "Standalone tsc passed in its own worktree",
+        "Smoke validations were reported clean",
+        "No shared-contract or write-scope violations observed"
+      ]
+    },
+    {
+      "worker": "B",
+      "model_label": "Kimi-Coding",
+      "status": "pass_after_repair",
+      "total_score": 77,
+      "scores": {
+        "spec_comprehension": 15,
+        "delivery_completeness": 13,
+        "code_control": 14,
+        "scope_discipline": 5,
+        "integration_readiness": 12,
+        "repair_ability": 10,
+        "turnaround_speed": 8
+      },
+      "summary": "Good implementation strength and strong repair ability, but first-pass scope discipline was weak because it created out-of-scope stubs to satisfy compilation.",
+      "evidence": [
+        "Round 1 added out-of-scope stubs for model-registry, provider-resolver, and worktree-manager",
+        "Round 2 removed the stubs and converged",
+        "Standalone tsc passed after repair",
+        "Final output was materially more trustworthy than the first pass"
+      ]
+    },
+    {
+      "worker": "A2",
+      "model_label": "GLM5-Turbo",
+      "status": "partial_pass",
+      "total_score": 63,
+      "scores": {
+        "spec_comprehension": 14,
+        "delivery_completeness": 12,
+        "code_control": 11,
+        "scope_discipline": 9,
+        "integration_readiness": 8,
+        "repair_ability": 5,
+        "turnaround_speed": 4
+      },
+      "summary": "Understood the dispatcher/index problem reasonably well and improved in round 2, but did not fully close the integration contract and still depended on unresolved neighboring modules.",
+      "evidence": [
+        "Round 1 used wrong provider mapping and wrong discussion signature",
+        "Round 2 fixed key logic and reduced self-inflicted errors",
+        "Standalone tsc still failed because adjacent modules were absent, but fewer errors were self-caused than in worker C",
+        "Dispatcher-to-neighbor contracts still required integration cleanup"
+      ]
+    },
+    {
+      "worker": "C",
+      "model_label": "Qwen-Max",
+      "status": "fail_after_repair",
+      "total_score": 38,
+      "scores": {
+        "spec_comprehension": 9,
+        "delivery_completeness": 8,
+        "code_control": 6,
+        "scope_discipline": 2,
+        "integration_readiness": 5,
+        "repair_ability": 3,
+        "turnaround_speed": 5
+      },
+      "summary": "Did not converge after repair. Main issues were wrong import topology, incorrect SDK usage, and continued shared-contract drift. Repair latency was also visibly worse than peers.",
+      "evidence": [
+        "Used invalid MCP SDK entry and wrong relative import graph in round 1",
+        "Round 2 still had self-caused compile errors and unresolved wrong paths",
+        "Shared-contract file package.json remained modified despite claiming otherwise",
+        "Observed repair turnaround was notably slower than peers"
+      ]
+    }
+  ],
+  "initial_ranking": [
+    "E",
+    "D",
+    "B",
+    "A2",
+    "C"
+  ],
+  "recommended_use": {
+    "E": "config-heavy, repo-structure, scripts, operational scaffolding",
+    "D": "core infrastructure, adapters, registries, typed utilities",
+    "B": "review/reasoning modules, but watch write-scope discipline",
+    "A2": "bounded orchestration wiring with supervision",
+    "C": "do not use unsupervised on coordination-heavy or path-sensitive tasks until benchmark improves"
+  }
+}

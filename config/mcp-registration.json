@@ -1,0 +1,20 @@
+{
+  "_doc": "复制 mcpServers 段到 ~/.claude/settings.json 完成注册",
+  "mcpServers": {
+    "hive": {
+      "command": "node",
+      "args": ["REPLACE_WITH_ABSOLUTE_PATH/hive/dist/mcp-server/index.js"],
+      "env": {
+        "BAILIAN_API_KEY": "",
+        "KIMI_CODING_API_KEY": "",
+        "GLM_CN_API_KEY": "",
+        "MINIMAX_CN_API_KEY": "",
+        "DEEPSEEK_API_KEY": "",
+        "QWEN_API_KEY": "",
+        "KIMI_API_KEY": "",
+        "GLM_EN_API_KEY": "",
+        "MINIMAX_EN_API_KEY": ""
+      }
+    }
+  }
+}

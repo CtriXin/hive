@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/orchestrator/index.js",
   "bin": {
-    "hive": "./bin/hive"
+    "hive": "./bin/hive",
+    "hive-config": "./bin/hive-config"
   },
   "scripts": {
     "build": "tsc",

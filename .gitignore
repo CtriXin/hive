@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.js.map
+.DS_Store
 
 # Internal planning docs — do not publish
 tasks/
@@ -8,6 +9,11 @@ CLI_BRIDGE_IMPLEMENTATION_PLAN.md
 SELF_CONTAINED_ADDENDUM.md
 ACCEPTANCE_TEST.md
 .ai/
+CLAUDE.md
+REVIEW_FINDINGS.md
+findings.md
+progress.md
+task_plan.md
 
 # Secrets
 .env
