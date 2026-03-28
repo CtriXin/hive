@@ -18,35 +18,111 @@ const server = new McpServer({
 });
 
 function parseJsonBlock<T>(raw: string): T {
-  const fencedMatch = raw.match(/```json\s*([\s\S]*?)```/i);
-  const candidate = fencedMatch?.[1] || raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!candidate) {
-    throw new Error('Planner did not return JSON');
+  // Try fenced code block first
+  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch?.[1]) {
+    try { return JSON.parse(fencedMatch[1].trim()) as T; } catch { /* fall through */ }
   }
-  return JSON.parse(candidate) as T;
+
+  // Try to find the outermost { ... } containing "goal" and "tasks"
+  const braceStart = raw.indexOf('{');
+  if (braceStart >= 0) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = braceStart; i < raw.length; i++) {
+      const c = raw[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) {
+          const candidate = raw.slice(braceStart, i + 1);
+          try { return JSON.parse(candidate) as T; } catch { /* fall through */ }
+          break;
+        }
+      }
+    }
+  }
+
+  throw new Error('Planner did not return valid JSON');
 }
 
-async function runClaudePlanner(prompt: string, cwd: string, modelId: string): Promise<string> {
+interface PlannerRunResult {
+  text: string;
+  diagnostics: {
+    modelId: string;
+    agentModel: string;
+    resolvedBaseUrl: string | null;
+    providerResolveFailed: string | null;
+    maxTurns: number;
+    messageCount: number;
+    rawLength: number;
+    messages: string[];
+  };
+}
+
+async function runClaudePlanner(prompt: string, cwd: string, modelId: string): Promise<PlannerRunResult> {
   const { safeQuery, extractTextFromMessages } = await import('../orchestrator/sdk-query-safe.js');
   const { buildSdkEnv } = await import('../orchestrator/project-paths.js');
 
-  // Agent alias: domestic models get claude- prefix for full agent loop
-  const agentModel = modelId.startsWith('claude-') ? modelId : `claude-${modelId}`;
+  // Use original model ID — MMS gateway requires exact model name
+  const agentModel = modelId;
 
   let env: Record<string, string>;
+  let resolvedBaseUrl: string | null = null;
+  let providerResolveFailed: string | null = null;
+
   try {
     const resolved = resolveProviderForModel(modelId);
+    resolvedBaseUrl = resolved.baseUrl;
     env = buildSdkEnv(agentModel, resolved.baseUrl, resolved.apiKey);
-  } catch {
+  } catch (err: any) {
+    providerResolveFailed = err.message;
     env = buildSdkEnv(agentModel);
   }
 
+  const maxTurns = 3;
   const result = await safeQuery({
     prompt,
-    options: { cwd, maxTurns: 1, env },
+    options: { cwd, maxTurns, env },
   });
 
-  return extractTextFromMessages(result.messages);
+  const text = extractTextFromMessages(result.messages);
+
+  // Diagnostics: summarize message types and content preview
+  const msgSummary = result.messages.map((m: any, i: number) => {
+    const type = m.type || '?';
+    let preview = '';
+    if (type === 'assistant') {
+      const content = m.message?.content;
+      if (Array.isArray(content)) {
+        preview = content.map((b: any) => `${b.type}(${(b.text || b.name || '').slice(0, 40)})`).join('+');
+      } else if (typeof content === 'string') {
+        preview = content.slice(0, 60);
+      }
+    } else if (type === 'result') {
+      preview = JSON.stringify(m).slice(0, 80);
+    }
+    return `[${i}] ${type}: ${preview || '(no text)'}`;
+  });
+
+  return {
+    text,
+    diagnostics: {
+      modelId,
+      agentModel,
+      resolvedBaseUrl,
+      providerResolveFailed,
+      maxTurns,
+      messageCount: result.messages.length,
+      rawLength: text.length,
+      messages: msgSummary,
+    },
+  };
 }
 
 // 工具 1: plan_tasks - 接受中文或英文输入
@@ -96,12 +172,17 @@ server.tool(
     let plan: TaskPlan | null = null;
     let plannerFallbackPrompt: string | null = null;
 
+    let plannerDiagnostics: PlannerRunResult['diagnostics'] | null = null;
+    let plannerError: string | null = null;
     try {
-      plannerOutput = await runClaudePlanner(claudePrompt, effectiveCwd, plannerModel);
+      const plannerResult = await runClaudePlanner(claudePrompt, effectiveCwd, plannerModel);
+      plannerOutput = plannerResult.text;
+      plannerDiagnostics = plannerResult.diagnostics;
       const parsedPlannerOutput = parseJsonBlock<{ goal: string; tasks: unknown[] }>(plannerOutput);
       plan = buildPlanFromClaudeOutput(parsedPlannerOutput);
       plan.cwd = effectiveCwd;
-    } catch {
+    } catch (err: any) {
+      plannerError = err.message;
       plannerFallbackPrompt = claudePrompt;
     }
 
@@ -131,6 +212,9 @@ server.tool(
           translation: translationResult,
           planner_model: plannerModel,
           planner_prompt: plannerFallbackPrompt,
+          planner_diagnostics: plannerDiagnostics,
+          planner_error: plannerError,
+          planner_raw_output: plan ? undefined : plannerOutput?.slice(0, 500),
           budget_warning: budgetWarning,
         }, null, 2),
       }],
@@ -272,6 +356,79 @@ server.tool(
         const urlPreview = route.anthropic_base_url.replace(/https?:\/\//, '').slice(0, 40);
         const hasKey = route.api_key ? 'key-set' : 'NO-KEY';
         healthText += `- ${modelId}: ${urlPreview} (${hasKey}, p${route.priority})\n`;
+      }
+      healthText += '\n';
+
+      // Live ping: 1 representative per provider_id + all tier-critical models
+      const config = loadConfig(process.cwd());
+      const tierModels = new Set<string>();
+      // Collect models referenced in tiers config
+      const tm = config.tiers;
+      for (const m of [tm.planner?.model, tm.translator?.model, tm.reporter?.model,
+        tm.executor?.model, tm.reviewer?.cross_review?.model,
+        tm.reviewer?.arbitration?.model, tm.reviewer?.final_review?.model]) {
+        if (m && m !== 'auto') tierModels.add(m);
+      }
+      const dm = tm.discuss?.model;
+      if (dm) { for (const m of (Array.isArray(dm) ? dm : [dm])) { if (m !== 'auto') tierModels.add(m); } }
+      // Also add default_worker and fallback
+      if (config.default_worker) tierModels.add(config.default_worker);
+
+      const seenProviders = new Set<string>();
+      const pingTargets: Array<{ modelId: string; route: typeof table.routes[string]; reason: string }> = [];
+      // First: add tier-critical models (always ping these)
+      for (const id of tierModels) {
+        const route = table.routes[id];
+        if (!route) continue;
+        pingTargets.push({ modelId: id, route, reason: 'tier' });
+        const pKey = route.provider_id || route.anthropic_base_url;
+        seenProviders.add(pKey);
+      }
+      // Then: add 1 representative per remaining provider_id
+      for (const [id, route] of Object.entries(table.routes)) {
+        if (id.startsWith('claude-')) continue;
+        const pKey = route.provider_id || route.anthropic_base_url;
+        if (seenProviders.has(pKey)) continue;
+        seenProviders.add(pKey);
+        pingTargets.push({ modelId: id, route, reason: 'provider-rep' });
+      }
+
+      healthText += `### Live Ping (${pingTargets.length} providers, 15s timeout)\n`;
+      const PING_TIMEOUT = 15_000;
+      const pingResults = await Promise.all(
+        pingTargets.map(async ({ modelId, route }) => {
+          const urlShort = route.anthropic_base_url.replace(/https?:\/\//, '').slice(0, 50);
+          const start = Date.now();
+          try {
+            const resp = await fetch(route.anthropic_base_url + '/v1/messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': route.api_key,
+                'anthropic-version': '2023-06-01',
+              },
+              body: JSON.stringify({
+                model: modelId,
+                max_tokens: 5,
+                messages: [{ role: 'user', content: 'ping' }],
+              }),
+              signal: AbortSignal.timeout(PING_TIMEOUT),
+            });
+            const elapsed = Date.now() - start;
+            // 200/201 = healthy, 4xx = endpoint exists but model/auth issue
+            const ok = resp.status >= 200 && resp.status < 300;
+            const icon = ok ? '✅' : resp.status < 500 ? '⚠️' : '❌';
+            return { modelId, url: urlShort, status: `${icon} ${resp.status} (${elapsed}ms)`, provider: route.provider_id || '?' };
+          } catch (err: any) {
+            const elapsed = Date.now() - start;
+            const reason = elapsed >= PING_TIMEOUT ? 'TIMEOUT' : err.message?.slice(0, 50);
+            return { modelId, url: urlShort, status: `❌ ${reason} (${elapsed}ms)`, provider: route.provider_id || '?' };
+          }
+        }),
+      );
+
+      for (const r of pingResults) {
+        healthText += `- **${r.modelId}** → ${r.url} [${r.provider}] ${r.status}\n`;
       }
       healthText += '\n';
     }

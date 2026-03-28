@@ -104,7 +104,7 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
     result: {
       strengths: ['general', 'coding', 'reasoning'],
       scores: { general: 0.85, coding: 0.82, planning: 0.82, review: 0.8, translation: 0.78 },
-      context_window: 128000, cost_per_1k: 0.008,
+      context_window: 1000000, cost_per_1k: 0.008,
     },
   },
   {
@@ -112,7 +112,7 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
     result: {
       strengths: ['general', 'coding', 'planning'],
       scores: { general: 0.82, coding: 0.8, planning: 0.78, review: 0.72, translation: 0.78 },
-      context_window: 128000, cost_per_1k: 0.002,
+      context_window: 262144, cost_per_1k: 0.002,
     },
   },
   {
@@ -120,7 +120,7 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
     result: {
       strengths: ['coding', 'general', 'long-context'],
       scores: { general: 0.82, coding: 0.90, planning: 0.75, review: 0.78, translation: 0.80 },
-      context_window: 128000, cost_per_1k: 0.012,
+      context_window: 262144, cost_per_1k: 0.012,
     },
   },
   {
@@ -128,7 +128,7 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
     result: {
       strengths: ['coding', 'general', 'long-context'],
       scores: { general: 0.82, coding: 0.88, planning: 0.75, review: 0.78, translation: 0.8 },
-      context_window: 128000, cost_per_1k: 0.005,
+      context_window: 262144, cost_per_1k: 0.005,
     },
   },
   {
@@ -136,7 +136,7 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
     result: {
       strengths: ['general', 'coding', 'multilingual'],
       scores: { general: 0.8, coding: 0.78, planning: 0.76, review: 0.74, translation: 0.82 },
-      context_window: 128000, cost_per_1k: 0.001,
+      context_window: 200000, cost_per_1k: 0.001,
     },
   },
   {
@@ -144,7 +144,7 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
     result: {
       strengths: ['general', 'coding', 'operational'],
       scores: { general: 0.84, coding: 0.79, planning: 0.76, review: 0.74, translation: 0.72 },
-      context_window: 128000, cost_per_1k: 0.002,
+      context_window: 200000, cost_per_1k: 0.002,
     },
   },
 ];
