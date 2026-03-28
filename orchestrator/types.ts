@@ -325,6 +325,7 @@ export interface HiveConfig {
     block: boolean;
     current_spent_usd: number;
     reset_day: number;
+    last_reset?: string;
   };
   host: 'claude-code' | 'codex' | 'mms';
   providers_path?: string;

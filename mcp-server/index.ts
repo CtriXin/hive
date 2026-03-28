@@ -298,22 +298,44 @@ server.tool(
       }),
     );
 
+    // Auto-merge: commit and merge passed worktrees
+    const { commitAndMergeWorktree } = await import('../orchestrator/worktree-manager.js');
+    const mergeResults: Array<{ taskId: string; merged: boolean; error?: string }> = [];
+    for (const review of reviewResults) {
+      const wr = dispatchResult.worker_results.find(w => w.taskId === review.taskId);
+      if (!wr?.branch) continue; // no worktree used
+      if (review.passed) {
+        const task = plan.tasks.find(t => t.id === wr.taskId);
+        const msg = `task ${wr.taskId}: ${task?.description.slice(0, 80) || wr.taskId}`;
+        const mr = commitAndMergeWorktree(wr.worktreePath, wr.branch, msg);
+        mergeResults.push({ taskId: wr.taskId, ...mr });
+      } else {
+        mergeResults.push({ taskId: wr.taskId, merged: false, error: 'review not passed — worktree kept for inspection' });
+      }
+    }
+
     const orchestratorResult: OrchestratorResult = {
       plan,
       worker_results: dispatchResult.worker_results,
       review_results: reviewResults,
       score_updates: [],
       total_duration_ms: dispatchResult.worker_results.reduce((sum, worker) => sum + worker.duration_ms, 0),
-      cost_estimate: {
-        opus_tokens: 0,
-        sonnet_tokens: 0,
-        haiku_tokens: 0,
-        domestic_tokens: dispatchResult.worker_results.reduce(
-          (sum, worker) => sum + worker.token_usage.input + worker.token_usage.output,
-          0,
-        ),
-        estimated_cost_usd: 0
-      }
+      cost_estimate: (() => {
+        let opusTok = 0, sonnetTok = 0, haikuTok = 0, domesticTok = 0, costUsd = 0;
+        for (const wr of dispatchResult.worker_results) {
+          const total = wr.token_usage.input + wr.token_usage.output;
+          const cap = registry.get(wr.model);
+          if (wr.model.includes('opus')) opusTok += total;
+          else if (wr.model.includes('sonnet')) sonnetTok += total;
+          else if (wr.model.includes('haiku')) haikuTok += total;
+          else domesticTok += total;
+          if (cap) {
+            costUsd += (wr.token_usage.input * (cap.cost_per_mtok_input || 0)
+                      + wr.token_usage.output * (cap.cost_per_mtok_output || 0)) / 1_000_000;
+          }
+        }
+        return { opus_tokens: opusTok, sonnet_tokens: sonnetTok, haiku_tokens: haikuTok, domestic_tokens: domesticTok, estimated_cost_usd: costUsd };
+      })()
     };
 
     // Resolve reporter model from tiers config
@@ -333,7 +355,14 @@ server.tool(
       { language: report_language, format: 'summary', target: 'stdout' }
     );
 
-    return { content: [{ type: 'text', text: report }] };
+    // Append merge summary
+    const mergeSummary = mergeResults.length > 0
+      ? '\n\n## Worktree Merge\n' + mergeResults.map(m =>
+          `- ${m.taskId}: ${m.merged ? '✅ merged' : `❌ ${m.error}`}`
+        ).join('\n')
+      : '';
+
+    return { content: [{ type: 'text', text: report + mergeSummary }] };
   }
 );
 
@@ -388,6 +417,18 @@ server.tool(
         discussThreshold: discuss_threshold,
         maxTurns: 25,
       });
+
+      // Record spending for single dispatch
+      const spendRegistry = new ModelRegistry();
+      const cap = spendRegistry.get(result.model);
+      if (cap) {
+        const cost = (result.token_usage.input * (cap.cost_per_mtok_input || 0)
+                    + result.token_usage.output * (cap.cost_per_mtok_output || 0)) / 1_000_000;
+        if (cost > 0) {
+          const { recordSpending } = await import('../orchestrator/hive-config.js');
+          recordSpending(cwd || process.cwd(), cost);
+        }
+      }
 
       const output = { ...result, preflight_fallback: preflightFallback };
       return { content: [{ type: 'text', text: JSON.stringify(output) }] };
