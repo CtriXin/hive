@@ -246,10 +246,10 @@ export class ModelRegistry {
   selectDiscussPartner(workerModelId: string): string {
     const ranked = this.rankModelsForTask({
       role: 'review', domains: ['typescript', 'architecture'], complexity: 'medium',
-      needs_strict_boundary: false, needs_fast_turnaround: true, is_repair_round: false,
+      needs_strict_boundary: false, needs_fast_turnaround: false, is_repair_round: false,
     });
     return ranked.find((c) => c.model !== workerModelId && !c.blocked_by?.length)?.model
-      || this.firstKnownModel(['qwen-3.5', 'kimi-for-coding', 'kimi-k2.5']);
+      || this.firstKnownModel(['kimi-for-coding', 'kimi-k2.5', 'qwen3-max']);
   }
 
   selectReviewer(): string {
