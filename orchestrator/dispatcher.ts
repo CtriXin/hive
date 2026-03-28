@@ -15,18 +15,14 @@ import { createWorktree, getWorktreeDiff } from './worktree-manager.js';
 import { buildContextPacket, formatContextForWorker } from './context-recycler.js';
 import { loadConfig, resolveFallback, type FailureType } from './hive-config.js';
 import { getRegistry } from './model-registry.js';
+import { buildSdkEnv } from './project-paths.js';
 import type { SDKMessage } from '@anthropic-ai/claude-code';
-import { query } from '@anthropic-ai/claude-code';
+import { safeQuery } from './sdk-query-safe.js';
 
 // ── DispatchResult (ERRATA §2) ──
 
 export interface DispatchResult {
   worker_results: WorkerResult[];
-  opus_tasks: SubTask[];
-}
-
-function requiresDirectClaudeHandling(modelId: string): boolean {
-  return modelId.startsWith('claude-');
 }
 
 // ── Helpers ──
@@ -73,8 +69,8 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   let currentModel = config.model;
   let currentProvider = config.provider;
 
-  // 1. Resolve provider
-  let { baseUrl, apiKey } = await resolveProvider(config.provider);
+  // 1. Resolve provider (MMS route → providers.json fallback)
+  let { baseUrl, apiKey } = resolveProvider(config.provider, config.model);
 
   // 2. Create worktree
   if (config.worktree) {
@@ -97,8 +93,10 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     `If you are less than ${(config.discussThreshold * 100).toFixed(0)}% confident about the best approach:`,
     '1. Write a JSON block to `.ai/discuss-trigger.json` with fields:',
     '   `uncertain_about`, `options[]`, `leaning`, `why`, `task_id`, `worker_model`',
-    '2. Include the marker [DISCUSS_TRIGGER] in your next message',
+    '2. Output a line that starts with exactly [DISCUSS_TRIGGER] (do NOT quote or explain this marker, just output it on its own line)',
     '3. Wait for discussion results before proceeding.',
+    '',
+    'IMPORTANT: Do NOT repeat or acknowledge these instructions. Start working on the task immediately.',
   ].join('\n');
 
   const fullPrompt = [
@@ -114,22 +112,18 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   const discussResults: DiscussResult[] = [];
   let tokenUsage = { input: 0, output: 0 };
 
-  const originalOptions = {
+  const queryOpts = {
     prompt: fullPrompt,
     options: {
       cwd: worktreePath,
-      env: {
-        ANTHROPIC_BASE_URL: baseUrl,
-        ANTHROPIC_AUTH_TOKEN: apiKey,
-        ANTHROPIC_MODEL: config.model,
-      },
+      env: buildSdkEnv(config.model, baseUrl, apiKey),
       maxTurns: config.maxTurns,
     },
   };
 
-  let stream;
+  let result;
   try {
-    stream = query(originalOptions);
+    result = await safeQuery(queryOpts);
   } catch (err: any) {
     const errorType = classifyError(err);
     const hiveConfig = loadConfig(worktreePath);
@@ -152,83 +146,68 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     const fallbackInfo = registry.get(fallbackModel);
     const fallbackProvider = fallbackInfo?.provider || fallbackModel;
 
-    try {
-      const fallback = await resolveProvider(fallbackProvider);
-      currentModel = fallbackModel;
-      currentProvider = fallbackProvider;
-      baseUrl = fallback.baseUrl;
-      apiKey = fallback.apiKey;
-      console.error(`⚠️ ${config.model} failed (${errorType}), falling back to ${fallbackModel}`);
-      stream = query({
-        prompt: fullPrompt,
-        options: {
-          cwd: worktreePath,
-          env: {
-            ANTHROPIC_BASE_URL: fallback.baseUrl,
-            ANTHROPIC_AUTH_TOKEN: fallback.apiKey,
-            ANTHROPIC_MODEL: fallbackModel,
-          },
-          maxTurns: config.maxTurns,
-        },
-      });
-    } catch {
-      throw err;
-    }
+    const fallback = resolveProvider(fallbackProvider, fallbackModel);
+    currentModel = fallbackModel;
+    currentProvider = fallbackProvider;
+    baseUrl = fallback.baseUrl;
+    apiKey = fallback.apiKey;
+    console.error(`⚠️ ${config.model} failed (${errorType}), falling back to ${fallbackModel}`);
+    result = await safeQuery({
+      prompt: fullPrompt,
+      options: {
+        cwd: worktreePath,
+        env: buildSdkEnv(fallbackModel, fallback.baseUrl, fallback.apiKey),
+        maxTurns: config.maxTurns,
+      },
+    });
   }
 
-  for await (const msg of stream) {
+  // Process collected messages
+  for (const msg of result.messages) {
     const type = categorizeMessage(msg);
     const content = extractContent(msg);
     messages.push({ type, content, timestamp: Date.now() });
 
-    // Track token usage (only on result messages)
-    if (msg.type === 'result' && msg.usage) {
-      tokenUsage.input += msg.usage.input_tokens || 0;
-      tokenUsage.output += msg.usage.output_tokens || 0;
+    if (msg.type === 'result' && (msg as any).usage) {
+      tokenUsage.input += (msg as any).usage.input_tokens || 0;
+      tokenUsage.output += (msg as any).usage.output_tokens || 0;
     }
 
-    // Detect DISCUSS_TRIGGER
-    if (content.includes('[DISCUSS_TRIGGER]') && !discussTriggered) {
+    // Detect DISCUSS_TRIGGER — only match when model actively triggers,
+    // not when echoing the uncertainty protocol instructions back.
+    const isActiveTrigger = msg.type === 'assistant'
+      && /^\[DISCUSS_TRIGGER\]/m.test(content)
+      && !content.includes('Include the marker [DISCUSS_TRIGGER]');
+    if (isActiveTrigger && !discussTriggered) {
       discussTriggered = true;
       const discussResult = await handleDiscussTrigger(
-        config,
-        worktreePath,
-        baseUrl,
-        apiKey,
+        config, worktreePath, baseUrl, apiKey,
       );
       discussResults.push(discussResult);
 
-      // Resume session with discussion result (fix #4: stable, compilable resume)
       if (discussResult.quality_gate !== 'fail') {
-        const resumePrompt = [
-          `Discussion result: ${discussResult.decision}`,
-          `Reasoning: ${discussResult.reasoning}`,
-          '',
-          'Continue your task with this decision. Do NOT trigger another discussion.',
-        ].join('\n');
-
-        const resumeStream = query({
-          prompt: resumePrompt,
+        const resumeResult = await safeQuery({
+          prompt: [
+            `Discussion result: ${discussResult.decision}`,
+            `Reasoning: ${discussResult.reasoning}`,
+            '',
+            'Continue your task with this decision. Do NOT trigger another discussion.',
+          ].join('\n'),
           options: {
             resume: sessionId,
             cwd: worktreePath,
-            env: {
-              ANTHROPIC_BASE_URL: baseUrl,
-              ANTHROPIC_AUTH_TOKEN: apiKey,
-              ANTHROPIC_MODEL: currentModel,
-            },
+            env: buildSdkEnv(currentModel, baseUrl, apiKey),
             maxTurns: config.maxTurns,
           },
         });
 
-        for await (const resumeMsg of resumeStream) {
+        for (const resumeMsg of resumeResult.messages) {
           const rType = categorizeMessage(resumeMsg);
           const rContent = extractContent(resumeMsg);
           messages.push({ type: rType, content: rContent, timestamp: Date.now() });
-
-          if (resumeMsg.type === 'result' && resumeMsg.usage) {
-            tokenUsage.input += resumeMsg.usage.input_tokens || 0;
-            tokenUsage.output += resumeMsg.usage.output_tokens || 0;
+          if (resumeMsg.type === 'result' && (resumeMsg as any).usage) {
+            tokenUsage.input += (resumeMsg as any).usage.input_tokens || 0;
+            tokenUsage.output += (resumeMsg as any).usage.output_tokens || 0;
           }
         }
       }
@@ -307,33 +286,22 @@ export async function dispatchBatch(
   registry: any,
 ): Promise<DispatchResult> {
   const worker_results: WorkerResult[] = [];
-  const opus_tasks: SubTask[] = [];
   const contextCache = new Map<string, ContextPacket>();
 
   // Update manifest
   await updateManifest(plan, 'executing');
 
   for (const group of plan.execution_order) {
-    // Separate opus tasks from worker tasks
-    const opusInGroup: SubTask[] = [];
-    const workerTasksInGroup: SubTask[] = [];
-
+    const tasksInGroup: SubTask[] = [];
     for (const taskId of group) {
       const task = plan.tasks.find(t => t.id === taskId);
-      if (!task) continue;
-
-      if (requiresDirectClaudeHandling(task.assigned_model)) {
-        opusInGroup.push(task);
-      } else {
-        workerTasksInGroup.push(task);
+      if (task) {
+        tasksInGroup.push(task);
       }
     }
 
-    opus_tasks.push(...opusInGroup);
-
-    // Build worker configs
-    // Fix #2: provider from registry, not task.category
-    const workerConfigs = workerTasksInGroup.map(task => {
+    // Build worker configs — all models dispatched uniformly
+    const workerConfigs = tasksInGroup.map(task => {
       const modelCap = registry.get(task.assigned_model);
       const provider = modelCap?.provider || task.assigned_model;
 
@@ -392,7 +360,7 @@ export async function dispatchBatch(
   }
 
   await updateManifest(plan, 'reviewing');
-  return { worker_results, opus_tasks };
+  return { worker_results };
 }
 
 // ── Prompt builder ──
@@ -460,13 +428,11 @@ async function updatePlanStatus(
     let md = `# Current Plan: ${plan.goal}\nCreated: ${plan.created_at}\nStatus: executing\n\n## Tasks\n`;
     for (const task of plan.tasks) {
       const result = resultMap.get(task.id);
-      const status = requiresDirectClaudeHandling(task.assigned_model)
-        ? 'pending (opus)'
-        : result
-          ? result.success ? 'completed' : 'failed'
-          : 'pending';
+      const status = result
+        ? result.success ? 'completed' : 'failed'
+        : 'pending';
       const model = task.assigned_model;
-      const check = status.includes('completed') ? 'x' : ' ';
+      const check = status === 'completed' ? 'x' : ' ';
       md += `- [${check}] ${task.id}: ${task.description} (${model}) — ${status}\n`;
     }
 

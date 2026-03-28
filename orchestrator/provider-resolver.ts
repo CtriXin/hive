@@ -1,9 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════
-// orchestrator/provider-resolver.ts — 自包含 Provider 解析
+// orchestrator/provider-resolver.ts — Provider 解析
 // ═══════════════════════════════════════════════════════════════════
-// 替代原 mms-bridge-resolver.ts
-// 不依赖 MMS credentials.sh，从 config/providers.json 读取配置
-// API key 通过环境变量注入
+// 2-level resolution: MMS model-routes.json → config/providers.json
+// API key 通过 MMS 路由或环境变量注入
 // ═══════════════════════════════════════════════════════════════════
 
 import fs from 'fs';
@@ -11,6 +10,10 @@ import path from 'path';
 import type { ProviderEntry, ProvidersConfig } from './types.js';
 import { loadConfig } from './hive-config.js';
 import { resolveProjectPath } from './project-paths.js';
+import {
+  resolveModelRoute,
+  invalidateCache as invalidateMmsCache,
+} from './mms-routes-loader.js';
 
 // ── 配置加载 ──
 
@@ -55,11 +58,6 @@ export interface ResolvedProvider {
   apiKey: string;
 }
 
-// ── Gateway mode 检测 ──
-
-let gatewayCache: { url: string; token: string } | null | undefined = undefined;
-let gatewayCacheKey: string | null = null;
-
 function getFileMtimeMs(filePath: string): number | null {
   try {
     return fs.statSync(filePath).mtimeMs;
@@ -68,80 +66,31 @@ function getFileMtimeMs(filePath: string): number | null {
   }
 }
 
-function getGatewayCacheKey(): string {
-  const envUrl = process.env.HIVE_GATEWAY_URL || '';
-  const envToken = process.env.HIVE_GATEWAY_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN || '';
-  const config = loadConfig(process.cwd());
-  return JSON.stringify({
-    envUrl,
-    envToken,
-    configUrl: config.gateway?.url || '',
-    configTokenEnv: config.gateway?.auth_token_env || '',
-  });
-}
-
-/**
- * 检测是否配置了 gateway 模式
- * 优先级: env HIVE_GATEWAY_URL > hive-config.json gateway 字段
- */
-function resolveGateway(): { url: string; token: string } | null {
-  const cacheKey = getGatewayCacheKey();
-  if (gatewayCache !== undefined && gatewayCacheKey === cacheKey) {
-    return gatewayCache;
-  }
-
-  // 1. 环境变量优先
-  const envUrl = process.env.HIVE_GATEWAY_URL;
-  const envToken = process.env.HIVE_GATEWAY_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN || '';
-  if (envUrl) {
-    gatewayCacheKey = cacheKey;
-    gatewayCache = { url: envUrl.replace(/\/+$/, ''), token: envToken };
-    return gatewayCache;
-  }
-
-  // 2. 从 hive config 读
-  try {
-    const config = loadConfig(process.cwd());
-    if (config.gateway?.url) {
-      const token = process.env[config.gateway.auth_token_env] || '';
-      gatewayCacheKey = cacheKey;
-      gatewayCache = { url: config.gateway.url.replace(/\/+$/, ''), token };
-      return gatewayCache;
-    }
-  } catch {
-    // ignore
-  }
-
-  gatewayCacheKey = cacheKey;
-  gatewayCache = null;
-  return null;
-}
-
-/**
- * 是否处于 gateway 模式
- */
-export function isGatewayMode(): boolean {
-  return resolveGateway() !== null;
-}
-
 /**
  * 解析 provider 配置，返回可用的 baseUrl 和 apiKey
  *
- * Gateway 模式：所有 provider 统一走 gateway，不需要单独 API key
- * 直连模式：从 providers.json 读取各 provider 端点和 API key
+ * 2-level resolution chain:
+ *   1. MMS model-routes.json (per-model endpoint+key, highest priority)
+ *   2. Hive config/providers.json (fallback)
  *
  * @param providerId - provider ID，如 "bailian-codingplan"、"deepseek"
+ * @param modelId - optional model ID for MMS route lookup
  * @returns { baseUrl, apiKey }
  * @throws 如果 provider 不存在或配置不完整
  */
-export function resolveProvider(providerId: string): ResolvedProvider {
-  // ── Gateway 模式：所有 provider 走网关 ──
-  const gateway = resolveGateway();
-  if (gateway) {
-    return { baseUrl: gateway.url, apiKey: gateway.token };
+export function resolveProvider(
+  providerId: string,
+  modelId?: string,
+): ResolvedProvider {
+  // ── Level 1: MMS model-routes.json ──
+  if (modelId) {
+    const mmsRoute = resolveModelRoute(modelId);
+    if (mmsRoute) {
+      return { baseUrl: mmsRoute.anthropic_base_url, apiKey: mmsRoute.api_key };
+    }
   }
 
-  // ── 直连模式：按 provider 解析 ──
+  // ── Level 2: Hive config/providers.json ──
   const config = loadProviders();
   const provider = config.providers[providerId];
 
@@ -187,6 +136,23 @@ export function resolveProvider(providerId: string): ResolvedProvider {
   );
 }
 
+/**
+ * Resolve provider for a model ID directly (MMS-first, then providerId fallback).
+ * Convenience wrapper for callers that only have a modelId.
+ */
+export function resolveProviderForModel(modelId: string): ResolvedProvider {
+  // Try MMS route first
+  const mmsRoute = resolveModelRoute(modelId);
+  if (mmsRoute) {
+    return { baseUrl: mmsRoute.anthropic_base_url, apiKey: mmsRoute.api_key };
+  }
+
+  // No MMS route — caller needs to know the providerId
+  throw new Error(
+    `No MMS route found for model "${modelId}" and no providerId specified`,
+  );
+}
+
 export function getAllProviders(): Record<string, ProviderEntry> {
   return loadProviders().providers;
 }
@@ -229,34 +195,10 @@ function resolveOpenAIProvider(
 
 /**
  * 检查 provider 是否可达
- *
- * Gateway 模式下检查网关本身是否可达（只检查一次，缓存结果）
- * 直连模式下检查各 provider 的 /v1/models 端点
- *
- * @param providerId - provider ID
- * @returns true 如果端点可达（非 5xx 错误）
+ * 通过 MMS route 或 providers.json 解析后检查 /v1/models 端点
  */
-let gatewayHealthCache: boolean | null = null;
-
 export async function checkProviderHealth(providerId: string): Promise<boolean> {
   try {
-    const gateway = resolveGateway();
-
-    // Gateway 模式：检查网关可达性（缓存结果避免重复请求）
-    if (gateway) {
-      if (gatewayHealthCache !== null) return gatewayHealthCache;
-      const response = await fetch(`${gateway.url}/v1/models`, {
-        headers: {
-          'Authorization': `Bearer ${gateway.token}`,
-          'x-api-key': gateway.token,
-        },
-        signal: AbortSignal.timeout(5000),
-      });
-      gatewayHealthCache = response.status < 500;
-      return gatewayHealthCache;
-    }
-
-    // 直连模式
     const { baseUrl, apiKey } = resolveProvider(providerId);
     const response = await fetch(`${baseUrl}/v1/models`, {
       headers: {
@@ -279,8 +221,7 @@ export async function checkProviderHealth(providerId: string): Promise<boolean> 
 export function reloadProviders(): void {
   providersCache = null;
   providersPathCache = null;
-  gatewayCache = undefined;
-  gatewayHealthCache = null;
+  invalidateMmsCache();
 }
 
 // ── 导出类型 ──

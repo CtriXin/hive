@@ -1,312 +1,25 @@
-// ═══════════════════════════════════════════════════════════════════
-// orchestrator/reviewer.ts — 4-stage review cascade (cross-review → a2a → Sonnet → Opus)
-// ═══════════════════════════════════════════════════════════════════
-
-import { query } from '@anthropic-ai/claude-code';
-import fs from 'fs';
-import path from 'path';
-import { execSync } from 'child_process';
+// orchestrator/reviewer.ts — 4-stage review cascade (cross-review → a2a → arbitration → final)
 import type {
   WorkerResult, SubTask, TaskPlan, ReviewResult, ReviewFinding,
-  CrossReviewResult, A2aReviewResult, A2aVerdict,
-  FindingSeverity, Complexity, HiveConfig,
+  CrossReviewResult, A2aReviewResult, FindingSeverity, HiveConfig,
 } from './types.js';
-import { loadConfig, resolveFallback, type FailureType } from './hive-config.js';
+import { loadConfig, resolveFallback, resolveTierModel, type FailureType } from './hive-config.js';
 import { runA2aReview } from './a2a-bridge.js';
-import {
-  getAllProviders,
-  isGatewayMode,
-  resolveProvider as resolveConfiguredProvider,
-} from './provider-resolver.js';
 import { ModelRegistry, type LegacyModelView } from './model-registry.js';
 import { buildTaskFingerprint } from './task-fingerprint.js';
-import type { TaskFingerprint } from './task-fingerprint.js';
-import { resolveProjectPath } from './project-paths.js';
+import {
+  loadReviewPolicy, looksLikeInfrastructureFailure, classifyReviewError,
+  shouldAutoPass, isComplexityAtOrBelow, normalizeProviderId, normalizeSeverity,
+  getWorktreeFullDiff, truncateDiff, extractJsonObject, queryModelText,
+  type ReviewPolicy,
+} from './review-utils.js';
 
-// Review policy defaults (fallback if config/review-policy.json missing)
-const DEFAULT_REVIEW_POLICY = {
-  auto_pass_categories: ['docs', 'comments', 'formatting', 'i18n'],
-  cross_review: {
-    min_confidence_to_skip: 0.85,
-    min_pass_rate_for_skip: 0.90,
-    max_complexity_for_skip: 'medium',
-  },
-  a2a: {
-    max_reject_iterations: 1,
-    contested_threshold: 'CONTESTED',
-  },
-  arbitration: {
-    sonnet_max_iterations: 1,
-  },
-};
+// ── Stage 1: Cross-review ──
 
-interface ReviewPolicy {
-  auto_pass_categories: string[];
-  cross_review: {
-    min_confidence_to_skip: number;
-    min_pass_rate_for_skip: number;
-    max_complexity_for_skip: string;
-  };
-  a2a: {
-    max_reject_iterations: number;
-    contested_threshold: string;
-  };
-  arbitration: {
-    sonnet_max_iterations: number;
-  };
-}
-
-const INFRA_FAILURE_PATTERNS = [
-  'rate limit',
-  'overloaded',
-  'timeout',
-  'econnrefused',
-  'network',
-  'provider',
-  'api key',
-  'auth',
-  'connection reset',
-  'socket hang up',
-  'service unavailable',
-  '502',
-  '503',
-  '504',
-  '429',
-];
-
-let reviewPolicyCache:
-  | { path: string; mtimeMs: number | null; value: ReviewPolicy }
-  | null = null;
-
-// Load review policy from config or use defaults
-function loadReviewPolicy(): ReviewPolicy {
-  const policyPath = resolveProjectPath('config', 'review-policy.json');
-  const mtimeMs = getFileMtimeMs(policyPath);
-  if (reviewPolicyCache && reviewPolicyCache.path === policyPath && reviewPolicyCache.mtimeMs === mtimeMs) {
-    return reviewPolicyCache.value;
-  }
-
-  if (fs.existsSync(policyPath)) {
-    try {
-      const content = fs.readFileSync(policyPath, 'utf-8');
-      const value = { ...DEFAULT_REVIEW_POLICY, ...JSON.parse(content) };
-      reviewPolicyCache = { path: policyPath, mtimeMs, value };
-      return value;
-    } catch {
-      return DEFAULT_REVIEW_POLICY;
-    }
-  }
-  return DEFAULT_REVIEW_POLICY;
-}
-
-function getFileMtimeMs(filePath: string): number | null {
-  try {
-    return fs.statSync(filePath).mtimeMs;
-  } catch {
-    return null;
-  }
-}
-
-function looksLikeInfrastructureFailure(text: string): boolean {
-  const lower = text.toLowerCase();
-  return INFRA_FAILURE_PATTERNS.some((pattern) => lower.includes(pattern));
-}
-
-// Check if task qualifies for auto-pass (docs/comments only)
-function shouldAutoPass(task: SubTask, changedFiles: string[], policy: ReviewPolicy): boolean {
-  const allInAutoPass = changedFiles.every(f => {
-    const ext = path.extname(f).toLowerCase();
-    const isDoc = ext === '.md' || ext === '.txt' || ext === '.rst';
-    const isCommentOnly = f.includes('comment');
-    const isI18n = f.includes('locale') || f.includes('i18n') || f.includes('translation');
-    const isFormatting = f.includes('format') || f.includes('lint');
-    return isDoc || isCommentOnly || isI18n || isFormatting;
-  });
-
-  if (allInAutoPass && task.category && policy.auto_pass_categories.includes(task.category)) {
-    return true;
-  }
-  return false;
-}
-
-function normalizeProviderId(modelView: LegacyModelView | undefined): string | undefined {
-  return modelView?.provider;
-}
-
-const COMPLEXITY_RANK: Record<Complexity, number> = {
-  low: 0,
-  medium: 1,
-  'medium-high': 2,
-  high: 3,
-};
-
-function isComplexityAtOrBelow(
-  complexity: Complexity,
-  threshold: string,
-): boolean {
-  const normalized = (['low', 'medium', 'medium-high', 'high'] as const).includes(
-    threshold as Complexity,
-  )
-    ? threshold as Complexity
-    : 'medium';
-  return COMPLEXITY_RANK[complexity] <= COMPLEXITY_RANK[normalized];
-}
-
-function normalizeSeverity(input: unknown): FindingSeverity {
-  return input === 'red' || input === 'green' || input === 'yellow'
-    ? input
-    : 'yellow';
-}
-
-// Get git diff from worktree (self-contained, no external dependency)
-function getWorktreeFullDiff(worktreePath: string): string {
-  try {
-    return execSync('git diff HEAD', {
-      cwd: worktreePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
-  } catch {
-    return '';
-  }
-}
-
-function truncateDiff(diff: string, limit: number): string {
-  if (diff.length <= limit) {
-    return diff;
-  }
-  return `${diff.slice(0, limit)}\n\n[DIFF TRUNCATED: showing first ${limit} characters of ${diff.length}]`;
-}
-
-function extractJsonObject(rawOutput: string): string | null {
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escapeNext = false;
-
-  for (let i = 0; i < rawOutput.length; i += 1) {
-    const char = rawOutput[i];
-    if (escapeNext) {
-      escapeNext = false;
-      continue;
-    }
-    if (char === '\\') {
-      escapeNext = true;
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) {
-      continue;
-    }
-    if (char === '{') {
-      if (depth === 0) {
-        start = i;
-      }
-      depth += 1;
-      continue;
-    }
-    if (char === '}') {
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        return rawOutput.slice(start, i + 1);
-      }
-    }
-  }
-
-  return null;
-}
-
-async function collectAssistantText(
-  messages: AsyncIterable<any>,
-  timeoutMs: number,
-): Promise<string> {
-  return await Promise.race([
-    (async () => {
-      let output = '';
-      for await (const msg of messages) {
-        if (msg.type === 'assistant') {
-          const content = msg.message?.content;
-          if (Array.isArray(content)) {
-            output += content.map((block) => block.type === 'text' ? block.text : '').join('');
-          } else if (typeof content === 'string') {
-            output += content;
-          }
-        }
-      }
-      return output;
-    })(),
-    new Promise<string>((_, reject) => {
-      setTimeout(() => reject(new Error(`Review model timeout after ${timeoutMs}ms`)), timeoutMs);
-    }),
-  ]);
-}
-
-function classifyReviewError(err: any): FailureType {
-  if (err?.status === 429 || err?.message?.includes('overloaded') || err?.message?.includes('rate')) {
-    return 'rate_limit';
-  }
-  if (err?.status >= 500 || err?.message?.includes('timeout') || err?.message?.includes('ECONNREFUSED')) {
-    return 'server_error';
-  }
-  return 'quality_fail';
-}
-
-async function queryModelText(
-  prompt: string,
-  cwd: string,
-  modelId: string,
-  providerId?: string,
-  maxTurns = 2,
-  timeoutMs = 30000,
-): Promise<string> {
-  let env: Record<string, string>;
-  if (providerId) {
-    const resolved = resolveConfiguredProvider(providerId);
-    env = {
-      ANTHROPIC_BASE_URL: resolved.baseUrl,
-      ANTHROPIC_AUTH_TOKEN: resolved.apiKey,
-      ANTHROPIC_MODEL: modelId,
-    };
-  } else if (isGatewayMode()) {
-    const gatewayProvider = Object.keys(getAllProviders())[0];
-    if (!gatewayProvider) {
-      throw new Error('Gateway mode enabled but no providers are configured');
-    }
-    const resolved = resolveConfiguredProvider(gatewayProvider);
-    env = {
-      ANTHROPIC_BASE_URL: resolved.baseUrl,
-      ANTHROPIC_AUTH_TOKEN: resolved.apiKey,
-      ANTHROPIC_MODEL: modelId,
-    };
-  } else {
-    env = {
-      ANTHROPIC_MODEL: modelId,
-    };
-  }
-
-  const messages = query({
-    prompt,
-    options: {
-      cwd,
-      env,
-      maxTurns,
-    },
-  });
-
-  return collectAssistantText(messages, timeoutMs);
-}
-
-// Stage 1: Cross-review — one domestic model reviews another's work
 async function runCrossReview(
-  workerResult: WorkerResult,
-  task: SubTask,
-  reviewerModel: string,
-  reviewerProvider: string | undefined,
-  fallbackRegistry: ModelRegistry,
-  hiveConfig: HiveConfig,
+  workerResult: WorkerResult, task: SubTask,
+  reviewerModel: string, reviewerProvider: string | undefined,
+  fallbackRegistry: ModelRegistry, hiveConfig: HiveConfig,
 ): Promise<CrossReviewResult> {
   const diff = getWorktreeFullDiff(workerResult.worktreePath);
 
@@ -343,28 +56,16 @@ Rules:
     try {
       rawOutput = await queryModelText(prompt, workerResult.worktreePath, reviewerModel, reviewerProvider, 2);
     } catch (err: any) {
-      const fallbackModel = resolveFallback(
-        reviewerModel,
-        classifyReviewError(err),
-        task,
-        hiveConfig,
-        fallbackRegistry,
-      );
+      const fallbackModel = resolveFallback(reviewerModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
       const fallbackProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
       rawOutput = await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fallbackProvider, 2);
     }
 
-    // Parse JSON response
     const jsonPayload = extractJsonObject(rawOutput);
     if (!jsonPayload) {
       return {
-        passed: false,
-        confidence: 0,
-        flagged_issues: [{
-          severity: 'red',
-          file: 'review-response',
-          issue: 'Could not parse review response',
-        }],
+        passed: false, confidence: 0,
+        flagged_issues: [{ severity: 'red', file: 'review-response', issue: 'Could not parse review response' }],
         reviewer_model: reviewerModel,
       };
     }
@@ -384,7 +85,6 @@ Rules:
             issue: rest.slice(Number.isFinite(maybeLine) ? 1 : 0).join(':').trim() || item,
           };
         }
-
         const rawFile = typeof item?.file === 'string' ? item.file : 'unknown';
         const [filePath, lineText] = rawFile.split(':');
         const line = Number.parseInt(lineText ?? '', 10);
@@ -400,30 +100,21 @@ Rules:
   } catch (err: any) {
     console.error(`    ❌ Cross-review failed: ${err.message?.slice(0, 100)}`);
     return {
-      passed: false,
-      confidence: 0,
-      flagged_issues: [{
-        severity: 'red',
-        file: 'review-response',
-        issue: `Review failed: ${err.message?.slice(0, 100)}`,
-      }],
+      passed: false, confidence: 0,
+      flagged_issues: [{ severity: 'red', file: 'review-response', issue: `Review failed: ${err.message?.slice(0, 100)}` }],
       reviewer_model: reviewerModel,
     };
   }
 }
 
-// Stage 3: Sonnet arbitration for contested findings
-async function runSonnetArbitration(
-  workerResult: WorkerResult,
-  task: SubTask,
-  a2aResult: A2aReviewResult,
-  _iteration: number,
-  fallbackRegistry: ModelRegistry,
-  hiveConfig: HiveConfig,
-): Promise<{ findings: ReviewFinding[]; passed: boolean; fixInstructions?: string; infraFailure?: boolean }> {
-  const redFindings = a2aResult.all_findings.filter(f => f.severity === 'red');
-  const disputedFiles = [...new Set(redFindings.map(f => f.file.split(':')[0]))];
+// ── Stage 3: Arbitration ──
 
+async function runArbitration(
+  workerResult: WorkerResult, task: SubTask,
+  a2aResult: A2aReviewResult, fallbackRegistry: ModelRegistry, hiveConfig: HiveConfig,
+): Promise<{ findings: ReviewFinding[]; passed: boolean; fixInstructions?: string; infraFailure?: boolean }> {
+  const redFindings = a2aResult.all_findings.filter((f) => f.severity === 'red');
+  const disputedFiles = [...new Set(redFindings.map((f) => f.file.split(':')[0]))];
   const diff = getWorktreeFullDiff(workerResult.worktreePath);
 
   const prompt = `You are the final arbiter in a code review. The a2a review found RED (blocking) issues.
@@ -431,7 +122,7 @@ async function runSonnetArbitration(
 TASK: ${task.description}
 
 DISPUTED RED FINDINGS (only these need your judgment):
-${redFindings.map(f => `- [${f.lens}] ${f.file}: ${f.issue}`).join('\n')}
+${redFindings.map((f) => `- [${f.lens}] ${f.file}: ${f.issue}`).join('\n')}
 
 FILES WITH DISPUTES: ${disputedFiles.join(', ')}
 
@@ -459,34 +150,31 @@ Rules:
 - decision=modify: Convert some red to yellow, provide guidance
 - Be decisive — this is the final review stage`;
 
+  const arbitrationModel = resolveTierModel(
+    hiveConfig.tiers.reviewer.arbitration.model,
+    () => fallbackRegistry.selectForArbitration(),
+    fallbackRegistry,
+    'review',
+  );
+  console.log(`    ⚖️ Arbitration model: ${arbitrationModel}`);
+
   let response: string;
   try {
-    response = await queryModelText(prompt, workerResult.worktreePath, hiveConfig.review_tier, undefined, 1);
+    response = await queryModelText(prompt, workerResult.worktreePath, arbitrationModel, undefined, 1);
   } catch (err: any) {
     try {
-      const fallbackModel = resolveFallback(
-        hiveConfig.review_tier,
-        classifyReviewError(err),
-        task,
-        hiveConfig,
-        fallbackRegistry,
-      );
-      const fallbackProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
-      response = fallbackProvider
-        ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fallbackProvider, 2)
+      const fallbackModel = resolveFallback(arbitrationModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
+      const fbProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
+      response = fbProvider
+        ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fbProvider, 2)
         : await queryModelText(prompt, workerResult.worktreePath, fallbackModel, undefined, 1);
-    } catch (fallbackErr: any) {
-      console.error(`    ❌ Sonnet arbitration failed: ${fallbackErr.message?.slice(0, 100)}`);
+    } catch (fbErr: any) {
+      console.error(`    ❌ Arbitration failed: ${fbErr.message?.slice(0, 100)}`);
       return {
         findings: redFindings.map((f, i) => ({
-          ...f,
-          id: i + 1,
-          lens: 'sonnet',
-          decision: 'flag',
-          decision_reason: 'Arbitration infrastructure failure',
+          ...f, id: i + 1, lens: 'sonnet', decision: 'flag', decision_reason: 'Arbitration infrastructure failure',
         })),
-        passed: false,
-        infraFailure: true,
+        passed: false, infraFailure: true,
       };
     }
   }
@@ -494,34 +182,28 @@ Rules:
   try {
     const jsonPayload = extractJsonObject(response);
     if (!jsonPayload) throw new Error('No JSON in response');
-
     const parsed = JSON.parse(jsonPayload);
     const decision = parsed.decision || 'accept';
 
     const findings: ReviewFinding[] = (parsed.confirmed_findings || []).map((f: any, i: number) => ({
       id: i + 1,
       severity: (f.severity || 'red') as FindingSeverity,
-      lens: 'sonnet',
-      file: f.file || 'unknown',
+      lens: 'sonnet', file: f.file || 'unknown',
       line: parseInt(f.file?.split(':')[1]) || undefined,
-      issue: f.issue || 'Issue confirmed by Sonnet',
+      issue: f.issue || 'Issue confirmed by arbitration',
       decision: decision === 'reject' ? 'dismiss' : 'flag',
       decision_reason: parsed.rationale,
     }));
 
     return {
-      findings,
-      passed: decision === 'reject' || decision === 'modify',
+      findings, passed: decision === 'reject' || decision === 'modify',
       fixInstructions: decision === 'accept' ? parsed.fix_instructions : undefined,
     };
-  } catch (err) {
-    console.error('    ⚠️ Could not parse Sonnet arbitration, defaulting to fail');
+  } catch {
+    console.error('    ⚠️ Could not parse arbitration, defaulting to fail');
     return {
       findings: redFindings.map((f, i) => ({
-        ...f,
-        id: i + 1,
-        lens: 'sonnet',
-        decision: 'flag',
+        ...f, id: i + 1, lens: 'sonnet', decision: 'flag',
         decision_reason: 'Arbitration parse failed, defaulting to accept original findings',
       })),
       passed: false,
@@ -529,13 +211,11 @@ Rules:
   }
 }
 
-// Stage 4: Opus final review (rarely triggered)
-async function runOpusFinalReview(
-  workerResult: WorkerResult,
-  task: SubTask,
-  previousFindings: ReviewFinding[],
-  fallbackRegistry: ModelRegistry,
-  hiveConfig: HiveConfig,
+// ── Stage 4: Final review (rare) ──
+
+async function runFinalReview(
+  workerResult: WorkerResult, task: SubTask,
+  previousFindings: ReviewFinding[], fallbackRegistry: ModelRegistry, hiveConfig: HiveConfig,
 ): Promise<{ findings: ReviewFinding[]; passed: boolean; infraFailure?: boolean }> {
   const diff = getWorktreeFullDiff(workerResult.worktreePath);
 
@@ -545,7 +225,7 @@ TASK: ${task.description}
 COMPLEXITY: ${task.complexity}
 
 PREVIOUS REVIEW FINDINGS:
-${previousFindings.map(f => `- [${f.severity}] ${f.file}: ${f.issue}`).join('\n')}
+${previousFindings.map((f) => `- [${f.severity}] ${f.file}: ${f.issue}`).join('\n')}
 
 FULL DIFF:
 \`\`\`
@@ -568,24 +248,26 @@ Rules:
 - passed=false: Code must be fixed before merging
 - You may override any previous finding — explain why`;
 
+  const finalReviewModel = resolveTierModel(
+    hiveConfig.tiers.reviewer.final_review.model,
+    () => fallbackRegistry.selectForFinalReview(),
+    fallbackRegistry,
+    'review',
+  );
+  console.log(`    🔬 Final review model: ${finalReviewModel}`);
+
   let response: string;
   try {
-    response = await queryModelText(prompt, workerResult.worktreePath, hiveConfig.high_tier, undefined, 1);
+    response = await queryModelText(prompt, workerResult.worktreePath, finalReviewModel, undefined, 1);
   } catch (err: any) {
     try {
-      const fallbackModel = resolveFallback(
-        hiveConfig.high_tier,
-        classifyReviewError(err),
-        task,
-        hiveConfig,
-        fallbackRegistry,
-      );
-      const fallbackProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
-      response = fallbackProvider
-        ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fallbackProvider, 2)
+      const fallbackModel = resolveFallback(finalReviewModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
+      const fbProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
+      response = fbProvider
+        ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fbProvider, 2)
         : await queryModelText(prompt, workerResult.worktreePath, fallbackModel, undefined, 1);
-    } catch (fallbackErr: any) {
-      console.error(`    ❌ Opus final review failed: ${fallbackErr.message?.slice(0, 100)}`);
+    } catch (fbErr: any) {
+      console.error(`    ❌ Final review failed: ${fbErr.message?.slice(0, 100)}`);
       return { findings: previousFindings, passed: false, infraFailure: true };
     }
   }
@@ -593,34 +275,29 @@ Rules:
   try {
     const jsonPayload = extractJsonObject(response);
     if (!jsonPayload) throw new Error('No JSON in response');
-
     const parsed = JSON.parse(jsonPayload);
     const passed = parsed.passed === true;
 
     const findings: ReviewFinding[] = (parsed.override_findings || []).map((f: any, i: number) => ({
-      id: i + 1,
-      severity: (f.severity || 'yellow') as FindingSeverity,
-      lens: 'opus',
-      file: f.file || 'unknown',
+      id: i + 1, severity: (f.severity || 'yellow') as FindingSeverity,
+      lens: 'opus', file: f.file || 'unknown',
       line: parseInt(f.file?.split(':')[1]) || undefined,
-      issue: f.issue || 'Finding from Opus final review',
-      decision: passed ? 'dismiss' : 'flag',
-      decision_reason: parsed.rationale,
+      issue: f.issue || 'Finding from final review',
+      decision: passed ? 'dismiss' : 'flag', decision_reason: parsed.rationale,
     }));
 
     return { findings, passed };
-  } catch (err) {
-    console.error('    ⚠️ Could not parse Opus review, defaulting to previous findings');
+  } catch {
+    console.error('    ⚠️ Could not parse final review, defaulting to previous findings');
     return { findings: previousFindings, passed: false };
   }
 }
 
-// Main review cascade
+// ── Main review cascade ──
+
 export async function reviewCascade(
-  workerResult: WorkerResult,
-  task: SubTask,
-  _plan: TaskPlan,
-  registry: ModelRegistry,
+  workerResult: WorkerResult, task: SubTask,
+  _plan: TaskPlan, registry: ModelRegistry,
 ): Promise<ReviewResult> {
   const startTime = Date.now();
   const findings: ReviewFinding[] = [];
@@ -628,28 +305,22 @@ export async function reviewCascade(
   const fingerprint = buildTaskFingerprint(task);
   const reviewPolicy = loadReviewPolicy();
   const hiveConfig = loadConfig(workerResult.worktreePath);
-  const fallbackRegistry = registry;
 
   const finalizeReview = (
     result: ReviewResult,
-    options: { skipScoreUpdate?: boolean; infraFailure?: boolean } = {},
+    opts: { skipScoreUpdate?: boolean; infraFailure?: boolean } = {},
   ): ReviewResult => {
-    const workerInfraFailure = !workerResult.success
+    const workerInfra = !workerResult.success
       && workerResult.changedFiles.length === 0
-      && workerResult.output.some((message) => looksLikeInfrastructureFailure(message.content));
-    const reviewInfraFailure = result.findings.some((finding) =>
-      finding.issue.startsWith('Review failed:') && looksLikeInfrastructureFailure(finding.issue),
+      && workerResult.output.some((m) => looksLikeInfrastructureFailure(m.content));
+    const reviewInfra = result.findings.some((f) =>
+      f.issue.startsWith('Review failed:') && looksLikeInfrastructureFailure(f.issue),
     );
 
-    if (!options.skipScoreUpdate && !options.infraFailure && !workerInfraFailure && !reviewInfraFailure) {
+    if (!opts.skipScoreUpdate && !opts.infraFailure && !workerInfra && !reviewInfra) {
       registry.updateScore(
-        workerResult.model,
-        result.passed,
-        result.iterations,
-        task.complexity,
-        fingerprint.role,
-        fingerprint.needs_fast_turnaround,
-        fingerprint.needs_strict_boundary,
+        workerResult.model, result.passed, result.iterations,
+        task.complexity, fingerprint.role, fingerprint.needs_fast_turnaround, fingerprint.needs_strict_boundary,
       );
     }
     return result;
@@ -657,153 +328,98 @@ export async function reviewCascade(
 
   console.log(`\n📋 Starting review for ${workerResult.taskId}`);
 
-  // Check for auto-pass
+  // Auto-pass check
   if (shouldAutoPass(task, workerResult.changedFiles, reviewPolicy)) {
     console.log('    ✅ Auto-pass: docs/comments only');
     return finalizeReview({
-      taskId: workerResult.taskId,
-      final_stage: 'cross-review',
-      passed: true,
-      findings: [],
-      iterations: 0,
-      duration_ms: Date.now() - startTime,
+      taskId: workerResult.taskId, final_stage: 'cross-review', passed: true,
+      findings: [], iterations: 0, duration_ms: Date.now() - startTime,
     }, { skipScoreUpdate: true });
   }
 
   // Stage 1: Cross-review
-  const reviewerModel = registry.selectReviewer();
-  const reviewerProvider = normalizeProviderId(registry.getModel(reviewerModel))
-    ?? normalizeProviderId(fallbackRegistry.getModel(reviewerModel));
-
-  const crossResult = await runCrossReview(
-    workerResult,
-    task,
-    reviewerModel,
-    reviewerProvider,
-    fallbackRegistry,
-    hiveConfig,
+  const reviewerModel = resolveTierModel(
+    hiveConfig.tiers.reviewer.cross_review.model,
+    () => registry.selectCrossReviewer(workerResult.model),
+    registry,
+    'review',
   );
+  const reviewerProvider = normalizeProviderId(registry.getModel(reviewerModel));
+  const crossResult = await runCrossReview(workerResult, task, reviewerModel, reviewerProvider, registry, hiveConfig);
 
-  // Update findings from cross-review
   findings.push(...crossResult.flagged_issues.map<ReviewFinding>((issue, i) => ({
-    id: i + 1,
-    severity: issue.severity,
-    lens: 'cross-review',
-    file: issue.file,
-    line: issue.line,
-    issue: issue.issue,
+    id: i + 1, severity: issue.severity, lens: 'cross-review',
+    file: issue.file, line: issue.line, issue: issue.issue,
     decision: crossResult.passed ? 'dismiss' : 'flag',
     decision_reason: `Confidence: ${crossResult.confidence}`,
   })));
 
-  // Check if we can skip remaining stages
-  const canSkipRemaining = crossResult.passed &&
-    crossResult.confidence >= reviewPolicy.cross_review.min_confidence_to_skip &&
-    isComplexityAtOrBelow(task.complexity, reviewPolicy.cross_review.max_complexity_for_skip);
+  const canSkip = crossResult.passed
+    && crossResult.confidence >= reviewPolicy.cross_review.min_confidence_to_skip
+    && isComplexityAtOrBelow(task.complexity, reviewPolicy.cross_review.max_complexity_for_skip);
 
-  if (canSkipRemaining) {
+  if (canSkip) {
     console.log(`    ✅ Cross-review passed with high confidence, skipping a2a`);
     return finalizeReview({
-      taskId: workerResult.taskId,
-      final_stage: 'cross-review',
-      passed: true,
-      findings,
-      iterations: 1,
-      duration_ms: Date.now() - startTime,
+      taskId: workerResult.taskId, final_stage: 'cross-review', passed: true,
+      findings, iterations: 1, duration_ms: Date.now() - startTime,
     });
   }
 
   // Stage 2: a2a 3-lens review
   const a2aResult = await runA2aReview(workerResult, task);
-
-  // Add a2a findings
   findings.push(...a2aResult.all_findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
 
   if (a2aResult.verdict === 'PASS') {
     console.log('    ✅ a2a review: PASS');
     return finalizeReview({
-      taskId: workerResult.taskId,
-      final_stage: 'a2a-lenses',
-      passed: true,
-      verdict: a2aResult.verdict,
-      findings,
-      iterations: 1,
-      duration_ms: Date.now() - startTime,
+      taskId: workerResult.taskId, final_stage: 'a2a-lenses', passed: true,
+      verdict: a2aResult.verdict, findings, iterations: 1, duration_ms: Date.now() - startTime,
     });
   }
 
   if (a2aResult.verdict === 'REJECT') {
     console.log('    ❌ a2a review: REJECT — sending back to worker');
     return finalizeReview({
-      taskId: workerResult.taskId,
-      final_stage: 'a2a-lenses',
-      passed: false,
-      verdict: a2aResult.verdict,
-      findings,
-      iterations: 1,
-      duration_ms: Date.now() - startTime,
+      taskId: workerResult.taskId, final_stage: 'a2a-lenses', passed: false,
+      verdict: a2aResult.verdict, findings, iterations: 1, duration_ms: Date.now() - startTime,
     });
   }
 
-  // CONTESTED → Stage 3: Sonnet arbitration
+  // CONTESTED → Stage 3: Arbitration
   iterations = 2;
-
-  const arbitration = await runSonnetArbitration(
-    workerResult,
-    task,
-    a2aResult,
-    1,
-    fallbackRegistry,
-    hiveConfig,
-  );
+  const arbitration = await runArbitration(workerResult, task, a2aResult, registry, hiveConfig);
 
   if (arbitration.passed) {
-    console.log('    ✅ Sonnet arbitration: passed');
-    findings.push(...arbitration.findings.map((finding, i) => ({ ...finding, id: findings.length + i + 1 })));
+    console.log('    ✅ Arbitration: passed');
+    findings.push(...arbitration.findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
     return finalizeReview({
-      taskId: workerResult.taskId,
-      final_stage: 'sonnet',
-      passed: true,
-      verdict: 'PASS',
-      findings,
-      iterations,
-      duration_ms: Date.now() - startTime,
+      taskId: workerResult.taskId, final_stage: 'sonnet', passed: true,
+      verdict: 'PASS', findings, iterations, duration_ms: Date.now() - startTime,
     });
   }
 
-  // Sonnet says fail — try fix iteration or escalate
   if (arbitration.fixInstructions) {
-    console.log('    ⚠️ Sonnet requests fixes, would re-run');
-    findings.push(...arbitration.findings.map((finding, i) => ({ ...finding, id: findings.length + i + 1 })));
+    console.log('    ⚠️ Arbitration requests fixes');
+    findings.push(...arbitration.findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
     return finalizeReview({
-      taskId: workerResult.taskId,
-      final_stage: 'sonnet',
-      passed: false,
-      verdict: 'REJECT',
-      findings,
-      iterations,
-      duration_ms: Date.now() - startTime,
+      taskId: workerResult.taskId, final_stage: 'sonnet', passed: false,
+      verdict: 'REJECT', findings, iterations, duration_ms: Date.now() - startTime,
     });
   }
 
-  // Stage 4: Opus final review (rare)
-  console.log('    🚀 Escalating to Opus final review...');
+  // Stage 4: Final review (rare)
+  console.log('    🚀 Escalating to final review...');
+  const finalResult = await runFinalReview(workerResult, task, findings, registry, hiveConfig);
+  findings.push(...finalResult.findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
 
-  const opusResult = await runOpusFinalReview(workerResult, task, findings, fallbackRegistry, hiveConfig);
-  findings.push(...opusResult.findings.map((finding, i) => ({ ...finding, id: findings.length + i + 1 })));
-
-  console.log(`    ${opusResult.passed ? '✅' : '❌'} Opus final review: ${opusResult.passed ? 'passed' : 'failed'}`);
+  console.log(`    ${finalResult.passed ? '✅' : '❌'} Final review: ${finalResult.passed ? 'passed' : 'failed'}`);
 
   return finalizeReview({
-    taskId: workerResult.taskId,
-    final_stage: 'opus',
-    passed: opusResult.passed,
-    verdict: opusResult.passed ? 'PASS' : 'BLOCKED',
-    findings,
-    iterations,
-    duration_ms: Date.now() - startTime,
-  }, { infraFailure: arbitration.infraFailure || opusResult.infraFailure });
+    taskId: workerResult.taskId, final_stage: 'opus',
+    passed: finalResult.passed, verdict: finalResult.passed ? 'PASS' : 'BLOCKED',
+    findings, iterations, duration_ms: Date.now() - startTime,
+  }, { infraFailure: arbitration.infraFailure || finalResult.infraFailure });
 }
 
-// Re-export types for convenience
 export type { ReviewResult, ReviewFinding };

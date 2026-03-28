@@ -5,7 +5,8 @@ export { ModelRegistry } from './model-registry.js';
 export { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from './planner.js';
 export { spawnWorker, dispatchBatch, type DispatchResult } from './dispatcher.js';
 export { reviewCascade } from './reviewer.js';
-export { resolveProvider, checkProviderHealth } from './provider-resolver.js';
+export { resolveProvider, resolveProviderForModel, checkProviderHealth } from './provider-resolver.js';
+export { loadMmsRoutes, resolveModelRoute, resolveModelRouteFull, resolveModelByPrefix, isMmsAvailable } from './mms-routes-loader.js';
 export { translateToEnglish } from './translator.js';
 export { reportResults } from './reporter.js';
 export { runA2aReview } from './a2a-bridge.js';
@@ -36,11 +37,18 @@ async function main() {
   if (translateFlag && goal) {
     const { translateToEnglish } = await import('./translator.js');
     const { ModelRegistry } = await import('./model-registry.js');
+    const { loadConfig: loadHiveConfig, resolveTierModel } = await import('./hive-config.js');
     const registry = new (ModelRegistry as any)();
-    const all = registry.getAll();
-    const translator = all.sort((a: any, b: any) => b.chinese - a.chinese)[0];
-    console.log(`\n🌐 Translating with ${translator.id}...`);
-    const result = await translateToEnglish(goal, translator.id, translator.provider);
+    const config = loadHiveConfig(cwd);
+    const translatorModel = resolveTierModel(
+      config.tiers.translator.model,
+      () => registry.selectTranslator(),
+      registry,
+      'translation',
+    );
+    const translatorInfo = registry.get(translatorModel);
+    console.log(`\n🌐 Translating with ${translatorModel}...`);
+    const result = await translateToEnglish(goal, translatorModel, translatorInfo?.provider || translatorModel);
     console.log(`📝 English: ${result.english}\n`);
     goal = result.english;
   }
@@ -62,16 +70,7 @@ async function main() {
     console.log(`\n📋 Plan: ${plan.tasks.length} tasks`);
     console.log(`📋 Groups: ${plan.execution_order.map((g: string[]) => `[${g.join(',')}]`).join(' → ')}\n`);
 
-    const { worker_results: workerResults, opus_tasks } = await dispatchBatch(plan, registry);
-
-    // Handle opus tasks
-    if (opus_tasks.length > 0) {
-      console.log(`\n⚠️  ${opus_tasks.length} task(s) require Claude to handle directly:`);
-      for (const t of opus_tasks) {
-        console.log(`   - [${t.id}] ${t.description} (complexity: ${t.complexity})`);
-      }
-      console.log('   These tasks were skipped by the dispatcher.\n');
-    }
+    const { worker_results: workerResults } = await dispatchBatch(plan, registry);
 
     // Review
     const reviewResults = await Promise.all(
@@ -81,9 +80,18 @@ async function main() {
       }),
     );
 
-    // Report
-    const all = registry.getAll();
-    const reporter = all.sort((a: any, b: any) => b.chinese - a.chinese)[0];
+    // Report — use tiers config
+    const { loadConfig: loadHiveConfig, resolveTierModel } = await import('./hive-config.js');
+    const config = loadHiveConfig(cwd);
+    const reporterModel = resolveTierModel(
+      config.tiers.reporter.model,
+      () => registry.selectForReporter(),
+      registry,
+      'general',
+    );
+    const reporterInfo = registry.get(reporterModel);
+    const reporterProvider = reporterInfo?.provider || reporterModel;
+
     const report = await reportResults(
       {
         plan,
@@ -96,8 +104,8 @@ async function main() {
           domestic_tokens: 0, estimated_cost_usd: 0,
         },
       },
-      reporter?.id || 'kimi-k2.5',
-      'kimi-codingplan',
+      reporterModel,
+      reporterProvider,
       { language: 'zh', format: 'summary', target: 'stdout' },
     );
     console.log(report);

@@ -39,7 +39,7 @@ async function main() {
   ok('getAll() returns models', allModels.length >= 5, `${allModels.length} models`);
   ok('each model has required fields', allModels.every(m => m.id && m.provider && m.coding > 0), '');
 
-  const known = ['qwen-3.5', 'qwen-max', 'kimi-k2.5', 'glm-5-turbo', 'minimax-2.7', 'deepseek-v3'];
+  const known = ['qwen-3.5', 'qwen-max', 'kimi-for-coding', 'kimi-k2.5', 'glm-5-turbo', 'MiniMax-M2.7'];
   for (const id of known) {
     ok(`get("${id}") exists`, !!registry.get(id));
   }
@@ -53,11 +53,11 @@ async function main() {
 
   const expectedTiers: Record<string, string[]> = {
     'glm-5-turbo': ['fast', 'balanced'],
-    'minimax-2.7': ['strong'],
+    'MiniMax-M2.7': ['strong'],
     'qwen-3.5': ['balanced', 'strong'],
     'qwen-max': ['strong'],
+    'kimi-for-coding': ['balanced', 'strong'],
     'kimi-k2.5': ['balanced', 'strong'],
-    'deepseek-v3': ['balanced'],  // static fallback
   };
   for (const [id, acceptable] of Object.entries(expectedTiers)) {
     const tier = registry.getSpeedTier(id);
@@ -118,8 +118,8 @@ async function main() {
 
   // ── Phase 6: Cross-reviewer & discuss partner ──
   console.log('\nPhase 6: Cross-Review & Discuss');
-  const reviewer = registry.selectCrossReviewer('kimi-k2.5');
-  ok('selectCrossReviewer avoids same model', reviewer !== 'kimi-k2.5', reviewer);
+  const reviewer = registry.selectCrossReviewer('kimi-for-coding');
+  ok('selectCrossReviewer avoids same model', reviewer !== 'kimi-for-coding', reviewer);
   const partner = registry.selectDiscussPartner('qwen-3.5');
   ok('selectDiscussPartner avoids same model', partner !== 'qwen-3.5', partner);
 
