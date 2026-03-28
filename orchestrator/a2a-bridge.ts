@@ -29,13 +29,9 @@ function createHiveCaller(): ModelCaller {
       let apiKey = options.apiKey;
 
       if (!baseUrl) {
-        try {
-          const resolved = resolveProvider('', options.modelId);
-          baseUrl = resolved.baseUrl;
-          apiKey = resolved.apiKey;
-        } catch {
-          // Fall through to default caller (uses options as-is)
-        }
+        const resolved = resolveProvider('', options.modelId);
+        baseUrl = resolved.baseUrl;
+        apiKey = resolved.apiKey;
       }
 
       return defaultCaller.queryText(prompt, {

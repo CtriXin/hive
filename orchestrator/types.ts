@@ -155,6 +155,7 @@ export interface ReviewResult {
   findings: ReviewFinding[];
   iterations: number;
   duration_ms: number;
+  token_stages?: StageTokenUsage[];
 }
 
 export interface ReviewFinding {
@@ -211,6 +212,7 @@ export interface OrchestratorResult {
     domestic_tokens: number;
     estimated_cost_usd: number;
   };
+  token_breakdown?: TokenBreakdown;
 }
 
 // ── Provider Registry (替代 MMS credentials.sh) ──
@@ -237,6 +239,35 @@ export interface TranslationResult {
   confidence: number;
   translator_model: string;
   duration_ms: number;
+}
+
+// ── Token Breakdown ──
+
+export interface StageTokenUsage {
+  stage: string;  // 'planner' | 'worker:task-a' | 'cross-review:task-a' | 'a2a:task-a' | 'reporter'
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface TokenBreakdown {
+  stages: StageTokenUsage[];
+  total_input: number;
+  total_output: number;
+  actual_cost_usd: number;
+  claude_equivalent_usd: number;
+  savings_usd: number;
+}
+
+// ── Plan Checkpoint (P1: result persistence + resume) ──
+
+export interface PlanCheckpoint {
+  plan_id: string;
+  completed_groups: number;
+  completed_task_ids: string[];
+  context_cache: Record<string, ContextPacket>;
+  worker_results_refs: string[];
+  updated_at: string;
 }
 
 // ── Reporter ──

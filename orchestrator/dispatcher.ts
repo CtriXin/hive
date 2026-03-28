@@ -14,6 +14,7 @@ import { triggerDiscussion } from './discuss-bridge.js';
 import { createWorktree, getWorktreeDiff } from './worktree-manager.js';
 import { buildContextPacket, formatContextForWorker } from './context-recycler.js';
 import { loadConfig, resolveFallback, recordSpending, type FailureType } from './hive-config.js';
+import { saveWorkerResult, saveCheckpoint, loadCheckpoint, loadWorkerResult } from './result-store.js';
 import { getRegistry } from './model-registry.js';
 import { buildSdkEnv } from './project-paths.js';
 import type { SDKMessage } from '@anthropic-ai/claude-code';
@@ -284,14 +285,35 @@ async function handleDiscussTrigger(
 export async function dispatchBatch(
   plan: TaskPlan,
   registry: any,
+  resumePlanId?: string,
 ): Promise<DispatchResult> {
   const worker_results: WorkerResult[] = [];
   const contextCache = new Map<string, ContextPacket>();
+  let startGroupIndex = 0;
+
+  // Resume: load checkpoint and skip completed groups
+  if (resumePlanId) {
+    const checkpoint = loadCheckpoint(resumePlanId, plan.cwd);
+    if (checkpoint) {
+      startGroupIndex = checkpoint.completed_groups;
+      // Restore contextCache
+      for (const [key, packet] of Object.entries(checkpoint.context_cache)) {
+        contextCache.set(key, packet);
+      }
+      // Restore prior worker results
+      for (const taskId of checkpoint.completed_task_ids) {
+        const prior = loadWorkerResult(resumePlanId, plan.cwd, taskId);
+        if (prior) worker_results.push(prior);
+      }
+      console.log(`♻️ Resuming plan from group ${startGroupIndex}, ${checkpoint.completed_task_ids.length} tasks already done`);
+    }
+  }
 
   // Update manifest
   await updateManifest(plan, 'executing');
 
-  for (const group of plan.execution_order) {
+  for (let gi = startGroupIndex; gi < plan.execution_order.length; gi++) {
+    const group = plan.execution_order[gi];
     const tasksInGroup: SubTask[] = [];
     for (const taskId of group) {
       const task = plan.tasks.find(t => t.id === taskId);
@@ -364,6 +386,11 @@ export async function dispatchBatch(
 
       worker_results.push(...results);
 
+      // Persist each worker result to disk
+      for (const result of results) {
+        saveWorkerResult(plan.id, plan.cwd, result);
+      }
+
       // Cache context for downstream tasks
       // Fix #3: buildContextPacket(result, task) — match Plan's (WorkerResult, SubTask) signature
       for (const result of results) {
@@ -376,6 +403,16 @@ export async function dispatchBatch(
 
     // Update plan status
     await updatePlanStatus(plan, group, worker_results);
+
+    // Write checkpoint after each group
+    saveCheckpoint(plan.id, plan.cwd, {
+      plan_id: plan.id,
+      completed_groups: gi + 1,
+      completed_task_ids: worker_results.filter(r => r.success).map(r => r.taskId),
+      context_cache: Object.fromEntries(contextCache),
+      worker_results_refs: worker_results.map(r => r.taskId),
+      updated_at: new Date().toISOString(),
+    });
   }
 
   // Record spending: sum token costs across all workers

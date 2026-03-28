@@ -2,6 +2,7 @@
 import type {
   WorkerResult, SubTask, TaskPlan, ReviewResult, ReviewFinding,
   CrossReviewResult, A2aReviewResult, FindingSeverity, HiveConfig,
+  StageTokenUsage,
 } from './types.js';
 import { loadConfig, resolveFallback, resolveTierModel, type FailureType } from './hive-config.js';
 import { runA2aReview } from './a2a-bridge.js';
@@ -16,11 +17,15 @@ import {
 
 // ── Stage 1: Cross-review ──
 
+interface CrossReviewWithTokens extends CrossReviewResult {
+  tokenUsage: { input: number; output: number };
+}
+
 async function runCrossReview(
   workerResult: WorkerResult, task: SubTask,
   reviewerModel: string, reviewerProvider: string | undefined,
   fallbackRegistry: ModelRegistry, hiveConfig: HiveConfig,
-): Promise<CrossReviewResult> {
+): Promise<CrossReviewWithTokens> {
   const diff = getWorktreeFullDiff(workerResult.worktreePath);
 
   const prompt = `You are reviewing code changes from another AI model. Be thorough but constructive.
@@ -52,21 +57,22 @@ Rules:
   console.log(`    🔍 Cross-review: ${workerResult.model} → ${reviewerModel}`);
 
   try {
-    let rawOutput: string;
+    let qr;
     try {
-      rawOutput = await queryModelText(prompt, workerResult.worktreePath, reviewerModel, reviewerProvider, 2);
+      qr = await queryModelText(prompt, workerResult.worktreePath, reviewerModel, reviewerProvider, 2);
     } catch (err: any) {
       const fallbackModel = resolveFallback(reviewerModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
       const fallbackProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
-      rawOutput = await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fallbackProvider, 2);
+      qr = await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fallbackProvider, 2);
     }
 
-    const jsonPayload = extractJsonObject(rawOutput);
+    const jsonPayload = extractJsonObject(qr.text);
     if (!jsonPayload) {
       return {
         passed: false, confidence: 0,
         flagged_issues: [{ severity: 'red', file: 'review-response', issue: 'Could not parse review response' }],
         reviewer_model: reviewerModel,
+        tokenUsage: qr.tokenUsage,
       };
     }
 
@@ -96,6 +102,7 @@ Rules:
         };
       }),
       reviewer_model: reviewerModel,
+      tokenUsage: qr.tokenUsage,
     };
   } catch (err: any) {
     console.error(`    ❌ Cross-review failed: ${err.message?.slice(0, 100)}`);
@@ -103,16 +110,26 @@ Rules:
       passed: false, confidence: 0,
       flagged_issues: [{ severity: 'red', file: 'review-response', issue: `Review failed: ${err.message?.slice(0, 100)}` }],
       reviewer_model: reviewerModel,
+      tokenUsage: { input: 0, output: 0 },
     };
   }
 }
 
 // ── Stage 3: Arbitration ──
 
+interface ArbitrationResult {
+  findings: ReviewFinding[];
+  passed: boolean;
+  fixInstructions?: string;
+  infraFailure?: boolean;
+  model: string;
+  tokenUsage: { input: number; output: number };
+}
+
 async function runArbitration(
   workerResult: WorkerResult, task: SubTask,
   a2aResult: A2aReviewResult, fallbackRegistry: ModelRegistry, hiveConfig: HiveConfig,
-): Promise<{ findings: ReviewFinding[]; passed: boolean; fixInstructions?: string; infraFailure?: boolean }> {
+): Promise<ArbitrationResult> {
   const redFindings = a2aResult.all_findings.filter((f) => f.severity === 'red');
   const disputedFiles = [...new Set(redFindings.map((f) => f.file.split(':')[0]))];
   const diff = getWorktreeFullDiff(workerResult.worktreePath);
@@ -158,14 +175,14 @@ Rules:
   );
   console.log(`    ⚖️ Arbitration model: ${arbitrationModel}`);
 
-  let response: string;
+  let qr;
   try {
-    response = await queryModelText(prompt, workerResult.worktreePath, arbitrationModel, undefined, 1);
+    qr = await queryModelText(prompt, workerResult.worktreePath, arbitrationModel, undefined, 1);
   } catch (err: any) {
     try {
       const fallbackModel = resolveFallback(arbitrationModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
       const fbProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
-      response = fbProvider
+      qr = fbProvider
         ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fbProvider, 2)
         : await queryModelText(prompt, workerResult.worktreePath, fallbackModel, undefined, 1);
     } catch (fbErr: any) {
@@ -175,12 +192,13 @@ Rules:
           ...f, id: i + 1, lens: 'sonnet', decision: 'flag', decision_reason: 'Arbitration infrastructure failure',
         })),
         passed: false, infraFailure: true,
+        model: arbitrationModel, tokenUsage: { input: 0, output: 0 },
       };
     }
   }
 
   try {
-    const jsonPayload = extractJsonObject(response);
+    const jsonPayload = extractJsonObject(qr.text);
     if (!jsonPayload) throw new Error('No JSON in response');
     const parsed = JSON.parse(jsonPayload);
     const decision = parsed.decision || 'accept';
@@ -198,6 +216,7 @@ Rules:
     return {
       findings, passed: decision === 'reject' || decision === 'modify',
       fixInstructions: decision === 'accept' ? parsed.fix_instructions : undefined,
+      model: arbitrationModel, tokenUsage: qr.tokenUsage,
     };
   } catch {
     console.error('    ⚠️ Could not parse arbitration, defaulting to fail');
@@ -207,16 +226,25 @@ Rules:
         decision_reason: 'Arbitration parse failed, defaulting to accept original findings',
       })),
       passed: false,
+      model: arbitrationModel, tokenUsage: qr.tokenUsage,
     };
   }
 }
 
 // ── Stage 4: Final review (rare) ──
 
+interface FinalReviewResult {
+  findings: ReviewFinding[];
+  passed: boolean;
+  infraFailure?: boolean;
+  model: string;
+  tokenUsage: { input: number; output: number };
+}
+
 async function runFinalReview(
   workerResult: WorkerResult, task: SubTask,
   previousFindings: ReviewFinding[], fallbackRegistry: ModelRegistry, hiveConfig: HiveConfig,
-): Promise<{ findings: ReviewFinding[]; passed: boolean; infraFailure?: boolean }> {
+): Promise<FinalReviewResult> {
   const diff = getWorktreeFullDiff(workerResult.worktreePath);
 
   const prompt = `You are the final authority on code quality. This code has been through multiple review stages.
@@ -256,24 +284,27 @@ Rules:
   );
   console.log(`    🔬 Final review model: ${finalReviewModel}`);
 
-  let response: string;
+  let qr;
   try {
-    response = await queryModelText(prompt, workerResult.worktreePath, finalReviewModel, undefined, 1);
+    qr = await queryModelText(prompt, workerResult.worktreePath, finalReviewModel, undefined, 1);
   } catch (err: any) {
     try {
       const fallbackModel = resolveFallback(finalReviewModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
       const fbProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
-      response = fbProvider
+      qr = fbProvider
         ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fbProvider, 2)
         : await queryModelText(prompt, workerResult.worktreePath, fallbackModel, undefined, 1);
     } catch (fbErr: any) {
       console.error(`    ❌ Final review failed: ${fbErr.message?.slice(0, 100)}`);
-      return { findings: previousFindings, passed: false, infraFailure: true };
+      return {
+        findings: previousFindings, passed: false, infraFailure: true,
+        model: finalReviewModel, tokenUsage: { input: 0, output: 0 },
+      };
     }
   }
 
   try {
-    const jsonPayload = extractJsonObject(response);
+    const jsonPayload = extractJsonObject(qr.text);
     if (!jsonPayload) throw new Error('No JSON in response');
     const parsed = JSON.parse(jsonPayload);
     const passed = parsed.passed === true;
@@ -286,10 +317,13 @@ Rules:
       decision: passed ? 'dismiss' : 'flag', decision_reason: parsed.rationale,
     }));
 
-    return { findings, passed };
+    return { findings, passed, model: finalReviewModel, tokenUsage: qr.tokenUsage };
   } catch {
     console.error('    ⚠️ Could not parse final review, defaulting to previous findings');
-    return { findings: previousFindings, passed: false };
+    return {
+      findings: previousFindings, passed: false,
+      model: finalReviewModel, tokenUsage: qr.tokenUsage,
+    };
   }
 }
 
@@ -301,6 +335,7 @@ export async function reviewCascade(
 ): Promise<ReviewResult> {
   const startTime = Date.now();
   const findings: ReviewFinding[] = [];
+  const tokenStages: StageTokenUsage[] = [];
   let iterations = 0;
   const fingerprint = buildTaskFingerprint(task);
   const reviewPolicy = loadReviewPolicy();
@@ -323,6 +358,7 @@ export async function reviewCascade(
         task.complexity, fingerprint.role, fingerprint.needs_fast_turnaround, fingerprint.needs_strict_boundary,
       );
     }
+    result.token_stages = tokenStages;
     return result;
   };
 
@@ -347,6 +383,13 @@ export async function reviewCascade(
   const reviewerProvider = normalizeProviderId(registry.getModel(reviewerModel));
   const crossResult = await runCrossReview(workerResult, task, reviewerModel, reviewerProvider, registry, hiveConfig);
 
+  tokenStages.push({
+    stage: `cross-review:${workerResult.taskId}`,
+    model: reviewerModel,
+    input_tokens: crossResult.tokenUsage.input,
+    output_tokens: crossResult.tokenUsage.output,
+  });
+
   findings.push(...crossResult.flagged_issues.map<ReviewFinding>((issue, i) => ({
     id: i + 1, severity: issue.severity, lens: 'cross-review',
     file: issue.file, line: issue.line, issue: issue.issue,
@@ -370,6 +413,14 @@ export async function reviewCascade(
   const a2aResult = await runA2aReview(workerResult, task);
   findings.push(...a2aResult.all_findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
 
+  // a2a token tracking: hive-discuss doesn't expose token usage yet, record zero
+  tokenStages.push({
+    stage: `a2a:${workerResult.taskId}`,
+    model: 'a2a-lenses',
+    input_tokens: 0,
+    output_tokens: 0,
+  });
+
   if (a2aResult.verdict === 'PASS') {
     console.log('    ✅ a2a review: PASS');
     return finalizeReview({
@@ -389,6 +440,13 @@ export async function reviewCascade(
   // CONTESTED → Stage 3: Arbitration
   iterations = 2;
   const arbitration = await runArbitration(workerResult, task, a2aResult, registry, hiveConfig);
+
+  tokenStages.push({
+    stage: `arbitration:${workerResult.taskId}`,
+    model: arbitration.model,
+    input_tokens: arbitration.tokenUsage.input,
+    output_tokens: arbitration.tokenUsage.output,
+  });
 
   if (arbitration.passed) {
     console.log('    ✅ Arbitration: passed');
@@ -412,6 +470,13 @@ export async function reviewCascade(
   console.log('    🚀 Escalating to final review...');
   const finalResult = await runFinalReview(workerResult, task, findings, registry, hiveConfig);
   findings.push(...finalResult.findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
+
+  tokenStages.push({
+    stage: `final-review:${workerResult.taskId}`,
+    model: finalResult.model,
+    input_tokens: finalResult.tokenUsage.input,
+    output_tokens: finalResult.tokenUsage.output,
+  });
 
   console.log(`    ${finalResult.passed ? '✅' : '❌'} Final review: ${finalResult.passed ? 'passed' : 'failed'}`);
 

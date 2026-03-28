@@ -10,7 +10,7 @@ import {
 } from './provider-resolver.js';
 import type { LegacyModelView } from './model-registry.js';
 import { resolveProjectPath, buildSdkEnv } from './project-paths.js';
-import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
+import { safeQuery, extractTextFromMessages, extractTokenUsage } from './sdk-query-safe.js';
 
 // ── Re-export shared primitives from hive-discuss ──
 
@@ -142,21 +142,22 @@ export function normalizeProviderId(modelView: LegacyModelView | undefined): str
 
 // ── Model query helper (hive-only, uses provider-resolver) ──
 
+export interface QueryModelResult {
+  text: string;
+  tokenUsage: { input: number; output: number };
+}
+
 export async function queryModelText(
   prompt: string, cwd: string, modelId: string,
   providerId?: string, maxTurns = 2, timeoutMs = 30000,
-): Promise<string> {
+): Promise<QueryModelResult> {
   let env: Record<string, string>;
   if (providerId) {
     const resolved = resolveConfiguredProvider(providerId, modelId);
     env = buildSdkEnv(modelId, resolved.baseUrl, resolved.apiKey);
   } else {
-    try {
-      const resolved = resolveProviderForModel(modelId);
-      env = buildSdkEnv(modelId, resolved.baseUrl, resolved.apiKey);
-    } catch {
-      env = buildSdkEnv(modelId);
-    }
+    const resolved = resolveProviderForModel(modelId);
+    env = buildSdkEnv(modelId, resolved.baseUrl, resolved.apiKey);
   }
 
   const result = await Promise.race([
@@ -166,5 +167,8 @@ export async function queryModelText(
     }),
   ]);
 
-  return extractTextFromMessages(result.messages);
+  return {
+    text: extractTextFromMessages(result.messages),
+    tokenUsage: extractTokenUsage(result.messages),
+  };
 }

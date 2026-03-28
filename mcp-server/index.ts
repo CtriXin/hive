@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod';
 import { execSync } from 'child_process';
-import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult } from '../orchestrator/types.js';
+import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult, StageTokenUsage, TokenBreakdown } from '../orchestrator/types.js';
 import type { DiscussPlanDiag } from '../orchestrator/discuss-bridge.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from '../orchestrator/planner.js';
 import { translateToEnglish } from '../orchestrator/translator.js';
@@ -275,17 +275,18 @@ server.tool(
 // 工具 2: execute_plan
 server.tool(
   'execute_plan',
-  'Execute a task plan and return results.',
+  'Execute a task plan and return results. Pass resume_plan_id to continue from a checkpoint.',
   {
     plan_json: z.string().describe('TaskPlan JSON'),
     report_language: z.enum(['zh', 'en']).default('zh'),
+    resume_plan_id: z.string().describe('Plan ID to resume from checkpoint').optional(),
   },
-  async ({ plan_json, report_language }) => {
+  async ({ plan_json, report_language, resume_plan_id }) => {
     const plan: TaskPlan = JSON.parse(plan_json);
     const registry = new ModelRegistry();
     const config = loadConfig(plan.cwd);
 
-    const dispatchResult = await dispatchBatch(plan, registry);
+    const dispatchResult = await dispatchBatch(plan, registry, resume_plan_id);
 
     // 执行 review cascade
     const reviewResults = await Promise.all(
@@ -337,6 +338,56 @@ server.tool(
         return { opus_tokens: opusTok, sonnet_tokens: sonnetTok, haiku_tokens: haikuTok, domestic_tokens: domesticTok, estimated_cost_usd: costUsd };
       })()
     };
+
+    // Build token breakdown
+    const stages: StageTokenUsage[] = [];
+
+    // Worker stages
+    for (const wr of dispatchResult.worker_results) {
+      stages.push({
+        stage: `worker:${wr.taskId}`,
+        model: wr.model,
+        input_tokens: wr.token_usage.input,
+        output_tokens: wr.token_usage.output,
+      });
+    }
+
+    // Review stages (collected by reviewCascade)
+    for (const rr of reviewResults) {
+      if (rr.token_stages) stages.push(...rr.token_stages);
+    }
+
+    // Calculate totals and claude savings
+    const totalInput = stages.reduce((s, t) => s + t.input_tokens, 0);
+    const totalOutput = stages.reduce((s, t) => s + t.output_tokens, 0);
+
+    // Actual cost from domestic models
+    let actualCost = 0;
+    for (const st of stages) {
+      const cap = registry.get(st.model);
+      if (cap) {
+        actualCost += (st.input_tokens * (cap.cost_per_mtok_input || 0)
+                     + st.output_tokens * (cap.cost_per_mtok_output || 0)) / 1_000_000;
+      }
+    }
+
+    // Claude equivalent: what it would cost using Sonnet for everything
+    const sonnetTier = registry.getClaudeTier('sonnet');
+    const sonnetCostPer1k = sonnetTier?.cost_per_1k || 0.003;
+    const claudeEquivalent = (totalInput + totalOutput) * sonnetCostPer1k / 1000;
+
+    orchestratorResult.token_breakdown = {
+      stages,
+      total_input: totalInput,
+      total_output: totalOutput,
+      actual_cost_usd: actualCost,
+      claude_equivalent_usd: claudeEquivalent,
+      savings_usd: claudeEquivalent - actualCost,
+    };
+
+    // Persist final result to disk
+    const { saveFinalResult } = await import('../orchestrator/result-store.js');
+    saveFinalResult(plan.id, plan.cwd, orchestratorResult);
 
     // Resolve reporter model from tiers config
     const reporterModel = resolveTierModel(

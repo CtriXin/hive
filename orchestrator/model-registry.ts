@@ -236,7 +236,7 @@ export class ModelRegistry {
     const ranked = this.rankModelsForTask({
       role: 'review', domains: ['typescript', 'tests'], complexity: 'medium',
       needs_strict_boundary: true, needs_fast_turnaround: false, is_repair_round: false,
-    });
+    }).filter((c) => !c.model.startsWith('claude-')); // Auto review = domestic only
     return ranked.find((c) => {
       const p = this.models.get(c.model)?.provider;
       return p && p !== workerProvider && !c.blocked_by?.length;
@@ -303,7 +303,7 @@ export class ModelRegistry {
     const ranked = this.rankModelsForTask({
       role: 'review', domains: ['typescript', 'integration'], complexity: 'medium-high',
       needs_strict_boundary: true, needs_fast_turnaround: false, is_repair_round: false,
-    });
+    }).filter((c) => !c.model.startsWith('claude-')); // Auto review = domestic only
 
     const selected: string[] = [];
     const seenProviders = new Set<string>();
