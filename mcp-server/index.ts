@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as z from 'zod';
 import { execSync } from 'child_process';
 import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult } from '../orchestrator/types.js';
+import type { DiscussPlanDiag } from '../orchestrator/discuss-bridge.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from '../orchestrator/planner.js';
 import { translateToEnglish } from '../orchestrator/translator.js';
 import { reportResults } from '../orchestrator/reporter.js';
@@ -230,10 +231,18 @@ server.tool(
 
     // Plan discuss (when configured)
     let planDiscussResult: PlanDiscussResult | null = null;
+    let discussDiag: DiscussPlanDiag | null = null;
     const discussMode = config.tiers.discuss?.mode || 'auto';
-    if (plan && discussMode === 'always') {
+    let discussSkipReason: string | null = null;
+    if (!plan) {
+      discussSkipReason = 'no plan generated';
+    } else if (discussMode !== 'always') {
+      discussSkipReason = `discuss.mode="${discussMode}" (need "always")`;
+    } else {
       const { discussPlan } = await import('../orchestrator/discuss-bridge.js');
-      planDiscussResult = await discussPlan(plan, plannerModel, config, registry);
+      const dr = await discussPlan(plan, plannerModel, config, registry);
+      planDiscussResult = dr.result;
+      discussDiag = dr.diag;
     }
 
     const budgetWarning = getBudgetWarning(config);
@@ -244,6 +253,12 @@ server.tool(
         text: JSON.stringify({
           plan,
           plan_discuss: planDiscussResult,
+          discuss_debug: planDiscussResult ? undefined : {
+            mode: discussMode,
+            skip_reason: discussSkipReason,
+            config_tiers_discuss: config.tiers.discuss,
+            discuss_diag: discussDiag,
+          },
           translation: translationResult,
           planner_model: plannerModel,
           planner_prompt: plannerFallbackPrompt,

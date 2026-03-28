@@ -313,12 +313,18 @@ function dedup(arr: string[]): string[] {
   return [...new Set(arr)];
 }
 
+export interface DiscussPlanDiag {
+  partners: string[];
+  partner_raw: Array<{ model: string; raw_len: number; json_found: boolean; raw_preview?: string; error?: string }>;
+  error?: string;
+}
+
 export async function discussPlan(
   plan: TaskPlan,
   plannerModel: string,
   config: HiveConfig,
   registry: ModelRegistry,
-): Promise<PlanDiscussResult | null> {
+): Promise<{ result: PlanDiscussResult | null; diag: DiscussPlanDiag }> {
   const tierModel = config.tiers.discuss?.model || 'auto';
   const models = Array.isArray(tierModel) ? tierModel : [tierModel];
 
@@ -326,6 +332,8 @@ export async function discussPlan(
     resolveTierModel(m, () => registry.selectDiscussPartner(plannerModel), registry, 'review'),
   );
   const uniquePartners = dedup(partnerIds);
+
+  const diag: DiscussPlanDiag = { partners: uniquePartners, partner_raw: [] };
 
   const taskSummary = plan.tasks.map(t =>
     `- ${t.id}: [${t.complexity}] ${t.description.slice(0, 120)} → ${t.assigned_model}`,
@@ -343,24 +351,87 @@ export async function discussPlan(
   console.log(`  💬 Plan discuss: ${uniquePartners.join(' + ')} reviewing plan...`);
 
   try {
-    // Run all partners in parallel
     const results = await Promise.all(
       uniquePartners.map(async (id) => {
-        const review = await runSinglePlanDiscuss(id, prompt, plan.cwd || process.cwd());
-        return { model: id, review };
+        try {
+          const { baseUrl, apiKey } = resolveProviderConfig(id);
+          const r = await safeQuery({
+            prompt,
+            options: {
+              cwd: plan.cwd || process.cwd(),
+              env: buildSdkEnv(id, baseUrl, apiKey),
+              maxTurns: 1,
+            },
+          });
+          const raw = extractTextFromMessages(r.messages);
+          const json = extractJsonObject(raw);
+          const review = json ? JSON.parse(json) as RawPlanReview : null;
+          diag.partner_raw.push({
+            model: id,
+            raw_len: raw.length,
+            json_found: !!json,
+            raw_preview: raw.slice(0, 200),
+          });
+          return { model: id, review };
+        } catch (err: any) {
+          diag.partner_raw.push({
+            model: id,
+            raw_len: 0,
+            json_found: false,
+            error: err.message?.slice(0, 150),
+          });
+          return { model: id, review: null };
+        }
       }),
     );
 
-    const valid = results.filter(
+    let valid = results.filter(
       (r): r is { model: string; review: RawPlanReview } => r.review !== null,
     );
 
+    // Fallback: if all partners failed, try tier fallback model
     if (valid.length === 0) {
-      console.log('  ⚠️ Plan discuss: no valid replies');
-      return null;
+      const fallbackModel = config.tiers.discuss?.fallback;
+      if (fallbackModel && !uniquePartners.includes(fallbackModel)) {
+        console.log(`  🔄 Plan discuss: primary partners failed, trying fallback ${fallbackModel}`);
+        try {
+          const { baseUrl, apiKey } = resolveProviderConfig(fallbackModel);
+          const r = await safeQuery({
+            prompt,
+            options: {
+              cwd: plan.cwd || process.cwd(),
+              env: buildSdkEnv(fallbackModel, baseUrl, apiKey),
+              maxTurns: 1,
+            },
+          });
+          const raw = extractTextFromMessages(r.messages);
+          const json = extractJsonObject(raw);
+          const review = json ? JSON.parse(json) as RawPlanReview : null;
+          diag.partner_raw.push({
+            model: `${fallbackModel}(fallback)`,
+            raw_len: raw.length,
+            json_found: !!json,
+            raw_preview: raw.slice(0, 200),
+          });
+          if (review) {
+            valid = [{ model: fallbackModel, review }];
+          }
+        } catch (err: any) {
+          diag.partner_raw.push({
+            model: `${fallbackModel}(fallback)`,
+            raw_len: 0,
+            json_found: false,
+            error: err.message?.slice(0, 150),
+          });
+        }
+      }
     }
 
-    // Merge all partner results
+    if (valid.length === 0) {
+      console.log('  ⚠️ Plan discuss: no valid replies (including fallback)');
+      return { result: null, diag };
+    }
+
     const merged: PlanDiscussResult = {
       partner_models: valid.map(v => v.model),
       task_gaps: dedup(valid.flatMap(v => v.review.task_gaps || [])),
@@ -381,10 +452,11 @@ export async function discussPlan(
       : hasSubstance ? 'pass' : 'warn';
 
     console.log(`  ✅ Plan discuss done (${valid.length} partner(s), ${merged.quality_gate})`);
-    return merged;
+    return { result: merged, diag };
 
   } catch (err: any) {
+    diag.error = err.message?.slice(0, 200);
     console.log(`  ❌ Plan discuss failed: ${err.message?.slice(0, 100)}`);
-    return null;
+    return { result: null, diag };
   }
 }

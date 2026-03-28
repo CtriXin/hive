@@ -9,7 +9,7 @@ export type FailureType = 'rate_limit' | 'server_error' | 'quality_fail';
 export const DEFAULT_TIERS: TiersConfig = {
   translator: { model: 'auto', fallback: 'glm-5-turbo' },
   planner: { model: 'auto', fallback: 'qwen3-max' },
-  discuss: { model: 'auto', fallback: 'kimi-for-coding', mode: 'auto' },
+  discuss: { model: 'auto', fallback: 'kimi-k2.5', mode: 'auto' },
   executor: { model: 'auto', fallback: 'glm-5-turbo' },
   reviewer: {
     cross_review: { model: 'auto' },
@@ -101,7 +101,17 @@ export function deepMerge<T>(...sources: Array<Partial<T>>): T {
 }
 
 export function getConfigSource(cwd: string): { global: string; local: string | null } {
-  const globalPath = path.join(os.homedir(), '.hive', 'config.json');
+  // In sandboxed environments, os.homedir() may return a nested sandbox dir.
+  // Try sandbox home first, then real user home as fallback.
+  const sandboxHome = path.join(os.homedir(), '.hive', 'config.json');
+  const realUser = process.env.USER || process.env.LOGNAME || '';
+  const realHome = realUser ? path.join('/Users', realUser, '.hive', 'config.json') : '';
+
+  let globalPath = sandboxHome;
+  if (!fs.existsSync(sandboxHome) && realHome && fs.existsSync(realHome)) {
+    globalPath = realHome;
+  }
+
   const repoRoot = findRepoRoot(cwd);
   const localPath = repoRoot ? path.join(repoRoot, '.hive', 'config.json') : null;
   return { global: globalPath, local: localPath };
