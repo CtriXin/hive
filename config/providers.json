@@ -72,14 +72,6 @@
       "api_key_env": "MINIMAX_EN_API_KEY",
       "protocol": "both",
       "note": "MiniMax 国际"
-    },
-    "deepseek": {
-      "id": "deepseek",
-      "display_name": "DeepSeek",
-      "openai_base_url": "https://api.deepseek.com/v1",
-      "api_key_env": "DEEPSEEK_API_KEY",
-      "protocol": "openai_only",
-      "note": "仅 OpenAI 协议，需要 protocol-adapter"
     }
   }
 }
