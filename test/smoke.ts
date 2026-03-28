@@ -15,7 +15,7 @@ const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'https://chat.adsconflux.xyz/
 const NEWAPI_KEY = process.env.NEWAPI_KEY || 'sk-crL7G5zKZMGV8trp3Bz665UTso4FYeyJSpKbQbvdt5GZbn1M';
 
 const TEST_MODELS = {
-  translate: 'kimi-k2.5',
+  translate: 'kimi-for-coding',
   worker: 'glm-5-turbo',
   reviewer: 'MiniMax-M2.7',
 };

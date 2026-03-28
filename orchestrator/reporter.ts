@@ -1,6 +1,7 @@
-import { query } from '@anthropic-ai/claude-code';
 import type { OrchestratorResult, ReportOptions } from './types.js';
 import { resolveProvider } from './provider-resolver.js';
+import { buildSdkEnv } from './project-paths.js';
+import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
 
 const REPORT_PROMPT = `You are a technical project reporter. Generate a structured Chinese summary of the following orchestration results.
 
@@ -52,34 +53,19 @@ export async function reportResults(
   }
 
   // detailed 模式：用国产模型生成自然语言报告
-  const { baseUrl, apiKey } = resolveProvider(reporterProvider);
+  const { baseUrl, apiKey } = resolveProvider(reporterProvider, reporterModel);
 
-  const messages = query({
+  const queryResult = await safeQuery({
     prompt: REPORT_PROMPT + JSON.stringify(summary, null, 2),
     options: {
       cwd: process.cwd(),
-      env: {
-        ANTHROPIC_BASE_URL: baseUrl,
-        ANTHROPIC_AUTH_TOKEN: apiKey,
-        ANTHROPIC_MODEL: reporterModel,
-      },
+      env: buildSdkEnv(reporterModel, baseUrl, apiKey),
       maxTurns: 1,
     }
   });
 
-  let report = '';
-  for await (const msg of messages) {
-    if (msg.type === 'assistant') {
-      const content = msg.message?.content;
-      if (Array.isArray(content)) {
-        report += content.map((block) => block.type === 'text' ? block.text : '').join('');
-      } else if (typeof content === 'string') {
-        report += content;
-      }
-    }
-  }
-
-  return report.trim() || formatLocalReport(summary);
+  const report = extractTextFromMessages(queryResult.messages);
+  return report || formatLocalReport(summary);
 }
 
 // 本地格式化（不需要 LLM，用于 summary 模式）

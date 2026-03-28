@@ -160,7 +160,7 @@ export interface ReviewResult {
 export interface ReviewFinding {
   id: number;
   severity: FindingSeverity;
-  lens: A2aLens | 'cross-review' | 'sonnet' | 'opus';
+  lens: A2aLens | 'cross-review' | 'sonnet' | 'opus' | string;
   file: string;
   line?: number;
   issue: string;
@@ -269,9 +269,32 @@ export interface AdaptedRequest {
   body: string;
 }
 
+// ── Tier Config (per-tier model selection) ──
+
+export interface TierConfig {
+  model: string;            // model ID or 'auto' for registry-based selection
+  fallback?: string;        // fallback model ID
+  allow_domestic?: boolean; // whether domestic models are allowed (default true)
+}
+
+export interface ReviewerTierConfig {
+  cross_review: TierConfig;
+  arbitration: TierConfig;   // was review_tier (Sonnet)
+  final_review: TierConfig;  // was high_tier (Opus)
+}
+
+export interface TiersConfig {
+  translator: TierConfig;
+  planner: TierConfig;
+  executor: TierConfig;
+  reviewer: ReviewerTierConfig;
+  reporter: TierConfig;
+}
+
 // ── Hive Config (双层: global + project) ──
 
 export interface HiveConfig {
+  // Legacy fields (still supported for backward compat)
   orchestrator: string;
   high_tier: string;
   review_tier: string;
@@ -288,8 +311,6 @@ export interface HiveConfig {
   };
   host: 'claude-code' | 'codex' | 'mms';
   providers_path?: string;
-  gateway?: {
-    url: string;            // e.g. "http://82.156.121.141:4001"
-    auth_token_env: string; // env var name, e.g. "MMS_GATEWAY_TOKEN"
-  };
+  // Per-tier model configuration
+  tiers: TiersConfig;
 }

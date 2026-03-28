@@ -4,13 +4,14 @@
 // Rewritten from discuss-trigger.ts — no longer shells out to discuss.sh
 // Uses TypeScript + Claude Code SDK for self-contained operation
 
-import { query } from '@anthropic-ai/claude-code';
 import type {
   DiscussTrigger, DiscussResult, DiscussionReply,
   WorkerConfig,
 } from './types.js';
 import { getRegistry } from './model-registry.js';
 import { resolveProvider } from './provider-resolver.js';
+import { buildSdkEnv } from './project-paths.js';
+import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
 
 const MAX_DISCUSS_ROUNDS = 2;
 
@@ -69,7 +70,7 @@ async function selectDiscussPartner(workerModel: string): Promise<{ id: string; 
     return registry.get(partnerId) || { id: partnerId, provider: 'kimi', reasoning: 0.85 };
   } catch {
     // Fallback: return a default partner
-    return { id: 'kimi-k2.5', provider: 'kimi', reasoning: 0.85 };
+    return { id: 'kimi-for-coding', provider: 'kimi', reasoning: 0.85 };
   }
 }
 
@@ -96,30 +97,16 @@ export async function triggerDiscussion(
 
   try {
     // 3. Use SDK to call discussion partner
-    const messages = query({
+    const result = await safeQuery({
       prompt,
       options: {
         cwd: workDir,
-        env: {
-          ANTHROPIC_MODEL: partner.id,
-          ...(baseUrl ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
-          ...(apiKey ? { ANTHROPIC_AUTH_TOKEN: apiKey } : {}),
-        },
+        env: buildSdkEnv(partner.id, baseUrl, apiKey),
         maxTurns: 3,
       }
     });
 
-    let rawOutput = '';
-    for await (const msg of messages) {
-      if (msg.type === 'assistant') {
-        const content = msg.message?.content;
-        if (Array.isArray(content)) {
-          rawOutput += content.map(c => c.type === 'text' ? c.text : '').join('');
-        } else if (typeof content === 'string') {
-          rawOutput += content;
-        }
-      }
-    }
+    const rawOutput = extractTextFromMessages(result.messages);
 
     // 4. Parse structured reply
     const reply = parseDiscussionReply(rawOutput);

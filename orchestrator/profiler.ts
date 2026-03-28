@@ -267,12 +267,13 @@ interface ScorecardPayload {
 const SCORECARD_MODEL_ALIASES: Record<string, string> = {
   'glm5-turbo': 'glm-5-turbo',
   'glm-5-turbo': 'glm-5-turbo',
-  'minimax-2.7': 'minimax-2.7',
-  'kimi-coding': 'kimi-k2.5',
+  'minimax-2.7': 'MiniMax-M2.7',
+  'MiniMax-M2.7': 'MiniMax-M2.7',
+  'kimi-coding': 'kimi-for-coding',
+  'kimi-for-coding': 'kimi-for-coding',
   'kimi-k2.5': 'kimi-k2.5',
   'qwen-max': 'qwen-max',
   'qwen-3.5': 'qwen-3.5',
-  'deepseek-v3': 'deepseek-v3',
 };
 
 function normalizeModelLabel(label: string): string | null {

@@ -198,8 +198,8 @@ export function convertResponseToAnthropic(openaiResponse: any): any {
 }
 
 // ── HTTP Adapter Server ──
-// 用于 openai_only provider（如 DeepSeek）
-// 启动方式：node protocol-adapter.js --provider deepseek --port 8901
+// 用于需要协议转换的 provider
+// 启动方式：node protocol-adapter.js --provider kimi --port 8901
 
 export function startAdapterServer(
   openaiBaseUrl: string,
@@ -255,7 +255,7 @@ if (typeof process !== 'undefined' && process.argv?.[1]?.includes('protocol-adap
   const portIdx = args.indexOf('--port');
   const port = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 8901;
   const providerIdx = args.indexOf('--provider');
-  const providerId = providerIdx >= 0 ? args[providerIdx + 1] : 'deepseek';
+  const providerId = providerIdx >= 0 ? args[providerIdx + 1] : 'kimi';
 
   // 动态 import 避免循环依赖
   import('fs').then(fs => {

@@ -1,7 +1,9 @@
-import { query } from '@anthropic-ai/claude-code';
 import type { TranslationResult } from './types.js';
 import { resolveProvider } from './provider-resolver.js';
 import { getRegistry } from './model-registry.js';
+import { loadConfig, resolveTierModel } from './hive-config.js';
+import { buildSdkEnv } from './project-paths.js';
+import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
 
 const TRANSLATE_PROMPT = `You are a precise technical translator.
 Translate the following Chinese input into clean, natural English suitable as a prompt for an AI coding assistant.
@@ -58,34 +60,18 @@ async function doTranslate(
   provider: string,
 ): Promise<TranslationResult> {
   const startTime = Date.now();
-  const { baseUrl, apiKey } = resolveProvider(provider);
+  const { baseUrl, apiKey } = resolveProvider(provider, model);
 
-  const messages = query({
+  const result = await safeQuery({
     prompt: TRANSLATE_PROMPT + input,
     options: {
       cwd: process.cwd(),
-      env: {
-        ANTHROPIC_MODEL: model,
-        ...(baseUrl ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
-        ...(apiKey ? { ANTHROPIC_AUTH_TOKEN: apiKey } : {}),
-      },
+      env: buildSdkEnv(model, baseUrl, apiKey),
       maxTurns: 1,
     }
   });
 
-  let english = '';
-  for await (const msg of messages) {
-    if (msg.type === 'assistant') {
-      const content = msg.message?.content;
-      if (Array.isArray(content)) {
-        english += content.map((block) => block.type === 'text' ? block.text : '').join('');
-      } else if (typeof content === 'string') {
-        english += content;
-      }
-    }
-  }
-
-  english = english.trim();
+  const english = extractTextFromMessages(result.messages);
 
   // 简单 confidence 评估
   const confidence = english.length > 0 && english.length >= input.length * 0.3 ? 0.9 : 0.5;

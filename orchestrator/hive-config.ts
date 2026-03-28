@@ -1,16 +1,28 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type { HiveConfig, SubTask } from './types.js';
+import type { HiveConfig, SubTask, TiersConfig } from './types.js';
 import type { ModelRegistry } from './model-registry.js';
 
 export type FailureType = 'rate_limit' | 'server_error' | 'quality_fail';
+
+export const DEFAULT_TIERS: TiersConfig = {
+  translator: { model: 'auto', fallback: 'glm-5-turbo' },
+  planner: { model: 'auto', fallback: 'qwen3-max' },
+  executor: { model: 'auto', fallback: 'glm-5-turbo' },
+  reviewer: {
+    cross_review: { model: 'auto' },
+    arbitration: { model: 'auto', fallback: 'kimi-for-coding' },
+    final_review: { model: 'auto', fallback: 'qwen3-max' },
+  },
+  reporter: { model: 'auto', fallback: 'kimi-for-coding' },
+};
 
 export const DEFAULT_CONFIG: HiveConfig = {
   orchestrator: 'claude-opus',
   high_tier: 'claude-opus',
   review_tier: 'claude-sonnet',
-  default_worker: 'kimi-k2.5',
+  default_worker: 'kimi-for-coding',
   fallback_worker: 'glm-5-turbo',
   overrides: {},
   budget: {
@@ -21,6 +33,7 @@ export const DEFAULT_CONFIG: HiveConfig = {
     reset_day: 1,
   },
   host: 'claude-code',
+  tiers: DEFAULT_TIERS,
 };
 
 export function findRepoRoot(cwd: string): string | null {
@@ -112,7 +125,62 @@ export function loadConfig(cwd: string = process.cwd()): HiveConfig {
   const { global: globalPath, local: localPath } = getConfigSource(cwd);
   const globalConfig = readJsonSafe<HiveConfig>(globalPath);
   const localConfig = localPath ? readJsonSafe<HiveConfig>(localPath) : {};
-  return deepMerge<HiveConfig>(DEFAULT_CONFIG, globalConfig, localConfig);
+  const merged = deepMerge<HiveConfig>(DEFAULT_CONFIG, globalConfig, localConfig);
+
+  // Backward compat: if user set legacy fields but not tiers, map them
+  if (!globalConfig.tiers && !localConfig.tiers) {
+    if (merged.orchestrator !== DEFAULT_CONFIG.orchestrator) {
+      merged.tiers.planner.model = merged.orchestrator;
+    }
+    if (merged.high_tier !== DEFAULT_CONFIG.high_tier) {
+      merged.tiers.reviewer.final_review.model = merged.high_tier;
+    }
+    if (merged.review_tier !== DEFAULT_CONFIG.review_tier) {
+      merged.tiers.reviewer.arbitration.model = merged.review_tier;
+    }
+    if (merged.default_worker !== DEFAULT_CONFIG.default_worker) {
+      merged.tiers.executor.model = merged.default_worker;
+    }
+    if (merged.fallback_worker !== DEFAULT_CONFIG.fallback_worker) {
+      merged.tiers.executor.fallback = merged.fallback_worker;
+    }
+    if (merged.translator_model) {
+      merged.tiers.translator.model = merged.translator_model;
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Resolve tier model with 3-way matching:
+ * - 'auto' → call autoFn (registry-based selection)
+ * - exact model ID (e.g. 'qwen3-max') → return as-is
+ * - provider shorthand (e.g. 'qwen', 'kimi', 'glm') → best model from that provider for the given role
+ *
+ * When registry/role are omitted, falls back to the legacy 2-arg behavior (auto or exact only).
+ */
+export function resolveTierModel(
+  tierModel: string,
+  autoFn: () => string,
+  registry?: ModelRegistry,
+  role?: string,
+): string {
+  if (tierModel === 'auto') return autoFn();
+
+  // If registry is available, try provider shorthand resolution
+  if (registry) {
+    // Check if it's an exact model ID first
+    const exact = registry.get(tierModel);
+    if (exact) return tierModel;
+
+    // Treat as provider shorthand — find best model from that provider for the role
+    const resolved = registry.resolveProviderShorthand(tierModel, role);
+    if (resolved) return resolved;
+  }
+
+  // Fallback: return as-is (assume exact model ID even if not in registry)
+  return tierModel;
 }
 
 export function getModelForTask(
