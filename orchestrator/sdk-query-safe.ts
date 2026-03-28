@@ -61,6 +61,21 @@ async function claudeCodeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult>
 }
 
 /**
+ * Extract token usage from collected SDK messages.
+ */
+export function extractTokenUsage(messages: SDKMessage[]): { input: number; output: number } {
+  let input = 0;
+  let output = 0;
+  for (const msg of messages) {
+    if (msg.type === 'result' && (msg as any).usage) {
+      input += (msg as any).usage.input_tokens || 0;
+      output += (msg as any).usage.output_tokens || 0;
+    }
+  }
+  return { input, output };
+}
+
+/**
  * Extract assistant text from collected SDK messages.
  */
 export function extractTextFromMessages(messages: SDKMessage[]): string {

@@ -1,4 +1,4 @@
-import type { OrchestratorResult, ReportOptions } from './types.js';
+import type { OrchestratorResult, ReportOptions, TokenBreakdown } from './types.js';
 import { resolveProvider } from './provider-resolver.js';
 import { buildSdkEnv } from './project-paths.js';
 import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
@@ -45,6 +45,7 @@ export async function reportResults(
     cost: result.cost_estimate,
     score_updates: result.score_updates,
     total_duration_s: (result.total_duration_ms / 1000).toFixed(1),
+    token_breakdown: result.token_breakdown,
   };
 
   if (options.format === 'summary') {
@@ -89,10 +90,40 @@ function formatLocalReport(summary: any): string {
 
   if (summary.cost) {
     report += `\n### 成本估算\n\n`;
-    report += `- Claude tokens: ${summary.cost.opus_tokens + summary.cost.sonnet_tokens + summary.cost.haiku_tokens}\n`;
-    report += `- 国产 tokens: ${summary.cost.domestic_tokens}\n`;
+    report += `- Claude tokens: ${fmtNum(summary.cost.opus_tokens + summary.cost.sonnet_tokens + summary.cost.haiku_tokens)}\n`;
+    report += `- 国产 tokens: ${fmtNum(summary.cost.domestic_tokens)}\n`;
     report += `- 预估成本: $${summary.cost.estimated_cost_usd.toFixed(2)}\n`;
   }
 
+  if (summary.token_breakdown) {
+    report += formatTokenBreakdown(summary.token_breakdown);
+  }
+
   return report;
+}
+
+function fmtNum(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function formatTokenBreakdown(tb: TokenBreakdown): string {
+  let s = `\n### Token 明细\n\n`;
+  s += `| 阶段 | 模型 | Input | Output |\n`;
+  s += `|------|------|-------|--------|\n`;
+  for (const st of tb.stages) {
+    if (st.input_tokens === 0 && st.output_tokens === 0) continue;
+    s += `| ${st.stage} | ${st.model} | ${fmtNum(st.input_tokens)} | ${fmtNum(st.output_tokens)} |\n`;
+  }
+  s += `\n`;
+  s += `**总计**: ${fmtNum(tb.total_input)} input + ${fmtNum(tb.total_output)} output\n`;
+  s += `**实际成本**: $${tb.actual_cost_usd.toFixed(4)}\n`;
+  s += `**若全用 Claude Sonnet**: $${tb.claude_equivalent_usd.toFixed(4)}\n`;
+  const pct = tb.claude_equivalent_usd > 0
+    ? ((tb.savings_usd / tb.claude_equivalent_usd) * 100).toFixed(0)
+    : '0';
+  s += `**节省**: $${tb.savings_usd.toFixed(4)} (${pct}%)\n`;
+  return s;
 }
