@@ -30,7 +30,8 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
   // Override Anthropic-specific vars
   env.ANTHROPIC_MODEL = model;
   if (baseUrl) {
-    env.ANTHROPIC_BASE_URL = baseUrl;
+    // Anthropic SDK appends /v1/messages itself — strip trailing /v1 to avoid /v1/v1/messages
+    env.ANTHROPIC_BASE_URL = baseUrl.replace(/\/v1\/?$/, '');
   } else {
     delete env.ANTHROPIC_BASE_URL;
   }
