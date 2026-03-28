@@ -193,6 +193,49 @@ function resolveOpenAIProvider(
 
 // ── Health Check ──
 
+export interface QuickPingResult {
+  ok: boolean;
+  ms: number;
+  error?: string;
+}
+
+/**
+ * Lightweight preflight check — POST /v1/messages with max_tokens:1.
+ * Returns in < timeoutMs. Zero useful tokens consumed.
+ */
+export async function quickPing(
+  modelId: string,
+  timeoutMs = 3000,
+): Promise<QuickPingResult> {
+  const start = Date.now();
+  try {
+    const { baseUrl, apiKey } = resolveProviderForModel(modelId);
+    const url = baseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: modelId,
+        max_tokens: 1,
+        stream: true,
+        messages: [{ role: 'user', content: 'ping' }],
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const ms = Date.now() - start;
+    const ok = resp.status >= 200 && resp.status < 300;
+    return { ok, ms, error: ok ? undefined : `HTTP ${resp.status}` };
+  } catch (err: any) {
+    const ms = Date.now() - start;
+    const error = ms >= timeoutMs ? 'TIMEOUT' : err.message?.slice(0, 80);
+    return { ok: false, ms, error };
+  }
+}
+
 /**
  * 检查 provider 是否可达
  * 通过 MMS route 或 providers.json 解析后检查 /v1/models 端点
