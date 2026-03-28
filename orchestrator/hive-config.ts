@@ -239,6 +239,33 @@ export function getBudgetWarning(config: HiveConfig): string | null {
   return null;
 }
 
+/**
+ * Record spending and write back to global config.
+ * Auto-resets on budget.reset_day if month has changed.
+ */
+export function recordSpending(cwd: string, amountUsd: number): void {
+  if (amountUsd <= 0) return;
+  const { global: globalPath } = getConfigSource(cwd);
+  const raw = readJsonSafe<HiveConfig>(globalPath);
+  const budget = raw.budget || DEFAULT_CONFIG.budget;
+
+  // Auto-reset: if today >= reset_day and last_reset is a different month
+  const now = new Date();
+  const lastReset = budget.last_reset ? new Date(budget.last_reset) : null;
+  const needsReset = now.getDate() >= (budget.reset_day || 1)
+    && (!lastReset || lastReset.getMonth() !== now.getMonth()
+      || lastReset.getFullYear() !== now.getFullYear());
+
+  if (needsReset) {
+    budget.current_spent_usd = 0;
+    budget.last_reset = now.toISOString();
+  }
+
+  budget.current_spent_usd = (budget.current_spent_usd || 0) + amountUsd;
+  raw.budget = budget;
+  writeJsonSafe(globalPath, raw);
+}
+
 export function resolveFallback(
   failedModel: string,
   errorType: FailureType,

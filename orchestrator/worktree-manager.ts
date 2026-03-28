@@ -153,6 +153,52 @@ export function isWorktreeClean(name: string): boolean {
   return status.trim() === '';
 }
 
+export interface MergeResult {
+  merged: boolean;
+  error?: string;
+}
+
+/**
+ * Commit worktree changes, merge branch back to main, clean up.
+ * Non-throwing — returns { merged: false, error } on failure.
+ */
+export function commitAndMergeWorktree(
+  worktreePath: string,
+  branch: string,
+  commitMsg: string,
+): MergeResult {
+  const root = getProjectRoot();
+  try {
+    // Stage and commit in worktree
+    const status = execSync('git status --porcelain', {
+      cwd: worktreePath, encoding: 'utf-8',
+    }).trim();
+    if (status) {
+      execSync('git add -A', { cwd: worktreePath, encoding: 'utf-8' });
+      execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, {
+        cwd: worktreePath, encoding: 'utf-8',
+      });
+    }
+
+    // Merge branch into main from project root
+    execSync(`git merge "${branch}" --no-ff -m "merge: ${commitMsg.replace(/"/g, '\\"')}"`, {
+      cwd: root, encoding: 'utf-8',
+    });
+
+    // Clean up: remove worktree and delete branch
+    execSync(`git worktree remove "${worktreePath}" --force`, {
+      cwd: root, encoding: 'utf-8',
+    });
+    execSync(`git branch -d "${branch}"`, {
+      cwd: root, encoding: 'utf-8',
+    });
+
+    return { merged: true };
+  } catch (err: any) {
+    return { merged: false, error: err.message?.slice(0, 200) };
+  }
+}
+
 export function lockWorktree(name: string): void {
   const lockFile = path.join(getWorktreesDir(), `${name}.lock`);
   execSync(`touch "${lockFile}"`);

@@ -13,7 +13,7 @@ import { resolveProvider, quickPing } from './provider-resolver.js';
 import { triggerDiscussion } from './discuss-bridge.js';
 import { createWorktree, getWorktreeDiff } from './worktree-manager.js';
 import { buildContextPacket, formatContextForWorker } from './context-recycler.js';
-import { loadConfig, resolveFallback, type FailureType } from './hive-config.js';
+import { loadConfig, resolveFallback, recordSpending, type FailureType } from './hive-config.js';
 import { getRegistry } from './model-registry.js';
 import { buildSdkEnv } from './project-paths.js';
 import type { SDKMessage } from '@anthropic-ai/claude-code';
@@ -376,6 +376,19 @@ export async function dispatchBatch(
 
     // Update plan status
     await updatePlanStatus(plan, group, worker_results);
+  }
+
+  // Record spending: sum token costs across all workers
+  let totalCostUsd = 0;
+  for (const wr of worker_results) {
+    const cap = registry.get(wr.model);
+    if (!cap) continue;
+    const inputCost = wr.token_usage.input * (cap.cost_per_mtok_input || 0);
+    const outputCost = wr.token_usage.output * (cap.cost_per_mtok_output || 0);
+    totalCostUsd += (inputCost + outputCost) / 1_000_000;
+  }
+  if (totalCostUsd > 0) {
+    recordSpending(plan.cwd, totalCostUsd);
   }
 
   await updateManifest(plan, 'reviewing');
