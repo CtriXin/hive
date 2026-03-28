@@ -11,7 +11,7 @@ import type {
 import type { ModelRegistry } from './model-registry.js';
 import { getRegistry } from './model-registry.js';
 import { loadConfig, resolveTierModel } from './hive-config.js';
-import { resolveProvider } from './provider-resolver.js';
+import { resolveProviderForModel } from './provider-resolver.js';
 import { buildSdkEnv } from './project-paths.js';
 import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
 
@@ -21,7 +21,7 @@ function resolveProviderConfig(
   modelId: string,
 ): { baseUrl: string; apiKey: string } {
   try {
-    const result = resolveProvider(modelId);
+    const result = resolveProviderForModel(modelId);
     return { baseUrl: result.baseUrl, apiKey: result.apiKey };
   } catch {
     const envKey = modelId.toUpperCase().replace(/-/g, '_');
