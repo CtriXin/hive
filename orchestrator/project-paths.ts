@@ -27,8 +27,12 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
     env.PATH = nodeBinDir + ':' + currentPath;
   }
 
-  // Override Anthropic-specific vars
+  // Override Anthropic-specific vars — force ALL model references to the target model
+  // so Claude Code SDK internal calls (small-fast, permissions, etc.) don't leak
+  // to inherited ANTHROPIC_DEFAULT_*_MODEL values (e.g., claude-opus-4-6)
   env.ANTHROPIC_MODEL = model;
+  env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+  env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
   if (baseUrl) {
     // Anthropic SDK appends /v1/messages itself — strip trailing /v1 to avoid /v1/v1/messages
     env.ANTHROPIC_BASE_URL = baseUrl.replace(/\/v1\/?$/, '');
