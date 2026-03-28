@@ -450,7 +450,7 @@ server.tool(
           const urlShort = route.anthropic_base_url.replace(/https?:\/\//, '').slice(0, 50);
           const start = Date.now();
           try {
-            const resp = await fetch(route.anthropic_base_url + '/v1/messages', {
+            const resp = await fetch(stripTrailingV1(route.anthropic_base_url) + '/v1/messages', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -460,6 +460,7 @@ server.tool(
               body: JSON.stringify({
                 model: modelId,
                 max_tokens: 5,
+                stream: true,
                 messages: [{ role: 'user', content: 'ping' }],
               }),
               signal: AbortSignal.timeout(PING_TIMEOUT),
@@ -614,6 +615,11 @@ server.tool(
   }
 );
 
+// ── Shared URL helpers ──
+function stripTrailingV1(url: string): string {
+  return url.replace(/\/v1\/?$/, '');
+}
+
 // 工具 8: ping_model — 最小化直接 API 调用诊断
 import { buildSdkEnv } from '../orchestrator/project-paths.js';
 import { resolveModelRoute } from '../orchestrator/mms-routes-loader.js';
@@ -638,19 +644,22 @@ server.tool(
 
       const client = new Anthropic({
         apiKey: apiKey || 'dummy',
-        baseURL: baseUrl || undefined,
+        baseURL: stripTrailingV1(baseUrl) || undefined,
       });
 
       const response = await client.messages.create({
         model,
         max_tokens: 256,
         messages: [{ role: 'user', content: prompt }],
+        stream: true,
       });
 
-      const output = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map(b => b.text)
-        .join('');
+      let output = '';
+      for await (const event of response) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          output += event.delta.text;
+        }
+      }
 
       const duration = Date.now() - startTime;
 
@@ -658,7 +667,6 @@ server.tool(
         baseUrl: baseUrl?.slice(0, 50),
         tokenPrefix: apiKey?.slice(0, 8),
         source: mmsRoute ? 'mms-route' : 'process-env',
-        responseModel: response.model,
       };
 
       return {
