@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod';
-import type { TaskPlan, TranslationResult, OrchestratorResult } from '../orchestrator/types.js';
+import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult } from '../orchestrator/types.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from '../orchestrator/planner.js';
 import { translateToEnglish } from '../orchestrator/translator.js';
 import { reportResults } from '../orchestrator/reporter.js';
@@ -111,6 +111,15 @@ server.tool(
         task.assignment_reason = `Assigned by registry for ${task.complexity} ${task.category} task`;
       }
     }
+
+    // Plan discuss (when configured)
+    let planDiscussResult: PlanDiscussResult | null = null;
+    const discussMode = config.tiers.discuss?.mode || 'auto';
+    if (plan && discussMode === 'always') {
+      const { discussPlan } = await import('../orchestrator/discuss-bridge.js');
+      planDiscussResult = await discussPlan(plan, plannerModel, config, registry);
+    }
+
     const budgetWarning = getBudgetWarning(config);
 
     return {
@@ -118,6 +127,7 @@ server.tool(
         type: 'text',
         text: JSON.stringify({
           plan,
+          plan_discuss: planDiscussResult,
           translation: translationResult,
           planner_model: plannerModel,
           planner_prompt: plannerFallbackPrompt,

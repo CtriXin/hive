@@ -10,11 +10,13 @@ describe('hive-config', () => {
       expect(DEFAULT_TIERS.reviewer.cross_review.model).toBe('auto');
       expect(DEFAULT_TIERS.reviewer.arbitration.model).toBe('auto');
       expect(DEFAULT_TIERS.reviewer.final_review.model).toBe('auto');
+      expect(DEFAULT_TIERS.discuss.model).toBe('auto');
       expect(DEFAULT_TIERS.reporter.model).toBe('auto');
     });
 
     it('has fallbacks for key tiers', () => {
       expect(DEFAULT_TIERS.planner.fallback).toBe('qwen3-max');
+      expect(DEFAULT_TIERS.discuss.fallback).toBe('kimi-for-coding');
       expect(DEFAULT_TIERS.reviewer.arbitration.fallback).toBe('kimi-for-coding');
       expect(DEFAULT_TIERS.reviewer.final_review.fallback).toBe('qwen3-max');
     });

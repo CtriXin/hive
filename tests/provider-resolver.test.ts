@@ -29,6 +29,7 @@ vi.mock('../orchestrator/hive-config.js', () => ({
     tiers: {
       translator: { model: 'auto' },
       planner: { model: 'auto' },
+      discuss: { model: 'auto', mode: 'auto' },
       executor: { model: 'auto' },
       reviewer: { cross_review: { model: 'auto' }, arbitration: { model: 'auto' }, final_review: { model: 'auto' } },
       reporter: { model: 'auto' },
