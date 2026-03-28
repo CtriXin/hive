@@ -4,8 +4,9 @@ import type { TaskPlan, SubTask, Complexity } from './types.js';
 export const PLAN_PROMPT_TEMPLATE = `
 You are an expert software architect. Break down the user's goal into a series of concrete, executable tasks.
 
-CRITICAL: Do NOT use any tools (Read, Glob, Bash, etc.). Do NOT explore the codebase.
-Output ONLY the JSON below. No explanation, no file reading, just the JSON object.
+You have been given the codebase file tree and exported types below.
+Use this context to create accurate file paths and task descriptions.
+Output ONLY the JSON plan. Do not use tools or read files — all needed context is provided.
 
 ## Rules:
 1. **Complexity**: Use exactly one of: "low" | "medium" | "medium-high" | "high"
