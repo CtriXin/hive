@@ -9,6 +9,7 @@ export type FailureType = 'rate_limit' | 'server_error' | 'quality_fail';
 export const DEFAULT_TIERS: TiersConfig = {
   translator: { model: 'auto', fallback: 'glm-5-turbo' },
   planner: { model: 'auto', fallback: 'qwen3-max' },
+  discuss: { model: 'auto', fallback: 'kimi-for-coding', mode: 'auto' },
   executor: { model: 'auto', fallback: 'glm-5-turbo' },
   reviewer: {
     cross_review: { model: 'auto' },

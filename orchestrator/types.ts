@@ -261,6 +261,16 @@ export interface DiscussionReply {
   quality_gate: 'pass' | 'warn' | 'fail';
 }
 
+export interface PlanDiscussResult {
+  partner_models: string[];
+  task_gaps: string[];
+  task_redundancies: string[];
+  model_suggestions: string[];
+  execution_order_issues: string[];
+  overall_assessment: string;
+  quality_gate: 'pass' | 'warn' | 'fail';
+}
+
 // ── Protocol Adapter ──
 
 export interface AdaptedRequest {
@@ -277,6 +287,12 @@ export interface TierConfig {
   allow_domestic?: boolean; // whether domestic models are allowed (default true)
 }
 
+export interface DiscussTierConfig {
+  model: string | string[];  // single partner or multiple (1v2). 'auto' = registry picks
+  fallback?: string;
+  mode?: 'auto' | 'always' | 'off'; // 'auto' = no plan discuss; 'always' = force plan discuss
+}
+
 export interface ReviewerTierConfig {
   cross_review: TierConfig;
   arbitration: TierConfig;   // was review_tier (Sonnet)
@@ -286,6 +302,7 @@ export interface ReviewerTierConfig {
 export interface TiersConfig {
   translator: TierConfig;
   planner: TierConfig;
+  discuss: DiscussTierConfig;
   executor: TierConfig;
   reviewer: ReviewerTierConfig;
   reporter: TierConfig;

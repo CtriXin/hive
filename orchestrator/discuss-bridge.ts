@@ -1,21 +1,87 @@
 // ═══════════════════════════════════════════════════════════════════
 // orchestrator/discuss-bridge.ts — Cross-model discussion using Claude Code SDK
 // ═══════════════════════════════════════════════════════════════════
-// Rewritten from discuss-trigger.ts — no longer shells out to discuss.sh
-// Uses TypeScript + Claude Code SDK for self-contained operation
+// Supports 1v1 and 1v2 discuss (single or multi-partner)
+// Partner model(s) configurable via tiers.discuss.model
 
 import type {
   DiscussTrigger, DiscussResult, DiscussionReply,
-  WorkerConfig,
+  WorkerConfig, TaskPlan, HiveConfig, PlanDiscussResult,
 } from './types.js';
+import type { ModelRegistry } from './model-registry.js';
 import { getRegistry } from './model-registry.js';
+import { loadConfig, resolveTierModel } from './hive-config.js';
 import { resolveProvider } from './provider-resolver.js';
 import { buildSdkEnv } from './project-paths.js';
 import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
 
-const MAX_DISCUSS_ROUNDS = 2;
+// ── Shared utilities ──
 
-// Discussion prompt template (internalized from agent-discuss reply contract)
+function resolveProviderConfig(
+  modelId: string,
+): { baseUrl: string; apiKey: string } {
+  try {
+    const result = resolveProvider(modelId);
+    return { baseUrl: result.baseUrl, apiKey: result.apiKey };
+  } catch {
+    const envKey = modelId.toUpperCase().replace(/-/g, '_');
+    return {
+      baseUrl: process.env[`${envKey}_BASE_URL`] || '',
+      apiKey: process.env[`${envKey}_API_KEY`] || '',
+    };
+  }
+}
+
+function extractJsonObject(rawOutput: string): string | null {
+  const start = rawOutput.indexOf('{');
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < rawOutput.length; index += 1) {
+    const char = rawOutput[index];
+    if (escaped) { escaped = false; continue; }
+    if (char === '\\') { escaped = true; continue; }
+    if (char === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return rawOutput.slice(start, index + 1);
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve discuss partner model IDs from tier config.
+ * Supports: 'auto', exact ID, provider shorthand, or array of these.
+ */
+function resolveDiscussPartners(
+  excludeModel: string,
+  registry: ModelRegistry,
+): string[] {
+  const config = loadConfig(process.cwd());
+  const tierModel = config.tiers.discuss?.model || 'auto';
+  const models = Array.isArray(tierModel) ? tierModel : [tierModel];
+
+  const resolved: string[] = [];
+  for (const m of models) {
+    const id = resolveTierModel(
+      m,
+      () => registry.selectDiscussPartner(excludeModel),
+      registry,
+      'review',
+    );
+    if (!resolved.includes(id)) resolved.push(id);
+  }
+  return resolved;
+}
+
+// ── Worker Discussion (triggered by [DISCUSS_TRIGGER]) ──
+
 const DISCUSS_PROMPT = `You are a senior engineer participating in a technical discussion.
 A colleague is uncertain about a decision and needs your structured pushback.
 
@@ -47,97 +113,11 @@ RULES:
 - Be specific and actionable, not generic.
 - Output ONLY the JSON, no explanatory text.`;
 
-// Resolve provider from config or environment
-async function resolveProviderConfig(providerId: string): Promise<{ baseUrl: string; apiKey: string }> {
-  try {
-    const result = resolveProvider(providerId);
-    return { baseUrl: result.baseUrl, apiKey: result.apiKey };
-  } catch {
-    // Fallback to environment variables
-    const envKey = providerId.toUpperCase().replace(/-/g, '_');
-    return {
-      baseUrl: process.env[`${envKey}_BASE_URL`] || '',
-      apiKey: process.env[`${envKey}_API_KEY`] || '',
-    };
-  }
-}
-
-// Select discussion partner
-async function selectDiscussPartner(workerModel: string): Promise<{ id: string; provider: string; reasoning: number }> {
-  try {
-    const registry = getRegistry();
-    const partnerId = registry.selectDiscussPartner(workerModel);
-    return registry.get(partnerId) || { id: partnerId, provider: 'kimi', reasoning: 0.85 };
-  } catch {
-    // Fallback: return a default partner
-    return { id: 'kimi-for-coding', provider: 'kimi', reasoning: 0.85 };
-  }
-}
-
-export async function triggerDiscussion(
-  trigger: DiscussTrigger,
-  workerConfig: WorkerConfig,
-  workDir: string,
-): Promise<DiscussResult> {
-  // 1. Select discussion partner (different model, high reasoning)
-  const partner = await selectDiscussPartner(workerConfig.model);
-  const { baseUrl, apiKey } = await resolveProviderConfig(partner.provider);
-
-  // 2. Build discussion prompt
-  const prompt = DISCUSS_PROMPT
-    .replace('{understanding}', `Worker (${workerConfig.model}) is implementing: ${workerConfig.prompt.slice(0, 300)}`)
-    .replace('{direction}', `Leaning toward: ${trigger.leaning} because: ${trigger.why}`)
-    .replace('{constraints}', `Options: ${trigger.options.join(', ')}`)
-    .replace('{question}', `${trigger.uncertain_about}\nPressure-test this direction. Which option and why?`);
-
-  const threadId = `discuss-${trigger.task_id}-${Date.now()}`;
-
-  console.log(`    💬 Discussion: ${trigger.uncertain_about}`);
-  console.log(`    💬 Partner: ${partner.id} (reasoning: ${partner.reasoning})`);
-
-  try {
-    // 3. Use SDK to call discussion partner
-    const result = await safeQuery({
-      prompt,
-      options: {
-        cwd: workDir,
-        env: buildSdkEnv(partner.id, baseUrl, apiKey),
-        maxTurns: 3,
-      }
-    });
-
-    const rawOutput = extractTextFromMessages(result.messages);
-
-    // 4. Parse structured reply
-    const reply = parseDiscussionReply(rawOutput);
-
-    if (!reply) {
-      console.log('    ⚠️ Could not parse discussion reply, escalating');
-      return escalateToSonnet(trigger);
-    }
-
-    // 5. Quality gate
-    const quality = assessQuality(reply);
-
-    if (quality === 'fail') {
-      console.log('    ⚠️ Discussion quality: fail, escalating');
-      return escalateToSonnet(trigger);
-    }
-
-    console.log(`    ✅ Discussion resolved: ${reply.recommended_next_step.slice(0, 80)}`);
-
-    return {
-      decision: reply.recommended_next_step || trigger.leaning,
-      reasoning: reply.one_paragraph_synthesis || '',
-      escalated: false,
-      thread_id: threadId,
-      quality_gate: quality,
-    };
-
-  } catch (err: any) {
-    console.log(`    ❌ Discussion failed: ${err.message?.slice(0, 100)}`);
-    return escalateToSonnet(trigger);
-  }
+function assessQuality(reply: DiscussionReply): 'pass' | 'warn' | 'fail' {
+  if (!reply.pushback || reply.pushback.length < 20) return 'fail';
+  if (!reply.one_paragraph_synthesis) return 'warn';
+  if (!reply.recommended_next_step) return 'warn';
+  return 'pass';
 }
 
 function parseDiscussionReply(output: string): DiscussionReply | null {
@@ -145,63 +125,11 @@ function parseDiscussionReply(output: string): DiscussionReply | null {
     const jsonPayload = extractJsonObject(output);
     if (!jsonPayload) return null;
     const parsed = JSON.parse(jsonPayload);
-    // Must have pushback
     if (!parsed.pushback || parsed.pushback.trim().length < 10) return null;
     return parsed as DiscussionReply;
   } catch {
     return null;
   }
-}
-
-function extractJsonObject(rawOutput: string): string | null {
-  const start = rawOutput.indexOf('{');
-  if (start < 0) {
-    return null;
-  }
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = start; index < rawOutput.length; index += 1) {
-    const char = rawOutput[index];
-
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) {
-      continue;
-    }
-    if (char === '{') {
-      depth += 1;
-    } else if (char === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return rawOutput.slice(start, index + 1);
-      }
-    }
-  }
-
-  return null;
-}
-
-function assessQuality(reply: DiscussionReply): 'pass' | 'warn' | 'fail' {
-  // Pushback too short = fail
-  if (!reply.pushback || reply.pushback.length < 20) return 'fail';
-  // No synthesis = warn
-  if (!reply.one_paragraph_synthesis) return 'warn';
-  // No recommended_next_step = warn
-  if (!reply.recommended_next_step) return 'warn';
-  return 'pass';
 }
 
 function escalateToSonnet(trigger: DiscussTrigger): DiscussResult {
@@ -213,4 +141,250 @@ function escalateToSonnet(trigger: DiscussTrigger): DiscussResult {
     thread_id: '',
     quality_gate: 'fail',
   };
+}
+
+async function runSingleDiscuss(
+  partnerId: string,
+  prompt: string,
+  workDir: string,
+): Promise<DiscussionReply | null> {
+  const { baseUrl, apiKey } = resolveProviderConfig(partnerId);
+  const result = await safeQuery({
+    prompt,
+    options: {
+      cwd: workDir,
+      env: buildSdkEnv(partnerId, baseUrl, apiKey),
+      maxTurns: 3,
+    },
+  });
+  return parseDiscussionReply(extractTextFromMessages(result.messages));
+}
+
+/**
+ * Merge multiple discussion replies into a single DiscussResult.
+ * Takes the most critical pushback and synthesizes reasoning.
+ */
+function mergeDiscussReplies(
+  replies: Array<{ model: string; reply: DiscussionReply }>,
+  trigger: DiscussTrigger,
+): DiscussResult {
+  const allRisks = replies.flatMap(r => r.reply.risks || []);
+  const allOptions = replies.flatMap(r => r.reply.better_options || []);
+  const pushbacks = replies.map(r => `[${r.model}] ${r.reply.pushback}`);
+  const syntheses = replies.map(r => r.reply.one_paragraph_synthesis).filter(Boolean);
+
+  // Use the recommendation from the highest-quality reply
+  const bestReply = replies.find(r => assessQuality(r.reply) === 'pass')
+    || replies[0];
+  const worstQuality = replies.some(r => assessQuality(r.reply) === 'fail')
+    ? 'fail' : replies.some(r => assessQuality(r.reply) === 'warn') ? 'warn' : 'pass';
+
+  return {
+    decision: bestReply.reply.recommended_next_step || trigger.leaning,
+    reasoning: [
+      ...pushbacks,
+      `Risks: ${[...new Set(allRisks)].join('; ')}`,
+      ...syntheses,
+    ].join('\n'),
+    escalated: false,
+    thread_id: `discuss-${trigger.task_id}-${Date.now()}`,
+    quality_gate: worstQuality,
+  };
+}
+
+export async function triggerDiscussion(
+  trigger: DiscussTrigger,
+  workerConfig: WorkerConfig,
+  workDir: string,
+): Promise<DiscussResult> {
+  const registry = getRegistry();
+  const partnerIds = resolveDiscussPartners(workerConfig.model, registry);
+
+  const prompt = DISCUSS_PROMPT
+    .replace('{understanding}', `Worker (${workerConfig.model}) is implementing: ${workerConfig.prompt.slice(0, 300)}`)
+    .replace('{direction}', `Leaning toward: ${trigger.leaning} because: ${trigger.why}`)
+    .replace('{constraints}', `Options: ${trigger.options.join(', ')}`)
+    .replace('{question}', `${trigger.uncertain_about}\nPressure-test this direction. Which option and why?`);
+
+  console.log(`    💬 Discussion: ${trigger.uncertain_about}`);
+  console.log(`    💬 Partners: ${partnerIds.join(', ')}`);
+
+  try {
+    // Run all partners in parallel
+    const results = await Promise.all(
+      partnerIds.map(async (id) => {
+        const reply = await runSingleDiscuss(id, prompt, workDir);
+        return { model: id, reply };
+      }),
+    );
+
+    const validResults = results.filter(
+      (r): r is { model: string; reply: DiscussionReply } => r.reply !== null,
+    );
+
+    if (validResults.length === 0) {
+      console.log('    ⚠️ No valid discussion replies, escalating');
+      return escalateToSonnet(trigger);
+    }
+
+    if (validResults.length === 1) {
+      const { model, reply } = validResults[0];
+      const quality = assessQuality(reply);
+      if (quality === 'fail') return escalateToSonnet(trigger);
+      console.log(`    ✅ Discussion resolved: ${reply.recommended_next_step.slice(0, 80)}`);
+      return {
+        decision: reply.recommended_next_step || trigger.leaning,
+        reasoning: reply.one_paragraph_synthesis || '',
+        escalated: false,
+        thread_id: `discuss-${trigger.task_id}-${Date.now()}`,
+        quality_gate: quality,
+      };
+    }
+
+    // 1v2: merge results
+    const merged = mergeDiscussReplies(validResults, trigger);
+    console.log(`    ✅ Discussion merged (${validResults.length} partners, ${merged.quality_gate})`);
+    return merged;
+
+  } catch (err: any) {
+    console.log(`    ❌ Discussion failed: ${err.message?.slice(0, 100)}`);
+    return escalateToSonnet(trigger);
+  }
+}
+
+// ── Plan Discuss ──
+
+const PLAN_DISCUSS_PROMPT = `You are a senior architect reviewing a task plan before execution.
+Your job is to find gaps, redundancies, and issues that the planner missed.
+
+## Plan to review
+{plan_summary}
+
+## Your response MUST be valid JSON with this exact structure:
+{
+  "task_gaps": ["description of any missing tasks or steps"],
+  "task_redundancies": ["tasks that overlap or should be merged"],
+  "model_suggestions": ["suggestions for better model assignment"],
+  "execution_order_issues": ["dependency or ordering problems"],
+  "overall_assessment": "One paragraph: is this plan ready to execute? What's the biggest risk?"
+}
+
+RULES:
+- Be specific and actionable. Reference task IDs when possible.
+- If the plan looks solid, say so — but still look for at least one improvement.
+- Focus on: missing error handling, wrong execution order, tasks too large to be atomic.
+- Output ONLY the JSON, no explanatory text.`;
+
+interface RawPlanReview {
+  task_gaps?: string[];
+  task_redundancies?: string[];
+  model_suggestions?: string[];
+  execution_order_issues?: string[];
+  overall_assessment?: string;
+}
+
+async function runSinglePlanDiscuss(
+  partnerId: string,
+  prompt: string,
+  cwd: string,
+): Promise<RawPlanReview | null> {
+  const { baseUrl, apiKey } = resolveProviderConfig(partnerId);
+  const result = await safeQuery({
+    prompt,
+    options: {
+      cwd,
+      env: buildSdkEnv(partnerId, baseUrl, apiKey),
+      maxTurns: 1,
+    },
+  });
+
+  const raw = extractTextFromMessages(result.messages);
+  const json = extractJsonObject(raw);
+  if (!json) return null;
+
+  try {
+    return JSON.parse(json) as RawPlanReview;
+  } catch {
+    return null;
+  }
+}
+
+function dedup(arr: string[]): string[] {
+  return [...new Set(arr)];
+}
+
+export async function discussPlan(
+  plan: TaskPlan,
+  plannerModel: string,
+  config: HiveConfig,
+  registry: ModelRegistry,
+): Promise<PlanDiscussResult | null> {
+  const tierModel = config.tiers.discuss?.model || 'auto';
+  const models = Array.isArray(tierModel) ? tierModel : [tierModel];
+
+  const partnerIds = models.map(m =>
+    resolveTierModel(m, () => registry.selectDiscussPartner(plannerModel), registry, 'review'),
+  );
+  const uniquePartners = dedup(partnerIds);
+
+  const taskSummary = plan.tasks.map(t =>
+    `- ${t.id}: [${t.complexity}] ${t.description.slice(0, 120)} → ${t.assigned_model}`,
+  ).join('\n');
+
+  const planSummary = [
+    `Goal: ${plan.goal}`,
+    `Tasks (${plan.tasks.length}):`,
+    taskSummary,
+    `Execution order: ${plan.execution_order.map(g => `[${g.join(',')}]`).join(' → ')}`,
+  ].join('\n');
+
+  const prompt = PLAN_DISCUSS_PROMPT.replace('{plan_summary}', planSummary);
+
+  console.log(`  💬 Plan discuss: ${uniquePartners.join(' + ')} reviewing plan...`);
+
+  try {
+    // Run all partners in parallel
+    const results = await Promise.all(
+      uniquePartners.map(async (id) => {
+        const review = await runSinglePlanDiscuss(id, prompt, plan.cwd || process.cwd());
+        return { model: id, review };
+      }),
+    );
+
+    const valid = results.filter(
+      (r): r is { model: string; review: RawPlanReview } => r.review !== null,
+    );
+
+    if (valid.length === 0) {
+      console.log('  ⚠️ Plan discuss: no valid replies');
+      return null;
+    }
+
+    // Merge all partner results
+    const merged: PlanDiscussResult = {
+      partner_models: valid.map(v => v.model),
+      task_gaps: dedup(valid.flatMap(v => v.review.task_gaps || [])),
+      task_redundancies: dedup(valid.flatMap(v => v.review.task_redundancies || [])),
+      model_suggestions: dedup(valid.flatMap(v => v.review.model_suggestions || [])),
+      execution_order_issues: dedup(valid.flatMap(v => v.review.execution_order_issues || [])),
+      overall_assessment: valid.map(v =>
+        `[${v.model}] ${v.review.overall_assessment || 'No assessment'}`,
+      ).join('\n'),
+      quality_gate: 'pass',
+    };
+
+    const hasSubstance = merged.task_gaps.length > 0
+      || merged.task_redundancies.length > 0
+      || merged.execution_order_issues.length > 0;
+
+    merged.quality_gate = !merged.overall_assessment ? 'fail'
+      : hasSubstance ? 'pass' : 'warn';
+
+    console.log(`  ✅ Plan discuss done (${valid.length} partner(s), ${merged.quality_gate})`);
+    return merged;
+
+  } catch (err: any) {
+    console.log(`  ❌ Plan discuss failed: ${err.message?.slice(0, 100)}`);
+    return null;
+  }
 }
