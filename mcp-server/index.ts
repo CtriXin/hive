@@ -10,9 +10,9 @@ import { reportResults } from '../orchestrator/reporter.js';
 import { spawnWorker, dispatchBatch } from '../orchestrator/dispatcher.js';
 import { reviewCascade } from '../orchestrator/reviewer.js';
 import { ModelRegistry } from '../orchestrator/model-registry.js';
-import { checkProviderHealth, getAllProviders, resolveProviderForModel } from '../orchestrator/provider-resolver.js';
+import { checkProviderHealth, getAllProviders, resolveProviderForModel, quickPing } from '../orchestrator/provider-resolver.js';
 import { isMmsAvailable, loadMmsRoutes } from '../orchestrator/mms-routes-loader.js';
-import { getBudgetWarning, loadConfig, resolveTierModel } from '../orchestrator/hive-config.js';
+import { getBudgetWarning, loadConfig, resolveTierModel, resolveFallback } from '../orchestrator/hive-config.js';
 import fs from 'fs';
 
 const server = new McpServer({
@@ -359,9 +359,27 @@ server.tool(
     }
 
     try {
+      // Preflight: quickPing before spawning
+      let actualModel = model;
+      let preflightFallback: string | null = null;
+      const ping = await quickPing(model);
+      if (!ping.ok) {
+        const registry = new ModelRegistry();
+        const config = loadConfig(cwd || process.cwd());
+        const fb = resolveFallback(model, 'server_error', {
+          id: task_id, description: prompt.slice(0, 200), complexity: 'medium',
+          category: 'general', assigned_model: model, assignment_reason: '',
+          estimated_files: [], acceptance_criteria: [],
+          discuss_threshold: discuss_threshold, depends_on: [], review_scale: 'auto',
+        }, config, registry);
+        console.log(`  🔄 Preflight: ${model} unhealthy (${ping.error}), using ${fb}`);
+        preflightFallback = `${model} → ${fb} (${ping.error})`;
+        actualModel = fb;
+      }
+
       const result = await spawnWorker({
         taskId: task_id,
-        model,
+        model: actualModel,
         provider: provider || '',
         prompt,
         cwd: cwd || process.cwd(),
@@ -371,7 +389,8 @@ server.tool(
         maxTurns: 25,
       });
 
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      const output = { ...result, preflight_fallback: preflightFallback };
+      return { content: [{ type: 'text', text: JSON.stringify(output) }] };
     } catch (err: any) {
       return {
         content: [{

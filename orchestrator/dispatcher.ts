@@ -9,7 +9,7 @@ import {
   type DiscussResult,
   type DiscussTrigger,
 } from './types.js';
-import { resolveProvider } from './provider-resolver.js';
+import { resolveProvider, quickPing } from './provider-resolver.js';
 import { triggerDiscussion } from './discuss-bridge.js';
 import { createWorktree, getWorktreeDiff } from './worktree-manager.js';
 import { buildContextPacket, formatContextForWorker } from './context-recycler.js';
@@ -321,6 +321,25 @@ export async function dispatchBatch(
         maxTurns: 25,
       } satisfies WorkerConfig;
     });
+
+    // Preflight: quickPing unique models, replace unhealthy ones
+    const uniqueModels = [...new Set(workerConfigs.map(c => c.model))];
+    const pingResults = await Promise.all(
+      uniqueModels.map(async m => ({ model: m, ...(await quickPing(m)) })),
+    );
+    const unhealthy = new Set(pingResults.filter(p => !p.ok).map(p => p.model));
+    if (unhealthy.size > 0) {
+      const config = loadConfig(plan.cwd);
+      for (const cfg of workerConfigs) {
+        if (!unhealthy.has(cfg.model)) continue;
+        const task = tasksInGroup.find(t => t.id === cfg.taskId)!;
+        const fb = resolveFallback(cfg.model, 'server_error', task, config, registry);
+        const fbCap = registry.get(fb);
+        console.log(`  🔄 Preflight: ${cfg.model} unhealthy → ${fb} for ${cfg.taskId}`);
+        cfg.model = fb;
+        cfg.provider = fbCap?.provider || fb;
+      }
+    }
 
     // Parallel spawn within group
     if (workerConfigs.length > 0) {
