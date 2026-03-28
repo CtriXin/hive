@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod';
+import { execSync } from 'child_process';
 import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult } from '../orchestrator/types.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from '../orchestrator/planner.js';
 import { translateToEnglish } from '../orchestrator/translator.js';
@@ -11,11 +12,44 @@ import { ModelRegistry } from '../orchestrator/model-registry.js';
 import { checkProviderHealth, getAllProviders, resolveProviderForModel } from '../orchestrator/provider-resolver.js';
 import { isMmsAvailable, loadMmsRoutes } from '../orchestrator/mms-routes-loader.js';
 import { getBudgetWarning, loadConfig, resolveTierModel } from '../orchestrator/hive-config.js';
+import fs from 'fs';
 
 const server = new McpServer({
   name: 'hive-mcp',
   version: '1.0.0',
 });
+
+// ── Planner context collection ──
+
+function collectFileTree(cwd: string, maxLines = 80): string {
+  try {
+    const raw = execSync(
+      `find . -type f -name "*.ts" -o -name "*.js" -o -name "*.json" | grep -v node_modules | grep -v dist | grep -v .git | sort | head -${maxLines}`,
+      { cwd, encoding: 'utf-8', timeout: 5000 },
+    );
+    return raw.trim();
+  } catch {
+    return '(file tree unavailable)';
+  }
+}
+
+function collectKeyTypes(cwd: string, maxLines = 50): string {
+  try {
+    const raw = execSync(
+      `grep -rn "^export \\(interface\\|type\\|enum\\)" --include="*.ts" . | grep -v node_modules | grep -v dist | head -${maxLines}`,
+      { cwd, encoding: 'utf-8', timeout: 5000 },
+    );
+    return raw.trim();
+  } catch {
+    return '(type signatures unavailable)';
+  }
+}
+
+function buildPlannerContext(cwd: string): string {
+  const fileTree = collectFileTree(cwd);
+  const keyTypes = collectKeyTypes(cwd);
+  return `\n## Codebase Context (auto-collected)\n### File tree\n\`\`\`\n${fileTree}\n\`\`\`\n### Exported types\n\`\`\`\n${keyTypes}\n\`\`\`\n`;
+}
 
 function parseJsonBlock<T>(raw: string): T {
   // Try fenced code block first
@@ -166,8 +200,9 @@ server.tool(
       englishGoal = translationResult.english;
     }
 
-    // 构建 Claude prompt
-    const claudePrompt = `${PLAN_PROMPT_TEMPLATE}\n\nUser goal: ${englishGoal}`;
+    // 构建 Claude prompt（注入代码库上下文）
+    const plannerContext = buildPlannerContext(effectiveCwd);
+    const claudePrompt = `${PLAN_PROMPT_TEMPLATE}${plannerContext}\nUser goal: ${englishGoal}`;
     let plannerOutput = '';
     let plan: TaskPlan | null = null;
     let plannerFallbackPrompt: string | null = null;
