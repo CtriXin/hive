@@ -1,8 +1,9 @@
 {
-  "_doc": "Model capability scores — R1 rescored by Opus, R2 by GLM-5-turbo, R3 scored by Opus. Scores 0.0–1.0.",
-  "_methodology": "R1: Opus rescore of 10-model blind eval. R2: GLM-5-turbo original. R3: Opus blind eval of 11 models (5 TASKs). Combined rank = R1 + R2 + R3.",
+  "_doc": "Model capability scores — R1 rescored by Opus, R2 by GLM-5-turbo, R3/R4 scored by Opus. Scores 0.0–1.0.",
+  "_methodology": "R1: Opus rescore of 10-model blind eval. R2: GLM-5-turbo original. R3/R4: Opus blind eval of 11 models (5 TASKs each). Combined rank = R1 + R2 + R3 + R4.",
   "_updated": "2026-03-28",
   "_r3_note": "R3 key findings: review ability universally weak (avg 4.95/10, BUG1+BUG3 zero hits). qwen3.5-plus surged to #3. qwen3-max coding recovered (7.5 vs R1's 3.0). glm-5.1 underperformed glm-5. MiniMax repair critically weak.",
+  "_r4_note": "MiniMax models unavailable (503). glm-5.1 significant improvement. Multiple TASK4 answers showed similarity (worktree residue suspected).",
   "models": {
     "kimi-for-coding": {
       "provider": "kimi",
@@ -11,17 +12,28 @@
       "speed_rank": 6,
       "avg_time_s": 125,
       "overall_rank": 1,
-      "strengths": ["coding", "analysis", "translation", "reasoning", "spec_adherence", "repair"],
-      "avoid_tags": ["speed-critical"],
+      "strengths": [
+        "coding",
+        "analysis",
+        "translation",
+        "reasoning",
+        "spec_adherence",
+        "repair"
+      ],
+      "avoid_tags": [
+        "speed-critical"
+      ],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r1_total": 37.5,
         "r2_total": 41.6,
         "r3_total": 41.5,
-        "combined": 120.6,
+        "r4_total": 39,
+        "combined": 159.6,
         "r1_coding": 9.0,
         "r2_coding": 9.5,
         "r1_reasoning": 10.0,
@@ -34,18 +46,23 @@
         "r3_review": 6.0,
         "r3_spec": 9.5,
         "r3_repair": 9.0,
-        "r3_translation": 9.5
+        "r3_translation": 9.5,
+        "r4_integration": 8,
+        "r4_scope": 7,
+        "r4_planning": 8,
+        "r4_debug": 9,
+        "r4_reasoning": 7
       },
       "scores": {
         "general": 0.95,
         "coding": 0.93,
-        "planning": 0.90,
+        "planning": 0.9,
         "review": 0.88,
         "translation": 0.95,
         "analysis": 0.95,
-        "reasoning": 1.00
+        "reasoning": 1.0
       },
-      "context_window": 128000,
+      "context_window": 262144,
       "cost_per_1k": 0.012
     },
     "kimi-k2.5": {
@@ -55,17 +72,24 @@
       "speed_rank": 4,
       "avg_time_s": 112,
       "overall_rank": 2,
-      "strengths": ["analysis", "reasoning", "translation", "repair"],
+      "strengths": [
+        "analysis",
+        "reasoning",
+        "translation",
+        "repair"
+      ],
       "avoid_tags": [],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r1_total": 34.0,
         "r2_total": 40.8,
         "r3_total": 39.0,
-        "combined": 113.8,
+        "r4_total": 37,
+        "combined": 150.8,
         "r1_coding": 6.0,
         "r2_coding": 9.0,
         "r1_reasoning": 10.0,
@@ -78,7 +102,12 @@
         "r3_review": 6.0,
         "r3_spec": 8.0,
         "r3_repair": 8.0,
-        "r3_translation": 9.5
+        "r3_translation": 9.5,
+        "r4_integration": 7,
+        "r4_scope": 6,
+        "r4_planning": 8,
+        "r4_debug": 8,
+        "r4_reasoning": 8
       },
       "scores": {
         "general": 0.88,
@@ -87,9 +116,9 @@
         "review": 0.85,
         "translation": 0.93,
         "analysis": 0.93,
-        "reasoning": 1.00
+        "reasoning": 1.0
       },
-      "context_window": 128000,
+      "context_window": 262144,
       "cost_per_1k": 0.012
     },
     "qwen3.5-plus": {
@@ -99,17 +128,24 @@
       "speed_rank": 7,
       "avg_time_s": 154,
       "overall_rank": 3,
-      "strengths": ["coding", "translation", "reasoning", "spec_adherence"],
+      "strengths": [
+        "coding",
+        "translation",
+        "reasoning",
+        "spec_adherence"
+      ],
       "avoid_tags": [],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r1_total": 34.5,
         "r2_total": 39.0,
         "r3_total": 38.0,
-        "combined": 111.5,
+        "r4_total": 33,
+        "combined": 144.5,
         "r1_coding": 9.0,
         "r2_coding": 8.5,
         "r1_reasoning": 8.0,
@@ -122,18 +158,23 @@
         "r3_review": 5.5,
         "r3_spec": 9.0,
         "r3_repair": 7.5,
-        "r3_translation": 8.5
+        "r3_translation": 8.5,
+        "r4_integration": 3,
+        "r4_scope": 6,
+        "r4_planning": 7,
+        "r4_debug": 9,
+        "r4_reasoning": 8
       },
       "scores": {
-        "general": 0.90,
+        "general": 0.9,
         "coding": 0.88,
         "planning": 0.82,
         "review": 0.82,
-        "translation": 0.90,
+        "translation": 0.9,
         "analysis": 0.85,
-        "reasoning": 0.90
+        "reasoning": 0.9
       },
-      "context_window": 32000,
+      "context_window": 1000000,
       "cost_per_1k": 0.001
     },
     "glm-5": {
@@ -143,17 +184,25 @@
       "speed_rank": 9,
       "avg_time_s": 141,
       "overall_rank": 4,
-      "strengths": ["translation", "reasoning"],
-      "avoid_tags": ["speed-critical"],
+      "strengths": [
+        "translation",
+        "reasoning"
+      ],
+      "avoid_tags": [
+        "speed-critical",
+        "reasoning-critical"
+      ],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r1_total": 35.0,
         "r2_total": 39.6,
         "r3_total": 34.0,
-        "combined": 108.6,
+        "r4_total": 33,
+        "combined": 141.6,
         "r1_coding": 8.5,
         "r2_coding": 9.0,
         "r1_reasoning": 10.0,
@@ -166,18 +215,23 @@
         "r3_review": 5.0,
         "r3_spec": 7.0,
         "r3_repair": 7.0,
-        "r3_translation": 9.0
+        "r3_translation": 9.0,
+        "r4_integration": 7,
+        "r4_scope": 7,
+        "r4_planning": 8,
+        "r4_debug": 7,
+        "r4_reasoning": 4
       },
       "scores": {
         "general": 0.85,
         "coding": 0.85,
         "planning": 0.85,
-        "review": 0.80,
-        "translation": 0.90,
+        "review": 0.8,
+        "translation": 0.9,
         "analysis": 0.85,
-        "reasoning": 1.00
+        "reasoning": 1.0
       },
-      "context_window": 128000,
+      "context_window": 200000,
       "cost_per_1k": 0.004
     },
     "glm-5-turbo": {
@@ -187,17 +241,27 @@
       "speed_rank": 3,
       "avg_time_s": 82,
       "overall_rank": 5,
-      "strengths": ["speed", "translation", "spec_adherence"],
-      "avoid_tags": ["reasoning-critical", "deep-analysis", "repair-critical"],
+      "strengths": [
+        "speed",
+        "translation",
+        "spec_adherence"
+      ],
+      "avoid_tags": [
+        "reasoning-critical",
+        "deep-analysis",
+        "repair-critical"
+      ],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r1_total": 29.5,
         "r2_total": 38.8,
         "r3_total": 36.5,
-        "combined": 104.8,
+        "r4_total": 33,
+        "combined": 137.8,
         "r1_coding": 7.0,
         "r2_coding": 9.0,
         "r1_reasoning": 5.0,
@@ -210,18 +274,23 @@
         "r3_review": 5.5,
         "r3_spec": 8.5,
         "r3_repair": 6.5,
-        "r3_translation": 8.5
+        "r3_translation": 8.5,
+        "r4_integration": 7,
+        "r4_scope": 7,
+        "r4_planning": 7,
+        "r4_debug": 6,
+        "r4_reasoning": 6
       },
       "scores": {
         "general": 0.78,
-        "coding": 0.80,
+        "coding": 0.8,
         "planning": 0.75,
         "review": 0.78,
-        "translation": 0.90,
+        "translation": 0.9,
         "analysis": 0.88,
         "reasoning": 0.75
       },
-      "context_window": 128000,
+      "context_window": 200000,
       "cost_per_1k": 0.001
     },
     "glm-4.7": {
@@ -231,17 +300,27 @@
       "speed_rank": 6,
       "avg_time_s": 130,
       "overall_rank": 6,
-      "strengths": ["reasoning", "translation", "spec_adherence"],
-      "avoid_tags": ["coding-critical", "review-critical"],
+      "strengths": [
+        "reasoning",
+        "translation",
+        "spec_adherence"
+      ],
+      "avoid_tags": [
+        "coding-critical",
+        "review-critical",
+        "scope-critical"
+      ],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r1_total": 36.0,
         "r2_total": 36.2,
         "r3_total": 32.0,
-        "combined": 104.2,
+        "r4_total": 31,
+        "combined": 135.2,
         "r1_coding": 9.0,
         "r2_coding": 7.0,
         "r1_reasoning": 10.0,
@@ -254,18 +333,23 @@
         "r3_review": 3.5,
         "r3_spec": 8.5,
         "r3_repair": 5.5,
-        "r3_translation": 8.5
+        "r3_translation": 8.5,
+        "r4_integration": 8,
+        "r4_scope": 3,
+        "r4_planning": 5,
+        "r4_debug": 7,
+        "r4_reasoning": 8
       },
       "scores": {
-        "general": 0.80,
-        "coding": 0.80,
-        "planning": 0.80,
-        "review": 0.70,
-        "translation": 0.90,
+        "general": 0.8,
+        "coding": 0.8,
+        "planning": 0.8,
+        "review": 0.7,
+        "translation": 0.9,
         "analysis": 0.83,
         "reasoning": 0.93
       },
-      "context_window": 128000,
+      "context_window": 200000,
       "cost_per_1k": 0.001
     },
     "qwen3-coder-plus": {
@@ -275,17 +359,28 @@
       "speed_rank": 1,
       "avg_time_s": 38,
       "overall_rank": 7,
-      "strengths": ["speed", "reasoning"],
-      "avoid_tags": ["deep-analysis", "translation-heavy", "review-critical", "spec-critical"],
+      "strengths": [
+        "speed",
+        "reasoning"
+      ],
+      "avoid_tags": [
+        "deep-analysis",
+        "translation-heavy",
+        "review-critical",
+        "spec-critical",
+        "reasoning-critical"
+      ],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r1_total": 31.5,
         "r2_total": 41.5,
         "r3_total": 31.0,
-        "combined": 104.0,
+        "r4_total": 28,
+        "combined": 132.0,
         "r1_coding": 7.0,
         "r2_coding": 8.0,
         "r1_reasoning": 10.0,
@@ -298,18 +393,23 @@
         "r3_review": 4.5,
         "r3_spec": 5.5,
         "r3_repair": 6.5,
-        "r3_translation": 7.5
+        "r3_translation": 7.5,
+        "r4_integration": 6,
+        "r4_scope": 4,
+        "r4_planning": 6,
+        "r4_debug": 9,
+        "r4_reasoning": 3
       },
       "scores": {
-        "general": 0.78,
+        "general": 0.68,
         "coding": 0.75,
         "planning": 0.75,
         "review": 0.65,
         "translation": 0.75,
         "analysis": 0.63,
-        "reasoning": 0.90
+        "reasoning": 0.9
       },
-      "context_window": 32000,
+      "context_window": 1000000,
       "cost_per_1k": 0.001
     },
     "MiniMax-M2.5": {
@@ -319,16 +419,25 @@
       "speed_rank": 2,
       "avg_time_s": 98,
       "overall_rank": 8,
-      "strengths": ["speed"],
-      "avoid_tags": ["translation-heavy", "review-critical", "repair-critical"],
+      "strengths": [
+        "speed"
+      ],
+      "avoid_tags": [
+        "translation-heavy",
+        "review-critical",
+        "repair-critical"
+      ],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
+        "r4_note": "R4 all dispatch failed (503 model_not_found)",
         "r1_total": 33.5,
         "r2_total": 40.5,
         "r3_total": 27.0,
+        "r4_total": 0,
         "combined": 101.0,
         "r1_coding": 8.5,
         "r2_coding": 8.5,
@@ -342,18 +451,23 @@
         "r3_review": 3.0,
         "r3_spec": 6.0,
         "r3_repair": 4.0,
-        "r3_translation": 8.0
+        "r3_translation": 8.0,
+        "r4_integration": 0,
+        "r4_scope": 0,
+        "r4_planning": 0,
+        "r4_debug": 0,
+        "r4_reasoning": 0
       },
       "scores": {
         "general": 0.78,
         "coding": 0.78,
-        "planning": 0.80,
+        "planning": 0.8,
         "review": 0.65,
         "translation": 0.78,
-        "analysis": 0.80,
+        "analysis": 0.8,
         "reasoning": 0.93
       },
-      "context_window": 128000,
+      "context_window": 196608,
       "cost_per_1k": 0.002
     },
     "qwen3-max": {
@@ -363,17 +477,23 @@
       "speed_rank": 5,
       "avg_time_s": 107,
       "overall_rank": 9,
-      "strengths": ["reasoning", "translation", "repair"],
+      "strengths": [
+        "reasoning",
+        "translation",
+        "repair"
+      ],
       "avoid_tags": [],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r1_total": 26.0,
         "r2_total": 38.0,
         "r3_total": 36.0,
-        "combined": 100.0,
+        "r4_total": 33,
+        "combined": 133.0,
         "r1_coding": 3.0,
         "r2_coding": 8.0,
         "r1_reasoning": 8.0,
@@ -386,18 +506,23 @@
         "r3_review": 5.5,
         "r3_spec": 7.5,
         "r3_repair": 7.0,
-        "r3_translation": 8.5
+        "r3_translation": 8.5,
+        "r4_integration": 7,
+        "r4_scope": 4,
+        "r4_planning": 7,
+        "r4_debug": 7,
+        "r4_reasoning": 8
       },
       "scores": {
         "general": 0.82,
         "coding": 0.65,
         "planning": 0.78,
         "review": 0.72,
-        "translation": 0.90,
+        "translation": 0.9,
         "analysis": 0.68,
-        "reasoning": 0.90
+        "reasoning": 0.9
       },
-      "context_window": 32000,
+      "context_window": 262144,
       "cost_per_1k": 0.01
     },
     "glm-5.1": {
@@ -406,30 +531,43 @@
       "speed_tier": "balanced",
       "speed_rank": 8,
       "avg_time_s": 135,
-      "overall_rank": 11,
-      "strengths": ["translation"],
-      "avoid_tags": ["coding-critical", "review-critical", "repair-critical"],
+      "overall_rank": 9,
+      "strengths": [
+        "translation",
+        "repair"
+      ],
+      "avoid_tags": [
+        "coding-critical",
+        "review-critical"
+      ],
       "benchmark": {
-        "rounds": 1,
+        "rounds": 2,
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
         "r3_total": 29.0,
-        "combined": 29.0,
+        "r4_total": 34,
+        "combined": 63.0,
         "r3_implementation": 5.0,
         "r3_review": 5.0,
         "r3_spec": 5.5,
         "r3_repair": 5.5,
-        "r3_translation": 8.0
+        "r3_translation": 8.0,
+        "r4_integration": 5,
+        "r4_scope": 7,
+        "r4_planning": 6,
+        "r4_debug": 9,
+        "r4_reasoning": 7
       },
       "scores": {
-        "general": 0.68,
-        "coding": 0.60,
+        "general": 0.72,
+        "coding": 0.65,
         "planning": 0.65,
-        "review": 0.60,
-        "translation": 0.80,
+        "review": 0.68,
+        "translation": 0.8,
         "analysis": 0.65,
-        "reasoning": 0.70
+        "reasoning": 0.7
       },
-      "context_window": 128000,
+      "context_window": 200000,
       "cost_per_1k": 0.004
     },
     "MiniMax-M2.7": {
@@ -439,16 +577,26 @@
       "speed_rank": 10,
       "avg_time_s": 180,
       "overall_rank": 10,
-      "strengths": ["analysis"],
-      "avoid_tags": ["reasoning-critical", "speed-critical", "translation-heavy", "repair-critical"],
+      "strengths": [
+        "analysis"
+      ],
+      "avoid_tags": [
+        "reasoning-critical",
+        "speed-critical",
+        "translation-heavy",
+        "repair-critical"
+      ],
       "benchmark": {
-        "rounds": 3,
+        "rounds": 4,
         "r1_scorer": "opus",
         "r2_scorer": "glm-5-turbo",
         "r3_scorer": "opus",
+        "r4_scorer": "opus",
+        "r4_note": "R4 all dispatch failed (503 model_not_found)",
         "r1_total": 34.5,
         "r2_total": 33.6,
         "r3_total": 31.5,
+        "r4_total": 0,
         "combined": 99.6,
         "r1_coding": 7.5,
         "r2_coding": 8.0,
@@ -462,18 +610,23 @@
         "r3_review": 5.5,
         "r3_spec": 8.0,
         "r3_repair": 5.0,
-        "r3_translation": 7.5
+        "r3_translation": 7.5,
+        "r4_integration": 0,
+        "r4_scope": 0,
+        "r4_planning": 0,
+        "r4_debug": 0,
+        "r4_reasoning": 0
       },
       "scores": {
         "general": 0.72,
         "coding": 0.72,
-        "planning": 0.70,
+        "planning": 0.7,
         "review": 0.68,
         "translation": 0.76,
         "analysis": 0.93,
-        "reasoning": 0.80
+        "reasoning": 0.8
       },
-      "context_window": 128000,
+      "context_window": 200000,
       "cost_per_1k": 0.002
     }
   },
@@ -481,13 +634,17 @@
     "sonnet": {
       "id": "claude-sonnet-4-6",
       "role": "review & arbitration",
-      "strengths": ["review", "reasoning", "code quality"],
+      "strengths": [
+        "review",
+        "reasoning",
+        "code quality"
+      ],
       "scores": {
         "general": 0.88,
         "coding": 0.85,
         "planning": 0.82,
         "review": 0.95,
-        "translation": 0.80
+        "translation": 0.8
       },
       "context_window": 200000,
       "cost_per_1k": 0.003
@@ -495,10 +652,15 @@
     "opus": {
       "id": "claude-opus-4-6",
       "role": "planning & final review",
-      "strengths": ["planning", "complex reasoning", "architecture", "final review"],
+      "strengths": [
+        "planning",
+        "complex reasoning",
+        "architecture",
+        "final review"
+      ],
       "scores": {
         "general": 0.95,
-        "coding": 0.90,
+        "coding": 0.9,
         "planning": 0.98,
         "review": 0.92,
         "translation": 0.88
@@ -509,10 +671,14 @@
     "haiku": {
       "id": "claude-haiku-4-5-20251001",
       "role": "fast execution & translation",
-      "strengths": ["speed", "translation", "simple tasks"],
+      "strengths": [
+        "speed",
+        "translation",
+        "simple tasks"
+      ],
       "scores": {
         "general": 0.75,
-        "coding": 0.70,
+        "coding": 0.7,
         "planning": 0.65,
         "review": 0.68,
         "translation": 0.88
