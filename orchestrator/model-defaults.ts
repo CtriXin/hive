@@ -83,35 +83,95 @@ interface GuessResult {
 }
 
 const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResult }> = [
+  // ── Claude: differentiate opus > sonnet > haiku ──
   {
-    test: (id) => id.includes('claude') || id.includes('opus') || id.includes('sonnet') || id.includes('haiku'),
+    test: (id) => id.includes('opus'),
     result: {
-      strengths: ['general', 'coding', 'planning', 'review'],
-      scores: { general: 0.9, coding: 0.88, planning: 0.9, review: 0.9, translation: 0.85 },
-      context_window: 200000, cost_per_1k: 0.01,
+      strengths: ['planning', 'complex reasoning', 'architecture', 'review'],
+      scores: { general: 0.95, coding: 0.90, planning: 0.98, review: 0.92, translation: 0.88 },
+      context_window: 200000, cost_per_1k: 0.015,
+    },
+  },
+  {
+    test: (id) => id.includes('sonnet'),
+    result: {
+      strengths: ['review', 'reasoning', 'code quality'],
+      scores: { general: 0.88, coding: 0.85, planning: 0.82, review: 0.95, translation: 0.80 },
+      context_window: 200000, cost_per_1k: 0.003,
+    },
+  },
+  {
+    test: (id) => id.includes('haiku') || id.includes('claude'),
+    result: {
+      strengths: ['speed', 'translation', 'simple tasks'],
+      scores: { general: 0.75, coding: 0.70, planning: 0.65, review: 0.68, translation: 0.88 },
+      context_window: 200000, cost_per_1k: 0.00025,
+    },
+  },
+  // ── GPT: differentiate by tier (pro/max > codex > standard > mini/nano) ──
+  {
+    test: (id) => /gpt-5\.\d+-?(pro|max)/.test(id),
+    result: {
+      strengths: ['general', 'coding', 'reasoning', 'planning'],
+      scores: { general: 0.92, coding: 0.90, planning: 0.90, review: 0.88, translation: 0.82 },
+      context_window: 128000, cost_per_1k: 0.02,
+    },
+  },
+  {
+    test: (id) => /gpt-5.*codex/.test(id) && !/(mini|spark)/.test(id),
+    result: {
+      strengths: ['coding', 'general', 'reasoning'],
+      scores: { general: 0.88, coding: 0.88, planning: 0.85, review: 0.82, translation: 0.78 },
+      context_window: 128000, cost_per_1k: 0.015,
+    },
+  },
+  {
+    test: (id) => /gpt-5.*(mini|nano|spark)/.test(id),
+    result: {
+      strengths: ['speed', 'simple tasks'],
+      scores: { general: 0.75, coding: 0.72, planning: 0.70, review: 0.68, translation: 0.72 },
+      context_window: 128000, cost_per_1k: 0.002,
     },
   },
   {
     test: (id) => id.includes('gpt-5'),
     result: {
       strengths: ['general', 'coding', 'reasoning'],
-      scores: { general: 0.88, coding: 0.85, planning: 0.85, review: 0.82, translation: 0.8 },
+      scores: { general: 0.85, coding: 0.85, planning: 0.83, review: 0.80, translation: 0.78 },
       context_window: 128000, cost_per_1k: 0.01,
+    },
+  },
+  // ── Gemini: differentiate flash < pro < pro-preview ──
+  {
+    test: (id) => /gemini.*flash/.test(id),
+    result: {
+      strengths: ['speed', 'general', 'coding'],
+      scores: { general: 0.80, coding: 0.78, planning: 0.75, review: 0.72, translation: 0.75 },
+      context_window: 1000000, cost_per_1k: 0.002,
+    },
+  },
+  {
+    test: (id) => /gemini.*pro/.test(id),
+    result: {
+      strengths: ['general', 'coding', 'reasoning'],
+      scores: { general: 0.88, coding: 0.85, planning: 0.85, review: 0.82, translation: 0.78 },
+      context_window: 1000000, cost_per_1k: 0.008,
     },
   },
   {
     test: (id) => id.includes('gemini'),
     result: {
-      strengths: ['general', 'coding', 'reasoning'],
-      scores: { general: 0.85, coding: 0.82, planning: 0.82, review: 0.8, translation: 0.78 },
-      context_window: 1000000, cost_per_1k: 0.008,
+      strengths: ['general', 'coding'],
+      scores: { general: 0.82, coding: 0.80, planning: 0.78, review: 0.75, translation: 0.76 },
+      context_window: 1000000, cost_per_1k: 0.005,
     },
   },
+  // ── Domestic models (fallback for MMS-discovered variants not in capabilities.json) ──
   {
     test: (id) => id.includes('qwen'),
     result: {
       strengths: ['general', 'coding', 'planning'],
-      scores: { general: 0.82, coding: 0.8, planning: 0.78, review: 0.72, translation: 0.78 },
+      scores: { general: 0.82, coding: 0.80, planning: 0.78, review: 0.72, translation: 0.78 },
       context_window: 262144, cost_per_1k: 0.002,
     },
   },
@@ -127,7 +187,7 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
     test: (id) => id.includes('kimi'),
     result: {
       strengths: ['coding', 'general', 'long-context'],
-      scores: { general: 0.82, coding: 0.88, planning: 0.75, review: 0.78, translation: 0.8 },
+      scores: { general: 0.82, coding: 0.88, planning: 0.75, review: 0.78, translation: 0.80 },
       context_window: 262144, cost_per_1k: 0.005,
     },
   },
@@ -135,7 +195,7 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
     test: (id) => id.includes('glm'),
     result: {
       strengths: ['general', 'coding', 'multilingual'],
-      scores: { general: 0.8, coding: 0.78, planning: 0.76, review: 0.74, translation: 0.82 },
+      scores: { general: 0.80, coding: 0.78, planning: 0.76, review: 0.74, translation: 0.82 },
       context_window: 200000, cost_per_1k: 0.001,
     },
   },

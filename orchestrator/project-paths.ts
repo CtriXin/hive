@@ -36,15 +36,26 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
   env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
   env.ANTHROPIC_REASONING_MODEL = model;
   env.CLAUDE_CODE_SUBAGENT_MODEL = model;
-  if (baseUrl) {
+
+  // Non-Anthropic models (GPT, Gemini) need MMS gateway for protocol adaptation.
+  // Claude Code SDK only speaks Anthropic protocol; MMS gateway converts to OpenAI format.
+  const needsMmsGateway = /^(gpt-|gemini-|o[134]-)/i.test(model);
+  const mmsBaseUrl = process.env.ANTHROPIC_BASE_URL;
+  const mmsToken = process.env.ANTHROPIC_AUTH_TOKEN;
+
+  if (needsMmsGateway && mmsBaseUrl) {
+    env.ANTHROPIC_BASE_URL = mmsBaseUrl;
+    env.ANTHROPIC_AUTH_TOKEN = mmsToken || '';
+  } else if (baseUrl) {
     // Anthropic SDK appends /v1/messages itself — strip trailing /v1 to avoid /v1/v1/messages
     env.ANTHROPIC_BASE_URL = baseUrl.replace(/\/v1\/?$/, '');
+    if (apiKey) {
+      env.ANTHROPIC_AUTH_TOKEN = apiKey;
+    } else {
+      delete env.ANTHROPIC_AUTH_TOKEN;
+    }
   } else {
     delete env.ANTHROPIC_BASE_URL;
-  }
-  if (apiKey) {
-    env.ANTHROPIC_AUTH_TOKEN = apiKey;
-  } else {
     delete env.ANTHROPIC_AUTH_TOKEN;
   }
   return env;

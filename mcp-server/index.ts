@@ -163,7 +163,7 @@ async function runClaudePlanner(prompt: string, cwd: string, modelId: string): P
 // 工具 1: plan_tasks - 接受中文或英文输入
 server.tool(
   'plan_tasks',
-  'Break down a goal into executable tasks with model assignments.',
+  'Plan tasks from a goal.',
   {
     goal: z.string().describe('Goal in Chinese or English'),
     cwd: z.string().describe('Working directory').optional(),
@@ -275,7 +275,7 @@ server.tool(
 // 工具 2: execute_plan
 server.tool(
   'execute_plan',
-  'Execute a task plan and return results. Pass resume_plan_id to continue from a checkpoint.',
+  'Execute a task plan.',
   {
     plan_json: z.string().describe('TaskPlan JSON'),
     report_language: z.enum(['zh', 'en']).default('zh'),
@@ -420,7 +420,7 @@ server.tool(
 // 工具 3: dispatch_single
 server.tool(
   'dispatch_single',
-  'Dispatch a single task to a specific model.',
+  'Dispatch one task.',
   {
     task_id: z.string().describe('Task ID'),
     prompt: z.string().describe('Full task prompt with context'),
@@ -495,213 +495,259 @@ server.tool(
   }
 );
 
-// 工具 4: health_check
+// 工具 4: diagnostics — 合并 health_check / debug_env / model_scores / translate / ping_model
+import { buildSdkEnv } from '../orchestrator/project-paths.js';
+import { resolveModelRoute } from '../orchestrator/mms-routes-loader.js';
+import Anthropic from '@anthropic-ai/sdk';
+
+// ── Shared URL helpers ──
+function stripTrailingV1(url: string): string {
+  return url.replace(/\/v1\/?$/, '');
+}
+
 server.tool(
-  'health_check',
-  'Check health of all providers and MMS routes.',
-  {},
-  async () => {
-    let healthText = '## Provider Health Check\n\n';
-
-    // MMS routes check
-    const mmsAvailable = isMmsAvailable();
-    healthText += `**MMS routes**: ${mmsAvailable ? 'loaded' : 'not found'}\n`;
-    healthText += `**Resolution**: MMS routes → providers.json fallback\n\n`;
-
-    if (mmsAvailable) {
-      const table = loadMmsRoutes()!;
-      const modelIds = Object.keys(table.routes);
-      healthText += `### MMS Models (${modelIds.length})\n`;
-      for (const modelId of modelIds) {
-        const route = table.routes[modelId];
-        const urlPreview = route.anthropic_base_url.replace(/https?:\/\//, '').slice(0, 40);
-        const hasKey = route.api_key ? 'key-set' : 'NO-KEY';
-        healthText += `- ${modelId}: ${urlPreview} (${hasKey}, p${route.priority})\n`;
-      }
-      healthText += '\n';
-
-      // Live ping: 1 representative per provider_id + all tier-critical models
-      const config = loadConfig(process.cwd());
-      const tierModels = new Set<string>();
-      // Collect models referenced in tiers config
-      const tm = config.tiers;
-      for (const m of [tm.planner?.model, tm.translator?.model, tm.reporter?.model,
-        tm.executor?.model, tm.reviewer?.cross_review?.model,
-        tm.reviewer?.arbitration?.model, tm.reviewer?.final_review?.model]) {
-        if (m && m !== 'auto') tierModels.add(m);
-      }
-      const dm = tm.discuss?.model;
-      if (dm) { for (const m of (Array.isArray(dm) ? dm : [dm])) { if (m !== 'auto') tierModels.add(m); } }
-      // Also add default_worker and fallback
-      if (config.default_worker) tierModels.add(config.default_worker);
-
-      const seenProviders = new Set<string>();
-      const pingTargets: Array<{ modelId: string; route: typeof table.routes[string]; reason: string }> = [];
-      // First: add tier-critical models (always ping these)
-      for (const id of tierModels) {
-        const route = table.routes[id];
-        if (!route) continue;
-        pingTargets.push({ modelId: id, route, reason: 'tier' });
-        const pKey = route.provider_id || route.anthropic_base_url;
-        seenProviders.add(pKey);
-      }
-      // Then: add 1 representative per remaining provider_id
-      for (const [id, route] of Object.entries(table.routes)) {
-        if (id.startsWith('claude-')) continue;
-        const pKey = route.provider_id || route.anthropic_base_url;
-        if (seenProviders.has(pKey)) continue;
-        seenProviders.add(pKey);
-        pingTargets.push({ modelId: id, route, reason: 'provider-rep' });
-      }
-
-      healthText += `### Live Ping (${pingTargets.length} providers, 15s timeout)\n`;
-      const PING_TIMEOUT = 15_000;
-      const pingResults = await Promise.all(
-        pingTargets.map(async ({ modelId, route }) => {
-          const urlShort = route.anthropic_base_url.replace(/https?:\/\//, '').slice(0, 50);
-          const start = Date.now();
-          try {
-            const resp = await fetch(stripTrailingV1(route.anthropic_base_url) + '/v1/messages', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': route.api_key,
-                'anthropic-version': '2023-06-01',
-              },
-              body: JSON.stringify({
-                model: modelId,
-                max_tokens: 5,
-                stream: true,
-                messages: [{ role: 'user', content: 'ping' }],
-              }),
-              signal: AbortSignal.timeout(PING_TIMEOUT),
-            });
-            const elapsed = Date.now() - start;
-            // 200/201 = healthy, 4xx = endpoint exists but model/auth issue
-            const ok = resp.status >= 200 && resp.status < 300;
-            const icon = ok ? '✅' : resp.status < 500 ? '⚠️' : '❌';
-            return { modelId, url: urlShort, status: `${icon} ${resp.status} (${elapsed}ms)`, provider: route.provider_id || '?' };
-          } catch (err: any) {
-            const elapsed = Date.now() - start;
-            const reason = elapsed >= PING_TIMEOUT ? 'TIMEOUT' : err.message?.slice(0, 50);
-            return { modelId, url: urlShort, status: `❌ ${reason} (${elapsed}ms)`, provider: route.provider_id || '?' };
-          }
-        }),
-      );
-
-      for (const r of pingResults) {
-        healthText += `- **${r.modelId}** → ${r.url} [${r.provider}] ${r.status}\n`;
-      }
-      healthText += '\n';
-    }
-
-    // Static providers check
-    const providers = Object.keys(getAllProviders());
-    if (providers.length > 0) {
-      healthText += `### Static Providers (${providers.length})\n`;
-      for (const provider of providers) {
-        const healthy = await checkProviderHealth(provider);
-        healthText += `- ${provider}: ${healthy ? 'OK' : 'UNAVAILABLE'}\n`;
-      }
-    }
-
-    return { content: [{ type: 'text', text: healthText }] };
-  }
-);
-
-// 工具 4b: debug_env — 诊断 MCP 进程环境
-server.tool(
-  'debug_env',
-  'Show MCP server process environment for debugging.',
-  {},
-  async () => {
-    const keys = [
-      'HOME', 'USER', 'PATH',
-      'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
-      'MMS_ROUTES_PATH',
-    ];
-    let text = '## MCP Server Environment\n\n';
-    text += `**pid**: ${process.pid}\n`;
-    text += `**cwd**: ${process.cwd()}\n`;
-    text += `**node**: ${process.version}\n\n`;
-
-    text += '### Key Env Vars\n';
-    for (const key of keys) {
-      const val = process.env[key];
-      if (!val) {
-        text += `- ${key}: (not set)\n`;
-      } else if (key.includes('TOKEN') || key.includes('KEY')) {
-        text += `- ${key}: ${val.slice(0, 6)}...${val.slice(-4)} (${val.length} chars)\n`;
-      } else if (key === 'PATH') {
-        text += `- ${key}: ${val.slice(0, 80)}...\n`;
-      } else {
-        text += `- ${key}: ${val}\n`;
-      }
-    }
-
-    text += '\n### MMS Routes File\n';
-    const mmsTable = loadMmsRoutes();
-    if (mmsTable) {
-      text += `- Loaded: ${Object.keys(mmsTable.routes).length} models\n`;
-      text += `- Models: ${Object.keys(mmsTable.routes).join(', ')}\n`;
-    } else {
-      text += '- NOT FOUND\n';
-    }
-
-    return { content: [{ type: 'text', text }] };
-  }
-);
-
-// 工具 5: model_scores
-server.tool(
-  'model_scores',
-  'Display model capability scores.',
-  {},
-  async () => {
-    const registry = new ModelRegistry();
-    const models = registry.getResolvable() as any[];
-
-    let scoresText = "## Model Capability Scores\n";
-    scoresText += "| Model | Coding | Reasoning | Chinese | Pass Rate |\n";
-    scoresText += "|-------|--------|-----------|---------|-----------|\n";
-    for (const model of models) {
-      scoresText += `| ${model.id} | ${model.coding.toFixed(2)} | ${model.reasoning.toFixed(2)} | ${model.chinese.toFixed(2)} | ${model.pass_rate.toFixed(2)} |\n`;
-    }
-
-    return { content: [{ type: 'text', text: scoresText }] };
-  }
-);
-
-// 工具 6: translate
-server.tool(
-  'translate',
-  'Translate Chinese natural language input to a clean English prompt for Claude.',
+  'diagnostics',
+  'Run diagnostic actions.',
   {
-    input: z.string().describe('Chinese natural language input from user'),
-    model: z.string().describe('Translator model ID (e.g., kimi-for-coding)').optional(),
+    action: z.enum(['health', 'env', 'scores', 'translate', 'ping']).describe('Action'),
+    input: z.string().optional().describe('For translate: text; for ping: model ID'),
   },
-  async ({ input, model }) => {
-    const registry = new ModelRegistry();
-    const translatorModel = model || registry.selectTranslator();
-    const modelInfo = registry.get(translatorModel);
-    if (!modelInfo) {
-      return { content: [{ type: 'text', text: `Unknown model: ${translatorModel}` }] };
+  async ({ action, input }) => {
+    if (action === 'health') {
+      let healthText = '## Provider Health Check\n\n';
+
+      // MMS routes check
+      const mmsAvailable = isMmsAvailable();
+      healthText += `**MMS routes**: ${mmsAvailable ? 'loaded' : 'not found'}\n`;
+      healthText += `**Resolution**: MMS routes → providers.json fallback\n\n`;
+
+      if (mmsAvailable) {
+        const table = loadMmsRoutes()!;
+        const modelIds = Object.keys(table.routes);
+        healthText += `### MMS Models (${modelIds.length})\n`;
+        for (const modelId of modelIds) {
+          const route = table.routes[modelId];
+          const urlPreview = route.anthropic_base_url.replace(/https?:\/\//, '').slice(0, 40);
+          const hasKey = route.api_key ? 'key-set' : 'NO-KEY';
+          healthText += `- ${modelId}: ${urlPreview} (${hasKey}, p${route.priority})\n`;
+        }
+        healthText += '\n';
+
+        // Live ping: 1 representative per provider_id + all tier-critical models
+        const config = loadConfig(process.cwd());
+        const tierModels = new Set<string>();
+        // Collect models referenced in tiers config
+        const tm = config.tiers;
+        for (const m of [tm.planner?.model, tm.translator?.model, tm.reporter?.model,
+          tm.executor?.model, tm.reviewer?.cross_review?.model,
+          tm.reviewer?.arbitration?.model, tm.reviewer?.final_review?.model]) {
+          if (m && m !== 'auto') tierModels.add(m);
+        }
+        const dm = tm.discuss?.model;
+        if (dm) { for (const m of (Array.isArray(dm) ? dm : [dm])) { if (m !== 'auto') tierModels.add(m); } }
+        // Also add default_worker and fallback
+        if (config.default_worker) tierModels.add(config.default_worker);
+
+        const seenProviders = new Set<string>();
+        const pingTargets: Array<{ modelId: string; route: typeof table.routes[string]; reason: string }> = [];
+        // First: add tier-critical models (always ping these)
+        for (const id of tierModels) {
+          const route = table.routes[id];
+          if (!route) continue;
+          pingTargets.push({ modelId: id, route, reason: 'tier' });
+          const pKey = route.provider_id || route.anthropic_base_url;
+          seenProviders.add(pKey);
+        }
+        // Then: add 1 representative per remaining provider_id
+        for (const [id, route] of Object.entries(table.routes)) {
+          if (id.startsWith('claude-')) continue;
+          const pKey = route.provider_id || route.anthropic_base_url;
+          if (seenProviders.has(pKey)) continue;
+          seenProviders.add(pKey);
+          pingTargets.push({ modelId: id, route, reason: 'provider-rep' });
+        }
+
+        healthText += `### Live Ping (${pingTargets.length} providers, 15s timeout)\n`;
+        const PING_TIMEOUT = 15_000;
+        const pingResults = await Promise.all(
+          pingTargets.map(async ({ modelId, route }) => {
+            const urlShort = route.anthropic_base_url.replace(/https?:\/\//, '').slice(0, 50);
+            const start = Date.now();
+            try {
+              const resp = await fetch(stripTrailingV1(route.anthropic_base_url) + '/v1/messages', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-api-key': route.api_key,
+                  'anthropic-version': '2023-06-01',
+                },
+                body: JSON.stringify({
+                  model: modelId,
+                  max_tokens: 5,
+                  stream: true,
+                  messages: [{ role: 'user', content: 'ping' }],
+                }),
+                signal: AbortSignal.timeout(PING_TIMEOUT),
+              });
+              const elapsed = Date.now() - start;
+              // 200/201 = healthy, 4xx = endpoint exists but model/auth issue
+              const ok = resp.status >= 200 && resp.status < 300;
+              const icon = ok ? '✅' : resp.status < 500 ? '⚠️' : '❌';
+              return { modelId, url: urlShort, status: `${icon} ${resp.status} (${elapsed}ms)`, provider: route.provider_id || '?' };
+            } catch (err: any) {
+              const elapsed = Date.now() - start;
+              const reason = elapsed >= PING_TIMEOUT ? 'TIMEOUT' : err.message?.slice(0, 50);
+              return { modelId, url: urlShort, status: `❌ ${reason} (${elapsed}ms)`, provider: route.provider_id || '?' };
+            }
+          }),
+        );
+
+        for (const r of pingResults) {
+          healthText += `- **${r.modelId}** → ${r.url} [${r.provider}] ${r.status}\n`;
+        }
+        healthText += '\n';
+      }
+
+      // Static providers check
+      const providers = Object.keys(getAllProviders());
+      if (providers.length > 0) {
+        healthText += `### Static Providers (${providers.length})\n`;
+        for (const provider of providers) {
+          const healthy = await checkProviderHealth(provider);
+          healthText += `- ${provider}: ${healthy ? 'OK' : 'UNAVAILABLE'}\n`;
+        }
+      }
+
+      return { content: [{ type: 'text', text: healthText }] };
     }
 
-    const result = await translateToEnglish(input, translatorModel, modelInfo.provider);
-    return {
-      content: [{
-        type: 'text',
-        text: `## Translation (${result.translator_model}, confidence: ${result.confidence.toFixed(2)})\n\n${result.english}\n\n_Duration: ${result.duration_ms}ms_`,
-      }],
-    };
+    if (action === 'env') {
+      const keys = [
+        'HOME', 'USER', 'PATH',
+        'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
+        'MMS_ROUTES_PATH',
+      ];
+      let text = '## MCP Server Environment\n\n';
+      text += `**pid**: ${process.pid}\n`;
+      text += `**cwd**: ${process.cwd()}\n`;
+      text += `**node**: ${process.version}\n\n`;
+
+      text += '### Key Env Vars\n';
+      for (const key of keys) {
+        const val = process.env[key];
+        if (!val) {
+          text += `- ${key}: (not set)\n`;
+        } else if (key.includes('TOKEN') || key.includes('KEY')) {
+          text += `- ${key}: ${val.slice(0, 6)}...${val.slice(-4)} (${val.length} chars)\n`;
+        } else if (key === 'PATH') {
+          text += `- ${key}: ${val.slice(0, 80)}...\n`;
+        } else {
+          text += `- ${key}: ${val}\n`;
+        }
+      }
+
+      text += '\n### MMS Routes File\n';
+      const mmsTable = loadMmsRoutes();
+      if (mmsTable) {
+        text += `- Loaded: ${Object.keys(mmsTable.routes).length} models\n`;
+        text += `- Models: ${Object.keys(mmsTable.routes).join(', ')}\n`;
+      } else {
+        text += '- NOT FOUND\n';
+      }
+
+      return { content: [{ type: 'text', text }] };
+    }
+
+    if (action === 'scores') {
+      const registry = new ModelRegistry();
+      const models = registry.getResolvable() as any[];
+
+      let scoresText = "## Model Capability Scores\n";
+      scoresText += "| Model | Coding | Reasoning | Chinese | Pass Rate |\n";
+      scoresText += "|-------|--------|-----------|---------|-----------|\n";
+      for (const model of models) {
+        scoresText += `| ${model.id} | ${model.coding.toFixed(2)} | ${model.reasoning.toFixed(2)} | ${model.chinese.toFixed(2)} | ${model.pass_rate.toFixed(2)} |\n`;
+      }
+
+      return { content: [{ type: 'text', text: scoresText }] };
+    }
+
+    if (action === 'translate') {
+      const registry = new ModelRegistry();
+      const translatorModel = registry.selectTranslator();
+      const modelInfo = registry.get(translatorModel);
+      if (!modelInfo) {
+        return { content: [{ type: 'text', text: `Unknown model: ${translatorModel}` }] };
+      }
+      const result = await translateToEnglish(input || '', translatorModel, modelInfo.provider);
+      return {
+        content: [{
+          type: 'text',
+          text: `## Translation (${result.translator_model}, confidence: ${result.confidence.toFixed(2)})\n\n${result.english}\n\n_Duration: ${result.duration_ms}ms_`,
+        }],
+      };
+    }
+
+    // action === 'ping'
+    const pingModel = input || '';
+    const pingPrompt = 'Reply with exactly: PONG';
+    const startTime = Date.now();
+    try {
+      const mmsRoute = resolveModelRoute(pingModel);
+      const baseUrl = mmsRoute?.anthropic_base_url
+        || process.env.ANTHROPIC_BASE_URL || '';
+      const apiKey = mmsRoute?.api_key
+        || process.env.ANTHROPIC_AUTH_TOKEN || '';
+
+      const client = new Anthropic({
+        apiKey: apiKey || 'dummy',
+        baseURL: stripTrailingV1(baseUrl) || undefined,
+      });
+
+      const response = await client.messages.create({
+        model: pingModel,
+        max_tokens: 256,
+        messages: [{ role: 'user', content: pingPrompt }],
+        stream: true,
+      });
+
+      let output = '';
+      for await (const event of response) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          output += event.delta.text;
+        }
+      }
+
+      const duration = Date.now() - startTime;
+      const debug = {
+        baseUrl: baseUrl?.slice(0, 50),
+        tokenPrefix: apiKey?.slice(0, 8),
+        source: mmsRoute ? 'mms-route' : 'process-env',
+      };
+
+      return {
+        content: [{
+          type: 'text',
+          text: `## ping_model OK\n\n**model**: ${pingModel}\n**duration**: ${duration}ms\n**response**: ${output.slice(0, 500)}\n\n**routing debug**: ${JSON.stringify(debug, null, 2)}`,
+        }],
+      };
+    } catch (err: any) {
+      const duration = Date.now() - startTime;
+      return {
+        content: [{
+          type: 'text',
+          text: `## ping_model FAILED\n\n**model**: ${pingModel}\n**duration**: ${duration}ms\n**error**: ${err.message}`,
+        }],
+        isError: true,
+      };
+    }
   }
 );
 
-// 工具 7: report
+// 工具 5: report
 server.tool(
   'report',
-  'Generate a Chinese summary report from orchestration results.',
+  'Generate report.',
   {
     result_json: z.string().describe('OrchestratorResult JSON'),
     format: z.enum(['summary', 'detailed']).default('summary'),
@@ -723,79 +769,6 @@ server.tool(
       language: 'zh', format, target: 'stdout',
     });
     return { content: [{ type: 'text', text: report }] };
-  }
-);
-
-// ── Shared URL helpers ──
-function stripTrailingV1(url: string): string {
-  return url.replace(/\/v1\/?$/, '');
-}
-
-// 工具 8: ping_model — 最小化直接 API 调用诊断
-import { buildSdkEnv } from '../orchestrator/project-paths.js';
-import { resolveModelRoute } from '../orchestrator/mms-routes-loader.js';
-import Anthropic from '@anthropic-ai/sdk';
-
-server.tool(
-  'ping_model',
-  'Minimal SDK query() test — no worktree, no dispatch logic. Just call a model and return the response.',
-  {
-    model: z.string().describe('Model ID (e.g., kimi-for-coding, claude-haiku-4-5-20251001)'),
-    prompt: z.string().describe('Simple prompt to test').default('Reply with exactly: PONG'),
-  },
-  async ({ model, prompt }) => {
-    const startTime = Date.now();
-    try {
-      // Resolve endpoint: MMS route (per-model) → process env fallback
-      const mmsRoute = resolveModelRoute(model);
-      const baseUrl = mmsRoute?.anthropic_base_url
-        || process.env.ANTHROPIC_BASE_URL || '';
-      const apiKey = mmsRoute?.api_key
-        || process.env.ANTHROPIC_AUTH_TOKEN || '';
-
-      const client = new Anthropic({
-        apiKey: apiKey || 'dummy',
-        baseURL: stripTrailingV1(baseUrl) || undefined,
-      });
-
-      const response = await client.messages.create({
-        model,
-        max_tokens: 256,
-        messages: [{ role: 'user', content: prompt }],
-        stream: true,
-      });
-
-      let output = '';
-      for await (const event of response) {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          output += event.delta.text;
-        }
-      }
-
-      const duration = Date.now() - startTime;
-
-      const debug = {
-        baseUrl: baseUrl?.slice(0, 50),
-        tokenPrefix: apiKey?.slice(0, 8),
-        source: mmsRoute ? 'mms-route' : 'process-env',
-      };
-
-      return {
-        content: [{
-          type: 'text',
-          text: `## ping_model OK\n\n**model**: ${model}\n**duration**: ${duration}ms\n**response**: ${output.slice(0, 500)}\n\n**routing debug**: ${JSON.stringify(debug, null, 2)}`,
-        }],
-      };
-    } catch (err: any) {
-      const duration = Date.now() - startTime;
-      return {
-        content: [{
-          type: 'text',
-          text: `## ping_model FAILED\n\n**model**: ${model}\n**duration**: ${duration}ms\n**error**: ${err.message}`,
-        }],
-        isError: true,
-      };
-    }
   }
 );
 
