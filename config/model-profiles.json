@@ -3,80 +3,319 @@
   "profiles": {
     "qwen-3.5": {
       "scores": {
-        "implementation": { "value": 0.5, "samples": 0, "last_updated": null },
-        "review": { "value": 0.5, "samples": 0, "last_updated": null },
-        "repair": { "value": 0.5, "samples": 0, "last_updated": null },
-        "integration": { "value": 0.5, "samples": 0, "last_updated": null },
-        "spec_adherence": { "value": 0.5, "samples": 0, "last_updated": null },
-        "scope_discipline": { "value": 0.5, "samples": 0, "last_updated": null },
-        "turnaround_speed": { "value": 0.5, "samples": 0, "last_updated": null }
+        "implementation": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "review": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "repair": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "integration": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "spec_adherence": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "scope_discipline": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "turnaround_speed": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        }
       },
-      "domain_tags": ["typescript", "general"],
+      "domain_tags": [
+        "typescript",
+        "general"
+      ],
       "avoid_tags": []
     },
     "qwen-max": {
       "scores": {
-        "implementation": { "value": 0.4, "samples": 1, "last_updated": "2026-03-24" },
-        "review": { "value": 0.5, "samples": 0, "last_updated": null },
-        "repair": { "value": 0.3, "samples": 1, "last_updated": "2026-03-24" },
-        "integration": { "value": 0.33, "samples": 1, "last_updated": "2026-03-24" },
-        "spec_adherence": { "value": 0.45, "samples": 1, "last_updated": "2026-03-24" },
-        "scope_discipline": { "value": 0.2, "samples": 1, "last_updated": "2026-03-24" },
-        "turnaround_speed": { "value": 0.5, "samples": 1, "last_updated": "2026-03-24" }
+        "implementation": {
+          "value": 0.4,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "review": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "repair": {
+          "value": 0.3,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "integration": {
+          "value": 0.33,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "spec_adherence": {
+          "value": 0.45,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "scope_discipline": {
+          "value": 0.2,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "turnaround_speed": {
+          "value": 0.5,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        }
       },
       "domain_tags": [],
-      "avoid_tags": ["coordination-heavy", "path-sensitive", "unsupervised"]
+      "avoid_tags": [
+        "coordination-heavy",
+        "path-sensitive",
+        "unsupervised"
+      ]
     },
     "kimi-k2.5": {
       "scores": {
-        "implementation": { "value": 0.77, "samples": 1, "last_updated": "2026-03-24" },
-        "review": { "value": 0.85, "samples": 1, "last_updated": "2026-03-24" },
-        "repair": { "value": 1.0, "samples": 1, "last_updated": "2026-03-24" },
-        "integration": { "value": 0.8, "samples": 1, "last_updated": "2026-03-24" },
-        "spec_adherence": { "value": 0.75, "samples": 1, "last_updated": "2026-03-24" },
-        "scope_discipline": { "value": 0.5, "samples": 1, "last_updated": "2026-03-24" },
-        "turnaround_speed": { "value": 0.8, "samples": 1, "last_updated": "2026-03-24" }
+        "implementation": {
+          "value": 0.841553,
+          "samples": 3,
+          "effective_samples": 2.7,
+          "last_updated": "2026-03-29T08:10:26.969Z"
+        },
+        "review": {
+          "value": 0.85,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "repair": {
+          "value": 1,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "integration": {
+          "value": 0.8,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "spec_adherence": {
+          "value": 0.75,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "scope_discipline": {
+          "value": 0.5,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "turnaround_speed": {
+          "value": 0.8,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        }
       },
-      "domain_tags": ["review", "reasoning", "tests"],
-      "avoid_tags": ["strict-boundary"]
+      "domain_tags": [
+        "review",
+        "reasoning",
+        "tests"
+      ],
+      "avoid_tags": [
+        "strict-boundary"
+      ]
     },
     "glm-5-turbo": {
       "scores": {
-        "implementation": { "value": 0.74, "samples": 2, "last_updated": "2026-03-24" },
-        "review": { "value": 0.5, "samples": 0, "last_updated": null },
-        "repair": { "value": 0.6, "samples": 2, "last_updated": "2026-03-24" },
-        "integration": { "value": 0.7, "samples": 2, "last_updated": "2026-03-24" },
-        "spec_adherence": { "value": 0.8, "samples": 2, "last_updated": "2026-03-24" },
-        "scope_discipline": { "value": 0.93, "samples": 2, "last_updated": "2026-03-24" },
-        "turnaround_speed": { "value": 0.65, "samples": 2, "last_updated": "2026-03-24" }
+        "implementation": {
+          "value": 0.9294462674269698,
+          "samples": 9,
+          "effective_samples": 7.949999999999998,
+          "last_updated": "2026-03-29T09:44:26.964Z"
+        },
+        "review": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "repair": {
+          "value": 0.6,
+          "samples": 2,
+          "effective_samples": 2,
+          "last_updated": "2026-03-24"
+        },
+        "integration": {
+          "value": 0.7,
+          "samples": 2,
+          "effective_samples": 2,
+          "last_updated": "2026-03-24"
+        },
+        "spec_adherence": {
+          "value": 0.8,
+          "samples": 2,
+          "effective_samples": 2,
+          "last_updated": "2026-03-24"
+        },
+        "scope_discipline": {
+          "value": 0.93,
+          "samples": 2,
+          "effective_samples": 2,
+          "last_updated": "2026-03-24"
+        },
+        "turnaround_speed": {
+          "value": 0.65,
+          "samples": 2,
+          "effective_samples": 2,
+          "last_updated": "2026-03-24"
+        }
       },
-      "domain_tags": ["typescript", "infrastructure", "adapters", "registries"],
-      "avoid_tags": ["coordination-heavy"]
+      "domain_tags": [
+        "typescript",
+        "infrastructure",
+        "adapters",
+        "registries"
+      ],
+      "avoid_tags": [
+        "coordination-heavy"
+      ]
     },
     "minimax-2.7": {
       "scores": {
-        "implementation": { "value": 0.94, "samples": 1, "last_updated": "2026-03-24" },
-        "review": { "value": 0.5, "samples": 0, "last_updated": null },
-        "repair": { "value": 0.8, "samples": 1, "last_updated": "2026-03-24" },
-        "integration": { "value": 0.87, "samples": 1, "last_updated": "2026-03-24" },
-        "spec_adherence": { "value": 0.9, "samples": 1, "last_updated": "2026-03-24" },
-        "scope_discipline": { "value": 1.0, "samples": 1, "last_updated": "2026-03-24" },
-        "turnaround_speed": { "value": 0.9, "samples": 1, "last_updated": "2026-03-24" }
+        "implementation": {
+          "value": 0.94,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "review": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "repair": {
+          "value": 0.8,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "integration": {
+          "value": 0.87,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "spec_adherence": {
+          "value": 0.9,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "scope_discipline": {
+          "value": 1,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        },
+        "turnaround_speed": {
+          "value": 0.9,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-03-24"
+        }
       },
-      "domain_tags": ["config_ops", "scripts", "rules", "repo-structure", "operational"],
+      "domain_tags": [
+        "config_ops",
+        "scripts",
+        "rules",
+        "repo-structure",
+        "operational"
+      ],
       "avoid_tags": []
     },
     "deepseek-v3": {
       "scores": {
-        "implementation": { "value": 0.5, "samples": 0, "last_updated": null },
-        "review": { "value": 0.5, "samples": 0, "last_updated": null },
-        "repair": { "value": 0.5, "samples": 0, "last_updated": null },
-        "integration": { "value": 0.5, "samples": 0, "last_updated": null },
-        "spec_adherence": { "value": 0.5, "samples": 0, "last_updated": null },
-        "scope_discipline": { "value": 0.5, "samples": 0, "last_updated": null },
-        "turnaround_speed": { "value": 0.5, "samples": 0, "last_updated": null }
+        "implementation": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "review": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "repair": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "integration": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "spec_adherence": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "scope_discipline": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        },
+        "turnaround_speed": {
+          "value": 0.5,
+          "samples": 0,
+          "effective_samples": 0,
+          "last_updated": null
+        }
       },
-      "domain_tags": ["reasoning", "coding"],
+      "domain_tags": [
+        "reasoning",
+        "coding"
+      ],
       "avoid_tags": []
     }
   }

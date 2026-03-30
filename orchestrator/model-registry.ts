@@ -534,6 +534,12 @@ export class ModelRegistry {
     const integ = profile ? getEffectiveScore(profile, 'integration', this.policy).value : this.policy.default_score;
     const rev = profile ? getEffectiveScore(profile, 'review', this.policy).value : this.policy.default_score;
 
+    // Normalize cost to USD. Domestic model cost_per_1k is in ¥ (CNY);
+    // Claude/GPT/Gemini cost_per_1k is already in USD.
+    const isDomestic = /^(kimi|qwen|glm|minimax)/i.test(id);
+    const cnyToUsd = isDomestic ? 1 / 7.2 : 1;
+    const costPerMtokUsd = model.cost_per_1k * 1000 * cnyToUsd;
+
     return {
       id, provider: model.provider, display_name: titleCaseModelId(id),
       coding: model.scores.coding,
@@ -547,8 +553,8 @@ export class ModelRegistry {
         ? Object.values(profile.scores).map((s) => s.last_updated).filter((v): v is string => Boolean(v)).sort().at(-1) || new Date(0).toISOString()
         : new Date(0).toISOString(),
       context_window: model.context_window,
-      cost_per_mtok_input: model.cost_per_1k * 1000,
-      cost_per_mtok_output: model.cost_per_1k * 1000,
+      cost_per_mtok_input: costPerMtokUsd,
+      cost_per_mtok_output: costPerMtokUsd,
       max_complexity: inferMaxComplexity(model),
       sweet_spot: model.strengths,
       avoid: mergeAvoidTags(model.avoid_tags ?? [], profile?.avoid_tags ?? []),

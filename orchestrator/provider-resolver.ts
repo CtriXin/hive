@@ -202,6 +202,8 @@ export interface QuickPingResult {
 /**
  * Lightweight preflight check — POST /v1/messages with max_tokens:1.
  * Returns in < timeoutMs. Zero useful tokens consumed.
+ * Non-Anthropic models (GPT, Gemini) need MMS gateway for protocol adaptation,
+ * so ping through MMS gateway instead of direct endpoint.
  */
 export async function quickPing(
   modelId: string,
@@ -209,8 +211,21 @@ export async function quickPing(
 ): Promise<QuickPingResult> {
   const start = Date.now();
   try {
-    const { baseUrl, apiKey } = resolveProviderForModel(modelId);
-    const url = baseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
+    const needsMmsGateway = /^(gpt-|gemini-|o[134]-)/i.test(modelId);
+    let url: string;
+    let apiKey: string;
+
+    if (needsMmsGateway) {
+      const mmsBase = process.env.ANTHROPIC_BASE_URL;
+      if (!mmsBase) return { ok: true, ms: 0 }; // Can't ping, assume ok
+      url = mmsBase.replace(/\/v1\/?$/, '') + '/v1/messages';
+      apiKey = process.env.ANTHROPIC_AUTH_TOKEN || '';
+    } else {
+      const resolved = resolveProviderForModel(modelId);
+      url = resolved.baseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
+      apiKey = resolved.apiKey;
+    }
+
     const resp = await fetch(url, {
       method: 'POST',
       headers: {

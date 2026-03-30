@@ -25,7 +25,7 @@ export interface ModelCapability {
 
   // Constraints
   context_window: number;
-  cost_per_mtok_input: number; // ¥
+  cost_per_mtok_input: number; // USD (domestic CNY converted in model-registry)
   cost_per_mtok_output: number;
   max_complexity: Complexity;
 
