@@ -8,6 +8,8 @@ import {
 const MOCK_ROUTES = {
   _meta: { generated_at: '2026-03-27', generator: 'test' },
   routes: {
+    'gpt-5.4': { anthropic_base_url: 'https://example.com/openai', openai_base_url: 'https://example.com/openai', api_key: 'gpt-direct', provider_id: 'companycrsopenai', priority: 160, role: 'auto' },
+    'gpt-5': { anthropic_base_url: 'http://gateway', openai_base_url: 'http://gateway', api_key: 'gpt-gateway', provider_id: 'xin', priority: 145, role: 'auto' },
     'MiniMax-M2': { anthropic_base_url: 'http://a', api_key: 'k1', provider_id: 'minimax-cn', priority: 85, role: 'auto' },
     'MiniMax-M2.5': { anthropic_base_url: 'http://b', api_key: 'k2', provider_id: 'xin', priority: 125, role: 'auto' },
     'MiniMax-M2.7': { anthropic_base_url: 'http://c', api_key: 'k3', provider_id: 'xin', priority: 125, role: 'auto' },
@@ -54,7 +56,7 @@ describe('mms-routes-loader', () => {
     it('loads and parses routes table', () => {
       const table = loadMmsRoutes();
       expect(table).not.toBeNull();
-      expect(Object.keys(table!.routes)).toHaveLength(6);
+      expect(Object.keys(table!.routes)).toHaveLength(8);
     });
 
     it('returns null when file not found', () => {
@@ -74,6 +76,14 @@ describe('mms-routes-loader', () => {
     it('exact match', () => {
       const route = resolveModelRoute('kimi-k2.5');
       expect(route).not.toBeNull();
+      expect(route!.provider_id).toBe('xin');
+    });
+
+    it('normalizes OpenAI-only gpt route to an Anthropic-compatible gateway route', () => {
+      const route = resolveModelRoute('gpt-5.4');
+      expect(route).not.toBeNull();
+      expect(route!.anthropic_base_url).toBe('http://gateway');
+      expect(route!.api_key).toBe('gpt-gateway');
       expect(route!.provider_id).toBe('xin');
     });
 
@@ -105,6 +115,13 @@ describe('mms-routes-loader', () => {
       const result = resolveModelRouteFull('kimi-k2.5');
       expect(result!.modelId).toBe('kimi-k2.5');
     });
+
+    it('keeps original modelId while normalizing the route transport', () => {
+      const result = resolveModelRouteFull('gpt-5.4');
+      expect(result).not.toBeNull();
+      expect(result!.modelId).toBe('gpt-5.4');
+      expect(result!.route.anthropic_base_url).toBe('http://gateway');
+    });
   });
 
   describe('resolveModelByPrefix', () => {
@@ -120,11 +137,11 @@ describe('mms-routes-loader', () => {
       expect(prefix!.modelId).toBe('MiniMax-M2.7');
     });
 
-    it('kimi prefix picks k2.5 (higher priority than for-coding)', () => {
+    it('kimi prefix follows hive-discuss shorthand alias', () => {
       const result = resolveModelByPrefix('kimi');
       expect(result).not.toBeNull();
-      expect(result!.modelId).toBe('kimi-k2.5');
-      expect(result!.route.priority).toBe(125);
+      expect(result!.modelId).toBe('kimi-for-coding');
+      expect(result!.route.priority).toBe(100);
     });
 
     it('returns null for no match', () => {
@@ -135,7 +152,7 @@ describe('mms-routes-loader', () => {
   describe('getAvailableModelIds', () => {
     it('returns all model IDs sorted by priority desc', () => {
       const ids = getAvailableModelIds();
-      expect(ids.length).toBe(6);
+      expect(ids.length).toBe(8);
       // priority 125 models should come before 85/100
       const lastTwoIds = ids.slice(-2);
       expect(lastTwoIds).toContain('MiniMax-M2');
