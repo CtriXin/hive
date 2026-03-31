@@ -8,6 +8,17 @@
 
 ---
 
+<!-- AGENT:START — machine-readable setup block for AI coding assistants -->
+<!--
+install: curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+upgrade: (same command)
+mcp_add: claude mcp add hive -- node ~/.hive-orchestrator/dist/mcp-server/index.js
+requires: node>=18, ~/.config/mms/model-routes.json (or MMS_ROUTES_PATH env)
+env_keys: QWEN_API_KEY KIMI_API_KEY KIMI_CODING_API_KEY GLM_CN_API_KEY GLM_EN_API_KEY MINIMAX_CN_API_KEY MINIMAX_EN_API_KEY BAILIAN_API_KEY
+verify: cd ~/.hive-orchestrator && npm run test:smoke
+-->
+<!-- AGENT:END -->
+
 ## Install
 
 ```bash
