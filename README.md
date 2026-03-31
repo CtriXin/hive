@@ -8,73 +8,6 @@
 
 ---
 
-<!-- AGENT:START — machine-readable block for AI coding assistants. Parse this before acting. -->
-<!--
-[identity]
-name: hive
-description: Multi-model AI orchestration — Claude plans, domestic models execute, 4-stage review cascade
-version: 2.0.2
-repo: https://github.com/CtriXin/hive
-
-[install]
-one_line: curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
-install_dir: ~/.hive-orchestrator (override with HIVE_HOME env)
-upgrade: (same command — auto-detects existing install and does git pull + rebuild)
-manual: git clone https://github.com/CtriXin/hive.git && cd hive && npm install && npm run build
-
-[prerequisites]
-runtime: node >= 18
-package_manager: npm
-build: npm run build (TypeScript → dist/)
-model_routes: ~/.config/mms/model-routes.json (MMS gateway resolves model → provider + api_key inline)
-model_routes_override: MMS_ROUTES_PATH env var
-
-[config_files]
-providers: config/providers.json (8 domestic model providers, api keys via env vars)
-model_capabilities: config/model-capabilities.json (static benchmark scores for 14 models)
-model_profiles: config/model-profiles.json (live observed scores, updated by hive at runtime)
-benchmark_policy: config/benchmark-policy.json (scoring weights, decay, confidence thresholds)
-review_policy: config/review-policy.json (4-stage review cascade config)
-global_user_config: ~/.hive/config.json (optional user overrides)
-project_config: <repo>/.hive/config.json (optional per-project overrides)
-
-[env_keys]
-# At least one key required. MMS routes embed keys inline so these are only needed as fallback.
-QWEN_API_KEY: Qwen / 通义千问 (dashscope.aliyuncs.com)
-KIMI_API_KEY: Kimi / Moonshot (api.moonshot.ai)
-KIMI_CODING_API_KEY: Kimi CodingPlan (api.kimi.com/coding)
-GLM_CN_API_KEY: GLM / 智谱 (open.bigmodel.cn)
-GLM_EN_API_KEY: GLM Z.ai international (api.z.ai)
-MINIMAX_CN_API_KEY: MiniMax CN (api.minimaxi.com)
-MINIMAX_EN_API_KEY: MiniMax EN (api.minimax.io)
-BAILIAN_API_KEY: 百炼 CodingPlan (coding.dashscope.aliyuncs.com)
-
-[mcp]
-add_command: claude mcp add hive -- node ~/.hive-orchestrator/dist/mcp-server/index.js
-manual_config: {"type":"stdio","command":"node","args":["~/.hive-orchestrator/dist/mcp-server/index.js"],"env":{"HOME":"<real-home-dir>"}}
-note: In sandboxed environments (e.g. MMS gateway), set env.HOME to the real user home so hive can find model-routes.json
-
-[mcp_tools]
-plan_tasks: Decompose a goal into executable sub-tasks (supports Chinese input, auto-translates)
-execute_plan: Run a task plan with auto model assignment + 4-stage review
-dispatch_single: Send one task to a specific model
-diagnostics: Health check, model scores, translate, ping
-report: Generate Chinese summary of orchestration results
-
-[verify]
-smoke_test: cd ~/.hive-orchestrator && npm run test:smoke
-build_check: cd ~/.hive-orchestrator && npm run build
-e2e_test: cd ~/.hive-orchestrator && npx tsx scripts/smoke-e2e.ts
-
-[troubleshooting]
-"No MMS route found": model-routes.json missing or model ID not in routes → check ~/.config/mms/model-routes.json
-"API key not configured": env var not set → export <KEY_NAME>="your-key" in ~/.zshrc
-"Unknown provider": providerId not in config/providers.json → check spelling or add provider entry
-"Failed to load providers.json": config/providers.json missing → reinstall or check working directory
-build_errors: run npm run build and check TypeScript output
--->
-<!-- AGENT:END -->
-
 ## Install
 
 ```bash
@@ -83,6 +16,51 @@ curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh 
 
 > Installs to `~/.hive-orchestrator`. Custom: `HIVE_HOME=/your/path curl -fsSL ... | bash`
 > Already installed? Same command to upgrade.
+
+## For AI Agents
+
+> **Copy the prompt below into Claude Code, Cursor, or any AI coding assistant — it will handle the rest.**
+
+```
+Install Hive from https://github.com/CtriXin/hive using the setup below.
+Run commands, fix errors, report results when done.
+
+INSTALL:  curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+UPGRADE:  same command
+DIR:      ~/.hive-orchestrator (override: HIVE_HOME=/path)
+
+REQUIRES:
+- node >= 18
+- ~/.config/mms/model-routes.json (MMS gateway, resolves model→provider+key)
+  override: export MMS_ROUTES_PATH=/path/to/model-routes.json
+
+ENV KEYS (fallback when MMS routes unavailable, at least one required):
+  QWEN_API_KEY  KIMI_API_KEY  KIMI_CODING_API_KEY  GLM_CN_API_KEY
+  GLM_EN_API_KEY  MINIMAX_CN_API_KEY  MINIMAX_EN_API_KEY  BAILIAN_API_KEY
+
+CONFIG FILES (in config/):
+  providers.json         — 8 providers, api_key_env per entry
+  model-capabilities.json — static benchmark scores (14 models)
+  model-profiles.json    — live observed scores (auto-updated)
+  benchmark-policy.json  — scoring weights + decay + thresholds
+  review-policy.json     — 4-stage review cascade
+  User overrides: ~/.hive/config.json (global), <repo>/.hive/config.json (project)
+
+MCP SETUP:
+  claude mcp add hive -- node ~/.hive-orchestrator/dist/mcp-server/index.js
+  Sandboxed env: add "env":{"HOME":"/Users/<real-user>"} so hive finds model-routes.json
+
+MCP TOOLS: plan_tasks, execute_plan, dispatch_single, diagnostics, report
+
+VERIFY:
+  cd ~/.hive-orchestrator && npm run test:smoke
+  cd ~/.hive-orchestrator && npm run build
+
+ERRORS:
+  "No MMS route found"      → check ~/.config/mms/model-routes.json exists
+  "API key not configured"  → export <KEY>="your-key" in ~/.zshrc
+  "Unknown provider"        → check config/providers.json
+```
 
 ---
 
