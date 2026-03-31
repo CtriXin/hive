@@ -1,6 +1,6 @@
 {
   "name": "hive",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Self-contained multi-model orchestration: Opus plans, domestic models execute, cascade reviews",
   "type": "module",
   "main": "dist/orchestrator/index.js",
@@ -23,7 +23,7 @@
     "@anthropic-ai/claude-code": "^1.0.0",
     "@anthropic-ai/sdk": "^0.80.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "hive-discuss": "file:../hive-discuss",
+    "hive-discuss": "github:CtriXin/zhiji#main",
     "uuid": "^10.0.0",
     "zod": "^3.23.0"
   },
