@@ -16,13 +16,15 @@
 ```
 I need you to install and configure Hive — a multi-model AI orchestration system.
 
-## Step 1: Clone & Install
+## Step 1: Install (or Upgrade)
 
-git clone https://github.com/CtriXin/hive.git
-cd hive
-bash scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
 
-If install.sh reports issues, fix them before proceeding.
+This clones to ~/.hive-orchestrator, installs deps, builds, and runs checks.
+If already installed, it pulls latest and rebuilds.
+Custom path: HIVE_HOME=/your/path curl -fsSL ... | bash
+
+If the script reports issues, fix them before proceeding.
 
 ## Step 2: MMS Model Routes (Required)
 
@@ -157,6 +159,16 @@ Instead of burning $5+ per session on Claude Opus for everything, Hive routes ~8
 Want to contribute? See [Contributing](#contributing).
 
 ## Quick Start
+
+**One-line install (or upgrade):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+```
+
+Installs to `~/.hive-orchestrator`. Custom location: `HIVE_HOME=/your/path curl -fsSL ... | bash`
+
+**Manual install:**
 
 ```bash
 git clone https://github.com/CtriXin/hive.git
@@ -296,6 +308,16 @@ Hive 已内置 MCP server，提供：
 🚧 **积极开发中。** 当前核心 orchestrator、MCP、review pipeline、config system 已经落地，后续重点是体验、文档和更多 provider/benchmark。
 
 ### 快速开始
+
+**一键安装/升级：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+```
+
+安装到 `~/.hive-orchestrator`。自定义路径：`HIVE_HOME=/your/path curl -fsSL ... | bash`
+
+**手动安装：**
 
 ```bash
 git clone https://github.com/CtriXin/hive.git
