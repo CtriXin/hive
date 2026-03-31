@@ -4,9 +4,9 @@
 
 > Claude 是蜂后，国产模型是工蜂，成本降 85%，质量不打折。
 
-[![Hive Architecture](https://excalidraw.com/og/jW4nRzVXDLxb799TTKFYC)](https://excalidraw.com/#json=jW4nRzVXDLxb799TTKFYC,XGWTkcvrRQVk0XVAs7Zzzw)
-
-> [点击查看交互式架构图](https://excalidraw.com/#json=jW4nRzVXDLxb799TTKFYC,XGWTkcvrRQVk0XVAs7Zzzw) — 可在 Excalidraw 中编辑
+<p align="center">
+  <img src="docs/images/architecture-cn.png" alt="Hive 架构图" width="700" />
+</p>
 
 [English](#english) | [中文](#中文)
 
@@ -82,29 +82,9 @@ Instead of burning $5+ per session on Claude Opus for everything, Hive routes ~8
 
 ### The 4-Tier Cascade
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Tier 0: Translator                                          │
-│  Natural language → clean English prompt                     │
-└──────────────────┬──────────────────────────────────────────┘
-                   ↓
-┌─────────────────────────────────────────────────────────────┐
-│  Tier 1: Planner (Claude)                                    │
-│  Decomposes goal → sub-tasks → assigns optimal models        │
-└──────────────────┬──────────────────────────────────────────┘
-                   ↓
-┌─────────────────────────────────────────────────────────────┐
-│  Tier 3: Workers (Domestic models via Claude Code SDK)       │
-│  Full Claude Code instances with swapped LLM backend         │
-│  Each worker: isolated git worktree, full tool access        │
-│  Triggers cross-model discussion when uncertain              │
-└──────────────────┬──────────────────────────────────────────┘
-                   ↓
-┌─────────────────────────────────────────────────────────────┐
-│  Tier 2: Review Pipeline (4-stage cascade)                   │
-│  Cross-review → Adversarial lenses → Arbitration → Verdict  │
-└─────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/images/architecture-en.png" alt="Hive Architecture" width="700" />
+</p>
 
 ### Cost Comparison
 
