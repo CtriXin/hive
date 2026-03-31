@@ -3,6 +3,9 @@ dist/
 *.js.map
 .DS_Store
 
+# Claude Code local settings
+.claude/
+
 # Internal planning docs — do not publish
 tasks/
 CLI_BRIDGE_IMPLEMENTATION_PLAN.md

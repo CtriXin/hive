@@ -12,7 +12,7 @@ import type { SubTask } from '../orchestrator/types.js';
 // ── 配置 ──
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'https://chat.adsconflux.xyz/openapi/v1';
-const NEWAPI_KEY = process.env.NEWAPI_KEY || 'sk-crL7G5zKZMGV8trp3Bz665UTso4FYeyJSpKbQbvdt5GZbn1M';
+const NEWAPI_KEY = process.env.NEWAPI_KEY || ''; // Set via env, no default key
 
 const TEST_MODELS = {
   translate: 'kimi-for-coding',

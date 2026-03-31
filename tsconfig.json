@@ -12,6 +12,6 @@
     "sourceMap": true,
     "resolveJsonModule": true
   },
-  "include": ["orchestrator/**/*.ts", "mcp-server/**/*.ts", "bin/**/*.ts"],
+  "include": ["orchestrator/**/*.ts", "mcp-server/**/*.ts", "bin/**/*.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
