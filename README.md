@@ -8,90 +8,14 @@
 
 ---
 
-<!-- AGENT_SETUP_START — Copy the block below into your AI coding assistant (Claude Code, Cursor, etc.) -->
+## Install
 
-<details>
-<summary><strong>Agent Setup Prompt (click to expand / 复制给 AI 助手)</strong></summary>
-
-```
-I need you to install and configure Hive — a multi-model AI orchestration system.
-
-## Step 1: Install (or Upgrade)
-
+```bash
 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
-
-This clones to ~/.hive-orchestrator, installs deps, builds, and runs checks.
-If already installed, it pulls latest and rebuilds.
-Custom path: HIVE_HOME=/your/path curl -fsSL ... | bash
-
-If the script reports issues, fix them before proceeding.
-
-## Step 2: MMS Model Routes (Required)
-
-Hive resolves models via ~/.config/mms/model-routes.json.
-Check if it exists:  ls ~/.config/mms/model-routes.json
-If missing, you need MMS installed first, or set MMS_ROUTES_PATH env var
-to point to your model-routes.json file.
-
-Without model-routes.json, you'll get "No MMS route found" errors.
-Fallback: Hive can still use config/providers.json directly if you
-specify providerId explicitly when dispatching tasks.
-
-## Step 3: API Keys
-
-Set at least one provider API key in your environment:
-- QWEN_API_KEY        (Qwen / 通义千问)
-- KIMI_API_KEY        (Kimi / Moonshot)
-- KIMI_CODING_API_KEY (Kimi CodingPlan)
-- GLM_CN_API_KEY      (GLM / 智谱)
-- GLM_EN_API_KEY      (GLM Z.ai international)
-- MINIMAX_CN_API_KEY  (MiniMax CN)
-- MINIMAX_EN_API_KEY  (MiniMax EN)
-- BAILIAN_API_KEY     (百炼 CodingPlan)
-
-## Step 4: MCP Server (Optional)
-
-Add to your Claude Code settings (~/.claude.json or settings.json):
-
-{
-  "mcpServers": {
-    "hive": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["<hive-path>/dist/mcp-server/index.js"],
-      "env": { "HOME": "<your-real-home>" }
-    }
-  }
-}
-
-Replace <hive-path> with the absolute path to the hive directory.
-Replace <your-real-home> with your actual home directory (important in sandboxed environments).
-
-## Step 5: Verify
-
-npm run test:smoke   # structure check
-npm run build        # ensure TypeScript compiles
-
-## Available MCP Tools (after Step 4)
-
-- plan_tasks     — decompose a goal into executable sub-tasks
-- execute_plan   — run a task plan with auto model assignment + review
-- dispatch_single — send one task to a specific model
-- diagnostics    — health check, scores, translate, ping
-- report         — generate Chinese summary of results
-
-## Troubleshooting
-
-- "No MMS route found": model-routes.json missing or model ID not in routes
-- "Unknown provider": provider not in config/providers.json
-- "Failed to load providers.json": check that config/providers.json exists
-- Build errors: run `npm run build` and check TypeScript errors
-- Symlink issues: hive-discuss is fetched from GitHub, not local symlink
 ```
 
-</details>
-
-<!-- AGENT_SETUP_END -->
+> Installs to `~/.hive-orchestrator`. Custom: `HIVE_HOME=/your/path curl -fsSL ... | bash`
+> Already installed? Same command to upgrade.
 
 ---
 
