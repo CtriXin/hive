@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/orchestrator/index.js",
   "bin": {
+    "agentbus": "./dist/bin/agentbus.js",
     "hive": "./bin/hive",
     "hive-config": "./bin/hive-config"
   },
@@ -29,6 +30,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.2"
   }
