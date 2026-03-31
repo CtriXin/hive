@@ -106,9 +106,10 @@ export function resolveProvider(
   const apiKey = process.env[apiKeyEnvVar] || '';
 
   if (!apiKey) {
-    console.warn(
-      `⚠️ API key not set for provider "${providerId}": ` +
-      `export ${apiKeyEnvVar}="your-key"`
+    throw new Error(
+      `API key not configured for provider "${providerId}".\n` +
+      `Fix: export ${apiKeyEnvVar}="your-key"\n` +
+      `Or add it to your shell profile (~/.zshrc / ~/.bashrc).`
     );
   }
 
@@ -149,7 +150,9 @@ export function resolveProviderForModel(modelId: string): ResolvedProvider {
 
   // No MMS route — caller needs to know the providerId
   throw new Error(
-    `No MMS route found for model "${modelId}" and no providerId specified`,
+    `No MMS route found for model "${modelId}" and no providerId specified.\n` +
+    `Fix: ensure ~/.config/mms/model-routes.json contains a route for "${modelId}",\n` +
+    `or set MMS_ROUTES_PATH env var, or specify a providerId from config/providers.json.`
   );
 }
 
