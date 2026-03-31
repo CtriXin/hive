@@ -4,6 +4,10 @@
 
 > Claude 是蜂后，国产模型是工蜂，成本降 85%，质量不打折。
 
+[![Hive Architecture](https://excalidraw.com/og/jW4nRzVXDLxb799TTKFYC)](https://excalidraw.com/#json=jW4nRzVXDLxb799TTKFYC,XGWTkcvrRQVk0XVAs7Zzzw)
+
+> [点击查看交互式架构图](https://excalidraw.com/#json=jW4nRzVXDLxb799TTKFYC,XGWTkcvrRQVk0XVAs7Zzzw) — 可在 Excalidraw 中编辑
+
 [English](#english) | [中文](#中文)
 
 ---
