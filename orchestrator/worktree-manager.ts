@@ -122,16 +122,24 @@ export function getWorktreeDiff(worktreePath: string): WorktreeDiff {
       encoding: 'utf-8',
     });
     return {
-      files: output
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => line.slice(3).trim())
-        .filter(Boolean),
+      files: parsePorcelainChangedFiles(output),
     };
   } catch {
     return { files: [] };
   }
+}
+
+export function parsePorcelainChangedFiles(output: string): string[] {
+  return output
+    .split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      const rawPath = line.slice(3).trim();
+      const renameParts = rawPath.split(' -> ');
+      return (renameParts.at(-1) || '').trim();
+    })
+    .filter(Boolean);
 }
 
 export function removeWorktree(name: string, force = false): void {
