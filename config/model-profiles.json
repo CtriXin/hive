@@ -161,10 +161,10 @@
     "glm-5-turbo": {
       "scores": {
         "implementation": {
-          "value": 0.974271029235128,
-          "samples": 13,
-          "effective_samples": 12.399999999999999,
-          "last_updated": "2026-03-31T04:14:44.667Z"
+          "value": 0.9877894624644109,
+          "samples": 17,
+          "effective_samples": 15.799999999999997,
+          "last_updated": "2026-04-01T07:28:53.033Z"
         },
         "review": {
           "value": 0.5,

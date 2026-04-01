@@ -73,11 +73,28 @@ export function createWorktree(
     : optionsOrProjectRoot;
   const { name, branch, fromBranch = 'main' } = options;
   const worktreesDir = getWorktreesDir();
-  const worktreePath = path.join(worktreesDir, name);
-  const branchName = branch || `worktree/${name}`;
+  const baseBranchName = branch || `worktree/${name}`;
 
   // Ensure worktrees directory exists
   execSync(`mkdir -p "${worktreesDir}"`);
+
+  // If branch already exists (e.g. from a previous run/repair round),
+  // append a short timestamp suffix to avoid collision.
+  let branchName = baseBranchName;
+  let worktreeName = name;
+  try {
+    execSync(`git rev-parse --verify "${baseBranchName}"`, {
+      encoding: 'utf-8', stdio: 'pipe',
+    });
+    // Branch exists — use a unique suffix
+    const suffix = Date.now().toString(36);
+    branchName = `${baseBranchName}-${suffix}`;
+    worktreeName = `${name}-${suffix}`;
+  } catch {
+    // Branch does not exist — use original name
+  }
+
+  const worktreePath = path.join(worktreesDir, worktreeName);
 
   try {
     execSync(`git worktree add -b "${branchName}" "${worktreePath}" "${fromBranch}"`, {
@@ -85,13 +102,13 @@ export function createWorktree(
     });
   } catch (error) {
     // If worktree already exists, just return info
-    const existing = listWorktrees().find(w => w.name === name);
+    const existing = listWorktrees().find(w => w.name === worktreeName);
     if (existing) return existing;
     throw error;
   }
 
   return {
-    name,
+    name: worktreeName,
     path: worktreePath,
     branch: branchName,
     isMain: false,

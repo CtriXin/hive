@@ -3,7 +3,7 @@ import { resolveProvider } from './provider-resolver.js';
 import { getRegistry } from './model-registry.js';
 import { loadConfig, resolveTierModel } from './hive-config.js';
 import { buildSdkEnv } from './project-paths.js';
-import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
+import { safeQuery, extractTextFromMessages, extractTokenUsage } from './sdk-query-safe.js';
 
 const TRANSLATE_PROMPT = `You are a precise technical translator.
 Translate the following Chinese input into clean, natural English suitable as a prompt for an AI coding assistant.
@@ -33,6 +33,13 @@ export async function translateToEnglish(
       confidence: 1.0,
       translator_model: 'passthrough',
       duration_ms: 0,
+      token_usage: { input: 0, output: 0 },
+      stage_usage: {
+        stage: 'translator',
+        model: 'passthrough',
+        input_tokens: 0,
+        output_tokens: 0,
+      },
     };
   }
 
@@ -72,6 +79,7 @@ async function doTranslate(
   });
 
   const english = extractTextFromMessages(result.messages);
+  const tokenUsage = extractTokenUsage(result.messages);
 
   // 简单 confidence 评估
   const confidence = english.length > 0 && english.length >= input.length * 0.3 ? 0.9 : 0.5;
@@ -82,5 +90,12 @@ async function doTranslate(
     confidence,
     translator_model: model,
     duration_ms: Date.now() - startTime,
+    token_usage: tokenUsage,
+    stage_usage: {
+      stage: 'translator',
+      model,
+      input_tokens: tokenUsage.input,
+      output_tokens: tokenUsage.output,
+    },
   };
 }

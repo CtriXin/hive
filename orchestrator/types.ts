@@ -128,6 +128,9 @@ export type DoneConditionType =
   | 'file_exists'
   | 'review_pass';
 
+export type VerificationScope = 'worktree' | 'suite' | 'both';
+export type PolicyHookStage = 'pre_merge' | 'post_verify';
+
 export type VerificationFailureClass =
   | 'build_fail'
   | 'test_fail'
@@ -146,6 +149,14 @@ export type NextActionKind =
   | 'request_human'
   | 'finalize';
 
+export type TaskRunStatus =
+  | 'pending'
+  | 'worker_failed'
+  | 'review_failed'
+  | 'verified'
+  | 'merged'
+  | 'superseded';
+
 export interface DoneCondition {
   type: DoneConditionType;
   label: string;
@@ -153,6 +164,7 @@ export interface DoneCondition {
   path?: string;
   must_pass: boolean;
   timeout_ms?: number;
+  scope?: VerificationScope;
 }
 
 export interface VerificationResult {
@@ -170,6 +182,42 @@ export interface NextAction {
   reason: string;
   task_ids: string[];
   instructions?: string;
+}
+
+export interface TaskRunRecord {
+  task_id: string;
+  status: TaskRunStatus;
+  round: number;
+  changed_files: string[];
+  merged: boolean;
+  worker_success: boolean;
+  review_passed: boolean;
+  last_error?: string;
+}
+
+export interface RepairHistoryEntry {
+  task_id: string;
+  round: number;
+  findings_count: number;
+  outcome: 'fixed' | 'failed' | 'skipped';
+  note?: string;
+}
+
+export interface PolicyHook {
+  stage: PolicyHookStage;
+  label: string;
+  command: string;
+  must_pass: boolean;
+}
+
+export interface PolicyHookResult {
+  stage: PolicyHookStage;
+  label: string;
+  passed: boolean;
+  exit_code: number | null;
+  stdout_tail: string;
+  stderr_tail: string;
+  round: number;
 }
 
 export interface RunSpec {
@@ -193,8 +241,14 @@ export interface RunState {
   current_plan_id?: string;
   completed_task_ids: string[];
   failed_task_ids: string[];
+  review_failed_task_ids: string[];
+  merged_task_ids: string[];
   retry_counts: Record<string, number>;
   replan_count: number;
+  task_states: Record<string, TaskRunRecord>;
+  repair_history: RepairHistoryEntry[];
+  round_cost_history: RoundCostEntry[];
+  policy_hook_results: PolicyHookResult[];
   verification_results: VerificationResult[];
   next_action?: NextAction;
   final_summary?: string;
@@ -333,6 +387,8 @@ export interface TranslationResult {
   confidence: number;
   translator_model: string;
   duration_ms: number;
+  token_usage?: { input: number; output: number };
+  stage_usage?: StageTokenUsage;
 }
 
 // ── Token Breakdown ──
@@ -351,6 +407,19 @@ export interface TokenBreakdown {
   actual_cost_usd: number;
   claude_equivalent_usd: number;
   savings_usd: number;
+}
+
+export interface RoundCostEntry {
+  round: number;
+  action: NextActionKind;
+  cost_estimate: {
+    opus_tokens: number;
+    sonnet_tokens: number;
+    haiku_tokens: number;
+    domestic_tokens: number;
+    estimated_cost_usd: number;
+  };
+  token_breakdown: TokenBreakdown;
 }
 
 // ── Plan Checkpoint (P1: result persistence + resume) ──

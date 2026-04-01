@@ -772,6 +772,123 @@ server.tool(
   }
 );
 
+// ── Autoloop tools ──
+
+server.tool(
+  'run_goal',
+  'Run a full autonomous loop: plan → dispatch → review → verify → repair/replan → done.',
+  {
+    goal: z.string().describe('Goal in Chinese or English'),
+    cwd: z.string().describe('Working directory').optional(),
+    mode: z.enum(['safe', 'balanced', 'aggressive']).default('safe'),
+    max_rounds: z.number().describe('Max loop rounds').default(6),
+    auto_merge: z.boolean().describe('Auto-merge passed worktrees').default(false),
+  },
+  async ({ goal, cwd, mode, max_rounds, auto_merge }) => {
+    const { runGoal } = await import('../orchestrator/driver.js');
+    const effectiveCwd = cwd || process.cwd();
+    try {
+      const execution = await runGoal({
+        goal, cwd: effectiveCwd, mode,
+        maxRounds: max_rounds, allowAutoMerge: auto_merge,
+      });
+      const { spec, state, plan } = execution;
+      const taskSummary = plan
+        ? plan.tasks.map(t => `- ${t.id}: ${t.description.slice(0, 80)} [${t.assigned_model}]`).join('\n')
+        : '(no plan)';
+      const verificationSummary = state.verification_results
+        .map(v => `- [${v.passed ? '✅' : '❌'}] ${v.target.label}${v.failure_class ? ` (${v.failure_class})` : ''}`)
+        .join('\n');
+      let text = `## Run Complete: ${spec.id}\n\n`;
+      text += `**Status**: ${state.status}\n`;
+      text += `**Rounds**: ${state.round}/${spec.max_rounds}\n`;
+      text += `**Mode**: ${spec.mode}\n\n`;
+      text += `### Tasks\n${taskSummary}\n\n`;
+      if (verificationSummary) text += `### Verification\n${verificationSummary}\n\n`;
+      if (execution.result?.token_breakdown) {
+        text += `### Cost\n`;
+        text += `- Actual: $${execution.result.token_breakdown.actual_cost_usd.toFixed(4)}\n`;
+        text += `- Claude equivalent: $${execution.result.token_breakdown.claude_equivalent_usd.toFixed(4)}\n`;
+        text += `- Savings: $${execution.result.token_breakdown.savings_usd.toFixed(4)}\n\n`;
+      }
+      text += `### Next Action\n**${state.next_action?.kind}**: ${state.next_action?.reason}\n\n`;
+      if (state.final_summary) text += `### Summary\n${state.final_summary}\n`;
+      return { content: [{ type: 'text', text }] };
+    } catch (err: any) {
+      return { content: [{ type: 'text', text: `## run_goal error\n\n**error**: ${err.message}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'resume_run',
+  'Resume a saved run. Default: read-only restore. Set execute=true to re-enter the loop.',
+  {
+    run_id: z.string().describe('Run ID (e.g. run-1775011220354)'),
+    cwd: z.string().describe('Working directory').optional(),
+    execute: z.boolean().describe('Re-enter execution loop').default(false),
+  },
+  async ({ run_id, cwd, execute }) => {
+    const { resumeRun } = await import('../orchestrator/driver.js');
+    const execution = await resumeRun(cwd || process.cwd(), run_id, { execute });
+    if (!execution) {
+      return { content: [{ type: 'text', text: `## resume_run error\n\nRun not found: ${run_id}` }], isError: true };
+    }
+    const { spec, state } = execution;
+    let text = `## Run ${execute ? 'Resumed' : 'Restored'}: ${spec.id}\n\n`;
+    text += `**Status**: ${state.status}\n**Rounds**: ${state.round}/${spec.max_rounds}\n**Goal**: ${spec.goal}\n\n`;
+    text += `### Next Action\n**${state.next_action?.kind}**: ${state.next_action?.reason}\n`;
+    if (state.final_summary) text += `\n### Summary\n${state.final_summary}\n`;
+    return { content: [{ type: 'text', text }] };
+  },
+);
+
+server.tool(
+  'run_status',
+  'List all runs or get details of a specific run.',
+  {
+    run_id: z.string().describe('Specific run ID to inspect').optional(),
+    cwd: z.string().describe('Working directory').optional(),
+  },
+  async ({ run_id, cwd }) => {
+    const { listRuns, loadRunPlan, loadRunResult, loadRunSpec, loadRunState } = await import('../orchestrator/run-store.js');
+    const effectiveCwd = cwd || process.cwd();
+    if (run_id) {
+      const spec = loadRunSpec(effectiveCwd, run_id);
+      const state = loadRunState(effectiveCwd, run_id);
+      if (!spec || !state) {
+        return { content: [{ type: 'text', text: `## run_status error\n\nRun not found: ${run_id}` }], isError: true };
+      }
+      const plan = loadRunPlan(effectiveCwd, run_id);
+      const result = loadRunResult(effectiveCwd, run_id);
+      let text = `## Run: ${run_id}\n\n`;
+      text += `**Status**: ${state.status}\n**Goal**: ${spec.goal}\n**Mode**: ${spec.mode}\n`;
+      text += `**Rounds**: ${state.round}/${spec.max_rounds}\n`;
+      text += `**Plan tasks**: ${plan?.tasks.length || 0}\n`;
+      text += `**Completed**: ${state.completed_task_ids.join(', ') || 'none'}\n`;
+      text += `**Failed**: ${state.failed_task_ids.join(', ') || 'none'}\n`;
+      text += `**Merged**: ${state.merged_task_ids?.join(', ') || 'none'}\n`;
+      text += `**Result saved**: ${result ? 'yes' : 'no'}\n`;
+      if (result?.token_breakdown) {
+        text += `**Actual cost**: $${result.token_breakdown.actual_cost_usd.toFixed(4)}\n`;
+        text += `**Savings vs Claude**: $${result.token_breakdown.savings_usd.toFixed(4)}\n`;
+      }
+      if (state.final_summary) text += `\n**Summary**: ${state.final_summary}\n`;
+      text += `\n### Next Action\n**${state.next_action?.kind}**: ${state.next_action?.reason}\n`;
+      return { content: [{ type: 'text', text }] };
+    }
+    const runs = listRuns(effectiveCwd);
+    if (runs.length === 0) {
+      return { content: [{ type: 'text', text: '## Runs\n\nNo runs found.' }] };
+    }
+    let text = `## Runs (${runs.length})\n\n| ID | Status | Goal |\n|-----|--------|------|\n`;
+    for (const run of runs) {
+      text += `| ${run.id} | ${run.state?.status || '?'} | ${run.spec?.goal?.slice(0, 60) || '(no goal)'} |\n`;
+    }
+    return { content: [{ type: 'text', text }] };
+  },
+);
+
 export default server;
 
 async function main(): Promise<void> {

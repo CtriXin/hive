@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import type { TaskPlan, TranslationResult, PlanDiscussResult } from './types.js';
+import type { TaskPlan, TranslationResult, PlanDiscussResult, StageTokenUsage } from './types.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from './planner.js';
 import { translateToEnglish } from './translator.js';
 import { ModelRegistry } from './model-registry.js';
@@ -87,6 +87,7 @@ export function parseJsonBlock<T>(raw: string): T {
 
 export interface PlannerRunResult {
   text: string;
+  tokenUsage: { input: number; output: number };
   diagnostics: {
     modelId: string;
     agentModel: string;
@@ -103,6 +104,8 @@ export interface PlanGoalResult {
   plan: TaskPlan | null;
   translation: TranslationResult | null;
   planner_model: string;
+  planner_stage_usage: StageTokenUsage | null;
+  extra_stage_usages: StageTokenUsage[];
   planner_raw_output: string;
   planner_error: string | null;
   planner_diagnostics: PlannerRunResult['diagnostics'] | null;
@@ -112,7 +115,7 @@ export interface PlanGoalResult {
 }
 
 export async function runClaudePlanner(prompt: string, cwd: string, modelId: string): Promise<PlannerRunResult> {
-  const { safeQuery, extractTextFromMessages } = await import('./sdk-query-safe.js');
+  const { safeQuery, extractTextFromMessages, extractTokenUsage } = await import('./sdk-query-safe.js');
   const { buildSdkEnv } = await import('./project-paths.js');
 
   const agentModel = modelId;
@@ -136,6 +139,7 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
   });
 
   const text = extractTextFromMessages(result.messages);
+  const tokenUsage = extractTokenUsage(result.messages);
   const messages = result.messages.map((m: any, i: number) => {
     const type = m.type || '?';
     let preview = '';
@@ -154,6 +158,7 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
 
   return {
     text,
+    tokenUsage,
     diagnostics: {
       modelId,
       agentModel,
@@ -202,12 +207,19 @@ export async function planGoal(goal: string, cwd: string): Promise<PlanGoalResul
   let plan: TaskPlan | null = null;
   let plannerRawOutput = '';
   let plannerDiagnostics: PlannerRunResult['diagnostics'] | null = null;
+  let plannerStageUsage: StageTokenUsage | null = null;
   let plannerError: string | null = null;
 
   try {
     const plannerResult = await runClaudePlanner(claudePrompt, cwd, plannerModel);
     plannerRawOutput = plannerResult.text;
     plannerDiagnostics = plannerResult.diagnostics;
+    plannerStageUsage = {
+      stage: 'planner',
+      model: plannerModel,
+      input_tokens: plannerResult.tokenUsage.input,
+      output_tokens: plannerResult.tokenUsage.output,
+    };
     const parsed = parseJsonBlock<{ goal: string; tasks: unknown[] }>(plannerRawOutput);
     plan = buildPlanFromClaudeOutput(parsed);
     plan.cwd = cwd;
@@ -233,6 +245,11 @@ export async function planGoal(goal: string, cwd: string): Promise<PlanGoalResul
     plan,
     translation: translationResult,
     planner_model: plannerModel,
+    planner_stage_usage: plannerStageUsage,
+    extra_stage_usages: [
+      ...(translationResult?.stage_usage ? [translationResult.stage_usage] : []),
+      ...(plannerStageUsage ? [plannerStageUsage] : []),
+    ],
     planner_raw_output: plannerRawOutput,
     planner_error: plannerError,
     planner_diagnostics: plannerDiagnostics,

@@ -255,17 +255,22 @@ export async function runA2aReview(
   const greenCount = allFindings.filter(f => f.severity === 'green').length;
 
   // 6. Determine verdict
+  // Only hard-REJECT when multiple lenses flag red on 2+ distinct files.
+  // Single-file reds or low red counts go to CONTESTED for arbitration.
   let verdict: A2aVerdict = 'CONTESTED';
   if (allFindings.length === 0 || redCount === 0) {
     verdict = 'PASS';
   } else if (lenses.length === 1) {
-    verdict = 'REJECT';
+    verdict = redCount >= 3 ? 'REJECT' : 'CONTESTED';
   } else if (redCount > 0 && lenses.length > 1) {
     const redFiles = allFindings
       .filter(f => f.severity === 'red')
       .map(f => f.file.split(':')[0]);
+    const uniqueRedFiles = [...new Set(redFiles)];
     const duplicateRedFiles = redFiles.filter((f, i) => redFiles.indexOf(f) !== i);
-    verdict = duplicateRedFiles.length > 0 ? 'REJECT' : 'CONTESTED';
+    const uniqueDuplicates = [...new Set(duplicateRedFiles)];
+    // Need cross-lens agreement on 2+ distinct files to hard-reject
+    verdict = uniqueDuplicates.length >= 2 ? 'REJECT' : 'CONTESTED';
   }
 
   return {

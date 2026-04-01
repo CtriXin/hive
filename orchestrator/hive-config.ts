@@ -275,8 +275,12 @@ export function resolveFallback(
 ): string {
   if (errorType === 'rate_limit' || errorType === 'server_error') {
     const failedProvider = registry.get(failedModel)?.provider || null;
+    // Exclude Claude models from fallback — they require local Keychain auth
+    // and will hang in non-interactive environments (codex, CI, etc.)
     const ranked = registry.rankModelsForTask(task)
-      .filter((item) => !item.blocked_by?.length && item.model !== failedModel);
+      .filter((item) => !item.blocked_by?.length
+        && item.model !== failedModel
+        && !item.model.startsWith('claude-'));
 
     const alternateProvider = ranked.find((item) => {
       const provider = registry.get(item.model)?.provider || null;

@@ -43,20 +43,24 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
   const mmsBaseUrl = process.env.ANTHROPIC_BASE_URL;
   const mmsToken = process.env.ANTHROPIC_AUTH_TOKEN;
 
+  // Always ensure ANTHROPIC_AUTH_TOKEN is set to prevent Claude Code
+  // subprocess from falling back to macOS Keychain (which triggers popups).
+  // Priority: explicit apiKey > MMS token > inherited env token.
+  const inheritedToken = process.env.ANTHROPIC_AUTH_TOKEN || '';
+
   if (needsMmsGateway && mmsBaseUrl) {
     env.ANTHROPIC_BASE_URL = mmsBaseUrl;
-    env.ANTHROPIC_AUTH_TOKEN = mmsToken || '';
+    env.ANTHROPIC_AUTH_TOKEN = mmsToken || inheritedToken;
   } else if (baseUrl) {
-    // Anthropic SDK appends /v1/messages itself — strip trailing /v1 to avoid /v1/v1/messages
     env.ANTHROPIC_BASE_URL = baseUrl.replace(/\/v1\/?$/, '');
-    if (apiKey) {
-      env.ANTHROPIC_AUTH_TOKEN = apiKey;
-    } else {
-      delete env.ANTHROPIC_AUTH_TOKEN;
-    }
+    env.ANTHROPIC_AUTH_TOKEN = apiKey || inheritedToken;
   } else {
-    delete env.ANTHROPIC_BASE_URL;
-    delete env.ANTHROPIC_AUTH_TOKEN;
+    // No explicit baseUrl — keep inherited values, never delete
+    // If neither baseUrl nor token exist, the subprocess will use
+    // its own default resolution (but won't hit Keychain if token is set)
+    if (inheritedToken) {
+      env.ANTHROPIC_AUTH_TOKEN = inheritedToken;
+    }
   }
   return env;
 }

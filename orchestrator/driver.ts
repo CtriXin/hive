@@ -1,16 +1,23 @@
 import fs from 'fs';
 import path from 'path';
+import { spawnSync } from 'child_process';
 import type {
   DoneCondition,
   NextAction,
   OrchestratorResult,
+  PolicyHook,
+  PolicyHookResult,
+  RoundCostEntry,
   ReviewFinding,
   ReviewResult,
   RunMode,
   RunSpec,
   RunState,
+  StageTokenUsage,
   SubTask,
   TaskPlan,
+  TaskRunRecord,
+  TokenBreakdown,
   VerificationResult,
   WorkerResult,
 } from './types.js';
@@ -30,6 +37,7 @@ import { dispatchBatch, spawnWorker } from './dispatcher.js';
 import { reviewCascade } from './reviewer.js';
 import { allRequiredChecksPassed, runVerification, runVerificationSuite } from './verifier.js';
 import { commitAndMergeWorktree } from './worktree-manager.js';
+import { loadProjectVerificationPolicy } from './project-policy.js';
 
 // ── Options & Result ──
 
@@ -84,9 +92,117 @@ function isTerminalStatus(status: RunState['status']): boolean {
   return status === 'done' || status === 'blocked';
 }
 
+function dedupe(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function trimTail(text: string, limit = 4000): string {
+  if (!text) return '';
+  return text.length <= limit ? text : text.slice(-limit);
+}
+
+function ensureTaskState(
+  state: RunState,
+  taskId: string,
+): TaskRunRecord {
+  const existing = state.task_states[taskId];
+  if (existing) return existing;
+
+  const created: TaskRunRecord = {
+    task_id: taskId,
+    status: 'pending',
+    round: state.round,
+    changed_files: [],
+    merged: false,
+    worker_success: false,
+    review_passed: false,
+  };
+  state.task_states[taskId] = created;
+  return created;
+}
+
+function seedTaskStatesFromPlan(state: RunState, plan: TaskPlan): void {
+  for (const task of plan.tasks) {
+    ensureTaskState(state, task.id);
+  }
+}
+
+function updateTaskStatesFromWorkers(
+  state: RunState,
+  workerResults: WorkerResult[],
+): void {
+  for (const worker of workerResults) {
+    const record = ensureTaskState(state, worker.taskId);
+    record.round = state.round;
+    record.changed_files = worker.changedFiles;
+    record.worker_success = worker.success;
+    if (!worker.success) {
+      record.status = 'worker_failed';
+      record.last_error = worker.output.find((msg) => msg.type === 'error')?.content;
+    }
+  }
+}
+
+function updateTaskStatesFromReviews(
+  state: RunState,
+  reviewResults: ReviewResult[],
+): void {
+  for (const review of reviewResults) {
+    const record = ensureTaskState(state, review.taskId);
+    record.round = state.round;
+    record.review_passed = review.passed;
+    if (review.passed && !record.merged) {
+      record.status = 'verified';
+      record.last_error = undefined;
+    } else if (!review.passed) {
+      record.status = 'review_failed';
+      record.last_error = review.findings[0]?.issue;
+    }
+  }
+}
+
+function markMergedTasks(
+  state: RunState,
+  mergedTaskIds: string[],
+): void {
+  state.merged_task_ids = dedupe([...state.merged_task_ids, ...mergedTaskIds]);
+  for (const taskId of mergedTaskIds) {
+    const record = ensureTaskState(state, taskId);
+    record.round = state.round;
+    record.status = 'merged';
+    record.merged = true;
+    record.review_passed = true;
+    record.worker_success = true;
+    record.last_error = undefined;
+  }
+}
+
+function buildMergedTaskContext(
+  state: RunState,
+  plan: TaskPlan,
+): string {
+  if (state.merged_task_ids.length === 0) return '';
+
+  return state.merged_task_ids
+    .map((taskId) => {
+      const task = plan.tasks.find((item) => item.id === taskId);
+      const record = state.task_states[taskId];
+      const files = record?.changed_files?.length
+        ? record.changed_files.join(', ')
+        : '(files unknown)';
+      return `- ${taskId}: ${task?.description || '(unknown task)'}\n  files: ${files}`;
+    })
+    .join('\n');
+}
+
 // ── Done Conditions ──
 
 export function inferDefaultDoneConditions(cwd: string): DoneCondition[] {
+  const projectPolicy = loadProjectVerificationPolicy(cwd);
+  if (projectPolicy) {
+    return projectPolicy.done_conditions;
+  }
+
   const scripts = readPackageScripts(cwd);
   const conditions: DoneCondition[] = [];
   const timeout = 10 * 60 * 1000;
@@ -94,19 +210,19 @@ export function inferDefaultDoneConditions(cwd: string): DoneCondition[] {
   if (scripts.build) {
     conditions.push({
       type: 'build', label: 'npm run build',
-      command: 'npm run build', must_pass: true, timeout_ms: timeout,
+      command: 'npm run build', must_pass: true, timeout_ms: timeout, scope: 'both',
     });
   }
   if (scripts.test) {
     conditions.push({
       type: 'test', label: 'npm test',
-      command: 'npm test', must_pass: true, timeout_ms: timeout,
+      command: 'npm test', must_pass: true, timeout_ms: timeout, scope: 'suite',
     });
   }
   if (scripts.lint) {
     conditions.push({
       type: 'lint', label: 'npm run lint',
-      command: 'npm run lint', must_pass: true, timeout_ms: timeout,
+      command: 'npm run lint', must_pass: true, timeout_ms: timeout, scope: 'suite',
     });
   }
   return conditions;
@@ -146,8 +262,14 @@ export function createInitialRunState(spec: RunSpec): RunState {
     round: 0,
     completed_task_ids: [],
     failed_task_ids: [],
+    review_failed_task_ids: [],
+    merged_task_ids: [],
     retry_counts: {},
     replan_count: 0,
+    task_states: {},
+    repair_history: [],
+    round_cost_history: [],
+    policy_hook_results: [],
     verification_results: [],
     next_action: initialNextAction(),
     updated_at: new Date().toISOString(),
@@ -249,6 +371,13 @@ async function runRepairRound(
       console.log(
         `  ⏭️  ${task.id}: retry budget exhausted (${retryCount}/${spec.max_worker_retries})`,
       );
+      state.repair_history.push({
+        task_id: task.id,
+        round: state.round,
+        findings_count: review.findings.length,
+        outcome: 'skipped',
+        note: 'retry budget exhausted',
+      });
       continue;
     }
     state.retry_counts[task.id] = retryCount + 1;
@@ -279,6 +408,13 @@ async function runRepairRound(
         registry,
       );
       repairReviewResults.push(reviewResult);
+      state.repair_history.push({
+        task_id: task.id,
+        round: state.round,
+        findings_count: review.findings.length,
+        outcome: reviewResult.passed ? 'fixed' : 'failed',
+        note: reviewResult.passed ? 'repair review passed' : 'repair review still failing',
+      });
     } else {
       repairReviewResults.push({
         taskId: task.id,
@@ -287,6 +423,13 @@ async function runRepairRound(
         findings: [],
         iterations: 0,
         duration_ms: 0,
+      });
+      state.repair_history.push({
+        task_id: task.id,
+        round: state.round,
+        findings_count: review.findings.length,
+        outcome: 'failed',
+        note: 'worker repair execution failed',
       });
     }
   }
@@ -310,8 +453,9 @@ function smokeVerifyWorktree(
 ): VerificationResult[] {
   if (!workerResult.worktreePath) return [];
 
-  // Only run build checks in isolation — tests/lint need full codebase
-  const smokeChecks = conditions.filter((c) => c.type === 'build');
+  const smokeChecks = conditions.filter((c) =>
+    c.scope === 'worktree' || c.scope === 'both',
+  );
   if (smokeChecks.length === 0) return [];
 
   return smokeChecks.map((c) => runVerification(c, workerResult.worktreePath));
@@ -329,6 +473,9 @@ function mergePassedTasks(
   workerResults: WorkerResult[],
   reviewResults: ReviewResult[],
   smokeResults: Record<string, boolean>,
+  preMergeHooks: PolicyHook[],
+  policyHookResults: PolicyHookResult[],
+  round: number,
 ): string[] {
   if (!spec.allow_auto_merge) return [];
 
@@ -342,6 +489,11 @@ function mergePassedTasks(
     const worker = workerResults.find((w) => w.taskId === review.taskId);
     const task = plan.tasks.find((t) => t.id === review.taskId);
     if (!worker?.branch) continue;
+
+    const hookResults = runPolicyHooks(preMergeHooks, worker.worktreePath, round);
+    policyHookResults.push(...hookResults);
+    const blockingHookFailed = hookResults.some((item) => !item.passed && preMergeHooks.find((hook) => hook.label === item.label && hook.stage === item.stage)?.must_pass);
+    if (blockingHookFailed) continue;
 
     const mergeResult = commitAndMergeWorktree(
       worker.worktreePath,
@@ -370,7 +522,154 @@ function summarizeOutcome(
   const mergeText = mergedTaskIds.length > 0
     ? `; merged: ${mergedTaskIds.join(', ')}`
     : '';
-  return `${passedReviews}/${result.review_results.length} reviews passed; ${failedReviews} failed; ${vText}${mergeText}.`;
+  const costText = result.token_breakdown
+    ? `; $${result.token_breakdown.actual_cost_usd.toFixed(4)} (saved $${result.token_breakdown.savings_usd.toFixed(4)} vs Claude)`
+    : '';
+  return `${passedReviews}/${result.review_results.length} reviews passed; ${failedReviews} failed; ${vText}${mergeText}${costText}.`;
+}
+
+// ── Cost tracking ──
+
+function buildCostEstimate(
+  extraStages: StageTokenUsage[],
+  workerResults: WorkerResult[],
+  reviewResults: ReviewResult[],
+  registry: ModelRegistry,
+): {
+  cost_estimate: OrchestratorResult['cost_estimate'];
+  token_breakdown: TokenBreakdown;
+} {
+  const stages: StageTokenUsage[] = [];
+  stages.push(...extraStages);
+
+  // Worker stages
+  for (const wr of workerResults) {
+    stages.push({
+      stage: `worker:${wr.taskId}`,
+      model: wr.model,
+      input_tokens: wr.token_usage.input,
+      output_tokens: wr.token_usage.output,
+    });
+  }
+
+  // Review stages
+  for (const rr of reviewResults) {
+    if (rr.token_stages) stages.push(...rr.token_stages);
+  }
+
+  // Bucket by model family
+  let opusTok = 0;
+  let sonnetTok = 0;
+  let haikuTok = 0;
+  let domesticTok = 0;
+  let costUsd = 0;
+
+  for (const st of stages) {
+    const total = st.input_tokens + st.output_tokens;
+    if (st.model.includes('opus')) opusTok += total;
+    else if (st.model.includes('sonnet')) sonnetTok += total;
+    else if (st.model.includes('haiku')) haikuTok += total;
+    else domesticTok += total;
+
+    const cap = registry.get(st.model);
+    if (cap) {
+      costUsd += (st.input_tokens * (cap.cost_per_mtok_input || 0)
+        + st.output_tokens * (cap.cost_per_mtok_output || 0)) / 1_000_000;
+    }
+  }
+
+  const totalInput = stages.reduce((s, t) => s + t.input_tokens, 0);
+  const totalOutput = stages.reduce((s, t) => s + t.output_tokens, 0);
+
+  // Claude Sonnet equivalent cost for savings comparison
+  const sonnetTier = registry.getClaudeTier('sonnet');
+  const sonnetCostPer1k = sonnetTier?.cost_per_1k || 0.003;
+  const claudeEquivalent = (totalInput + totalOutput) * sonnetCostPer1k / 1000;
+
+  return {
+    cost_estimate: {
+      opus_tokens: opusTok,
+      sonnet_tokens: sonnetTok,
+      haiku_tokens: haikuTok,
+      domestic_tokens: domesticTok,
+      estimated_cost_usd: costUsd,
+    },
+    token_breakdown: {
+      stages,
+      total_input: totalInput,
+      total_output: totalOutput,
+      actual_cost_usd: costUsd,
+      claude_equivalent_usd: claudeEquivalent,
+      savings_usd: claudeEquivalent - costUsd,
+    },
+  };
+}
+
+function aggregateRoundCosts(
+  history: RoundCostEntry[],
+): {
+  cost_estimate: OrchestratorResult['cost_estimate'];
+  token_breakdown: TokenBreakdown;
+} {
+  const stages = history.flatMap((entry) => entry.token_breakdown.stages);
+  const totalInput = history.reduce((sum, entry) => sum + entry.token_breakdown.total_input, 0);
+  const totalOutput = history.reduce((sum, entry) => sum + entry.token_breakdown.total_output, 0);
+  const actualCost = history.reduce((sum, entry) => sum + entry.token_breakdown.actual_cost_usd, 0);
+  const claudeEquivalent = history.reduce((sum, entry) => sum + entry.token_breakdown.claude_equivalent_usd, 0);
+
+  return {
+    cost_estimate: {
+      opus_tokens: history.reduce((sum, entry) => sum + entry.cost_estimate.opus_tokens, 0),
+      sonnet_tokens: history.reduce((sum, entry) => sum + entry.cost_estimate.sonnet_tokens, 0),
+      haiku_tokens: history.reduce((sum, entry) => sum + entry.cost_estimate.haiku_tokens, 0),
+      domestic_tokens: history.reduce((sum, entry) => sum + entry.cost_estimate.domestic_tokens, 0),
+      estimated_cost_usd: actualCost,
+    },
+    token_breakdown: {
+      stages,
+      total_input: totalInput,
+      total_output: totalOutput,
+      actual_cost_usd: actualCost,
+      claude_equivalent_usd: claudeEquivalent,
+      savings_usd: claudeEquivalent - actualCost,
+    },
+  };
+}
+
+function suiteScopedConditions(conditions: DoneCondition[]): DoneCondition[] {
+  return conditions.filter((condition) =>
+    condition.scope === undefined
+    || condition.scope === 'suite'
+    || condition.scope === 'both',
+  );
+}
+
+function runPolicyHooks(
+  hooks: PolicyHook[],
+  cwd: string,
+  round: number,
+): PolicyHookResult[] {
+  return hooks.map((hook) => {
+    const result = spawnSync('/bin/zsh', ['-lc', hook.command], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 5 * 60 * 1000,
+      maxBuffer: 1024 * 1024 * 8,
+    });
+    const passed = result.status === 0 && !result.error;
+    const stderr = result.error
+      ? `${result.stderr || ''}\n${result.error.message}`.trim()
+      : (result.stderr || '');
+    return {
+      stage: hook.stage,
+      label: hook.label,
+      passed,
+      exit_code: result.status,
+      stdout_tail: trimTail(result.stdout || ''),
+      stderr_tail: trimTail(stderr),
+      round,
+    };
+  });
 }
 
 // ── Main execution loop ──
@@ -380,7 +679,16 @@ export async function executeRun(
   state?: RunState,
 ): Promise<RunExecutionResult> {
   const currentState = state || createInitialRunState(spec);
+  currentState.review_failed_task_ids ||= [];
+  currentState.merged_task_ids ||= [];
+  currentState.task_states ||= {};
+  currentState.repair_history ||= [];
+  currentState.round_cost_history ||= [];
+  currentState.policy_hook_results ||= [];
   const registry = new ModelRegistry();
+  const projectPolicy = loadProjectVerificationPolicy(spec.cwd);
+  const preMergeHooks = projectPolicy?.hooks.filter((hook) => hook.stage === 'pre_merge') || [];
+  const postVerifyHooks = projectPolicy?.hooks.filter((hook) => hook.stage === 'post_verify') || [];
 
   let plan: TaskPlan | null = loadRunPlan(spec.cwd, spec.id) ?? null;
   let latestResult: OrchestratorResult | undefined;
@@ -392,6 +700,7 @@ export async function executeRun(
   ) {
     currentState.round += 1;
     const action = currentState.next_action?.kind || 'execute';
+    let roundExtraStages: StageTokenUsage[] = [];
     console.log(
       `\n🔁 Round ${currentState.round}/${spec.max_rounds} — action: ${action}`,
     );
@@ -420,7 +729,9 @@ export async function executeRun(
         return { spec, state: currentState, plan: null };
       }
 
+      roundExtraStages = planning.extra_stage_usages;
       plan = planning.plan;
+      seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
       saveRunPlan(spec.cwd, spec.id, plan);
     }
@@ -448,8 +759,19 @@ export async function executeRun(
             `[${v.target.type}] ${v.target.label}: ${v.failure_class} — ${v.stderr_tail.slice(0, 200)}`,
         )
         .join('\n');
+      const mergedContext = buildMergedTaskContext(currentState, plan!);
 
-      const replanGoal = `${spec.goal}\n\n### Previous attempt failed verification:\n${failureContext}\n\nPlease create a revised plan that addresses these failures.`;
+      const replanGoal = [
+        spec.goal,
+        '',
+        '### Previous attempt failed verification:',
+        failureContext || '(no explicit verification details)',
+        '',
+        '### Already merged successfully (do not redo these tasks):',
+        mergedContext || '(none)',
+        '',
+        'Please create a revised plan that addresses the remaining failures only.',
+      ].join('\n');
 
       const planning = await planGoal(replanGoal, spec.cwd);
       if (!planning.plan) {
@@ -462,7 +784,9 @@ export async function executeRun(
         break;
       }
 
+      roundExtraStages = planning.extra_stage_usages;
       plan = planning.plan;
+      seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
       saveRunPlan(spec.cwd, spec.id, plan);
     }
@@ -547,12 +871,23 @@ export async function executeRun(
     }
 
     // Update completed/failed tracking
+    updateTaskStatesFromWorkers(currentState, workerResults);
+    updateTaskStatesFromReviews(currentState, reviewResults);
+
     currentState.completed_task_ids = workerResults
       .filter((w) => w.success)
       .map((w) => w.taskId);
-    currentState.failed_task_ids = workerResults
+    const workerFailedTaskIds = workerResults
       .filter((w) => !w.success)
       .map((w) => w.taskId);
+    const reviewFailedTaskIds = reviewResults
+      .filter((r) => !r.passed)
+      .map((r) => r.taskId);
+    currentState.review_failed_task_ids = reviewFailedTaskIds;
+    currentState.failed_task_ids = dedupe([
+      ...workerFailedTaskIds,
+      ...reviewFailedTaskIds,
+    ]);
 
     // ── Phase 3: Verification & Progressive Merge ──
     currentState.status = 'verifying';
@@ -575,14 +910,34 @@ export async function executeRun(
       workerResults,
       reviewResults,
       smokeResults,
+      preMergeHooks,
+      currentState.policy_hook_results,
+      currentState.round,
     );
+    markMergedTasks(currentState, mergedTaskIds);
 
     // Step 3c: Suite-level verification on merged codebase
-    const suiteResults = runVerificationSuite(spec.done_conditions, spec.cwd);
+    const suiteResults = runVerificationSuite(
+      suiteScopedConditions(spec.done_conditions),
+      spec.cwd,
+    );
     currentState.verification_results = suiteResults;
-    const suiteVerificationPassed = allRequiredChecksPassed(suiteResults);
+    const postVerifyResults = runPolicyHooks(postVerifyHooks, spec.cwd, currentState.round);
+    currentState.policy_hook_results.push(...postVerifyResults);
+    const blockingPostVerifyFailed = postVerifyResults.some((item) =>
+      !item.passed && postVerifyHooks.find((hook) => hook.label === item.label && hook.stage === item.stage)?.must_pass,
+    );
+    const suiteVerificationPassed = allRequiredChecksPassed(suiteResults) && !blockingPostVerifyFailed;
 
-    // Build orchestrator result
+    // Build orchestrator result with cost tracking
+    const roundCost = buildCostEstimate(roundExtraStages, workerResults, reviewResults, registry);
+    currentState.round_cost_history.push({
+      round: currentState.round,
+      action,
+      cost_estimate: roundCost.cost_estimate,
+      token_breakdown: roundCost.token_breakdown,
+    });
+    const totalCost = aggregateRoundCosts(currentState.round_cost_history);
     const orchestratorResult: OrchestratorResult = {
       plan,
       worker_results: workerResults,
@@ -592,13 +947,8 @@ export async function executeRun(
         (sum, w) => sum + w.duration_ms,
         0,
       ),
-      cost_estimate: {
-        opus_tokens: 0,
-        sonnet_tokens: 0,
-        haiku_tokens: 0,
-        domestic_tokens: 0,
-        estimated_cost_usd: 0,
-      },
+      cost_estimate: totalCost.cost_estimate,
+      token_breakdown: totalCost.token_breakdown,
     };
     latestResult = orchestratorResult;
     saveRunResult(spec.cwd, spec.id, orchestratorResult);
