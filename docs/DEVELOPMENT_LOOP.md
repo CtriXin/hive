@@ -106,10 +106,12 @@ Every agent iteration must follow this order:
 
 Default order of precedence:
 
-1. `.hive/project.md`
-2. fallback repo scripts from `package.json`
+1. task `verification_profile` → `.hive/rules/<rule-id>.md`
+2. `.hive/project.md`
+3. fallback repo scripts from `package.json`
 
 This means development-time verification should be authored intentionally in `.hive/project.md` whenever the project has non-trivial needs.
+Task-specific checks should be authored intentionally in `.hive/rules/` when only part of the plan needs stronger validation.
 
 ## Why this loop matters
 
@@ -134,16 +136,17 @@ Each task execution in the autoloop undergoes a structured validation sequence b
 Validation checks cover four areas:
 
 1. **Worktree Diff Checks** - Verifies that worker changes produce a non-empty, meaningful diff; detects empty commits or no-op executions
-2. **Test/Lint/Type Verification** - Runs the project's verification suite (test, lint, typecheck) as defined in `.hive/project.md` or `package.json`
-3. **Review Cascade Gating** - Progresses through cross-review → a2a → Sonnet → Opus stages; each stage must pass before proceeding
-4. **Repair Threshold** - Tracks repair attempts per task; triggers replan when threshold exceeded
+2. **Project Verification** - Runs repo-wide checks from `.hive/project.md` or `package.json`
+3. **Task Verification Rules** - Runs additive task-scoped checks from `.hive/rules/<rule-id>.md` when a task declares `verification_profile`
+4. **Review Cascade Gating** - Progresses through cross-review → a2a → Sonnet → Opus stages; each stage must pass before proceeding
+5. **Repair Threshold** - Tracks repair attempts per task; triggers replan when threshold exceeded
 
 ### Failure Classes
 
 | Class | Description | Action |
 |-------|-------------|--------|
-| Verification failure | Tests, lint, or typecheck failed | Enter repair loop with same task |
-| Empty diff | No meaningful changes produced | Mark as failed, trigger replan |
+| Verification failure | Project-level or task-level checks failed | Enter repair loop with same task |
+| Empty diff / no-op success | Worker reports success but produces `changedFiles=[]` | Fail the review gate, then enter repair or replan |
 | Review rejection | Findings exceed acceptable threshold | Escalate to next review tier or repair |
 | Threshold exceeded | Max repairs (default: 3) reached | Trigger replan for remaining tasks |
 
@@ -166,6 +169,19 @@ Before replan is triggered:
 - Default threshold: 3 repairs per task
 - Exceeding threshold marks task as `failed` and excludes from further repair
 - Replan generates new task breakdown for remaining work
+
+## Cost And Budget
+
+Autoloop now records two cost layers:
+
+1. `round_cost_history` — raw per-round usage history
+2. `result.cost_estimate` / `result.token_breakdown` — accumulated run total
+
+Budget behavior:
+
+- each completed round records a budget snapshot after spending is written
+- `run_goal`, `run_status`, CLI status, and reports should surface current budget status
+- if `budget.block=true` and budget is exhausted, the loop blocks before the next round starts
 
 See [docs/INTEGRATION_SMOKE.md](./INTEGRATION_SMOKE.md) for the full validation summary and smoke test procedures.
 

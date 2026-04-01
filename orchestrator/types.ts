@@ -66,6 +66,7 @@ export interface SubTask {
   assignment_reason: string;
   estimated_files: string[]; // Files this task will create/modify
   acceptance_criteria: string[]; // How to verify
+  verification_profile?: string; // Optional .hive/rules/<id>.md profile
   discuss_threshold: number; // 0-1, below this → trigger discuss
   depends_on: string[]; // Task IDs
   review_scale: 'light' | 'medium' | 'heavy' | 'heavy+' | 'auto';
@@ -152,7 +153,9 @@ export type NextActionKind =
 export type TaskRunStatus =
   | 'pending'
   | 'worker_failed'
+  | 'no_op'
   | 'review_failed'
+  | 'verification_failed'
   | 'verified'
   | 'merged'
   | 'superseded';
@@ -246,10 +249,13 @@ export interface RunState {
   retry_counts: Record<string, number>;
   replan_count: number;
   task_states: Record<string, TaskRunRecord>;
+  task_verification_results: Record<string, VerificationResult[]>;
   repair_history: RepairHistoryEntry[];
   round_cost_history: RoundCostEntry[];
   policy_hook_results: PolicyHookResult[];
   verification_results: VerificationResult[];
+  budget_status?: BudgetStatus;
+  budget_warning?: string | null;
   next_action?: NextAction;
   final_summary?: string;
   updated_at: string;
@@ -361,6 +367,9 @@ export interface OrchestratorResult {
     estimated_cost_usd: number;
   };
   token_breakdown?: TokenBreakdown;
+  budget_status?: BudgetStatus;
+  budget_warning?: string | null;
+  task_verification_results?: Record<string, VerificationResult[]>;
 }
 
 // ── Provider Registry (替代 MMS credentials.sh) ──
@@ -409,6 +418,17 @@ export interface TokenBreakdown {
   savings_usd: number;
 }
 
+export interface BudgetStatus {
+  monthly_limit_usd: number;
+  current_spent_usd: number;
+  remaining_usd: number;
+  remaining_ratio: number;
+  warn_at: number;
+  block: boolean;
+  blocked: boolean;
+  warning: string | null;
+}
+
 export interface RoundCostEntry {
   round: number;
   action: NextActionKind;
@@ -420,6 +440,7 @@ export interface RoundCostEntry {
     estimated_cost_usd: number;
   };
   token_breakdown: TokenBreakdown;
+  budget_status?: BudgetStatus;
 }
 
 // ── Plan Checkpoint (P1: result persistence + resume) ──

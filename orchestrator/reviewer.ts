@@ -364,6 +364,26 @@ export async function reviewCascade(
 
   console.log(`\n📋 Starting review for ${workerResult.taskId}`);
 
+  if (workerResult.success && workerResult.changedFiles.length === 0) {
+    console.log('    ⚠️ No-op detected: worker reported success but produced no diff');
+    return finalizeReview({
+      taskId: workerResult.taskId,
+      final_stage: 'cross-review',
+      passed: false,
+      findings: [{
+        id: 1,
+        severity: 'yellow',
+        lens: 'orchestrator',
+        file: '(no files changed)',
+        issue: 'Worker reported success but produced no file changes. Treat this as a no-op and require repair or replan.',
+        decision: 'flag',
+        decision_reason: 'Empty diff is not accepted as a completed task.',
+      }],
+      iterations: 0,
+      duration_ms: Date.now() - startTime,
+    }, { skipScoreUpdate: true });
+  }
+
   // Auto-pass check
   if (shouldAutoPass(task, workerResult.changedFiles, reviewPolicy)) {
     console.log('    ✅ Auto-pass: docs/comments only');

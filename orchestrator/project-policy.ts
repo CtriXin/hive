@@ -14,6 +14,10 @@ export interface ProjectVerificationPolicy {
   hooks: PolicyHook[];
 }
 
+export interface TaskVerificationRule extends ProjectVerificationPolicy {
+  rule_id: string;
+}
+
 function parseScope(raw: string | undefined): VerificationScope {
   if (raw === 'worktree' || raw === 'suite' || raw === 'both') {
     return raw;
@@ -132,10 +136,7 @@ function parseMarkdownList(markdown: string): { done_conditions: DoneCondition[]
   };
 }
 
-export function loadProjectVerificationPolicy(cwd: string): ProjectVerificationPolicy | null {
-  const filePath = path.join(cwd, '.hive', 'project.md');
-  if (!fs.existsSync(filePath)) return null;
-
+function parsePolicyFile(filePath: string): ProjectVerificationPolicy | null {
   try {
     const markdown = fs.readFileSync(filePath, 'utf-8');
     const jsonPolicy = parseJsonBlock(markdown);
@@ -156,6 +157,48 @@ export function loadProjectVerificationPolicy(cwd: string): ProjectVerificationP
   } catch {
     return null;
   }
+}
+
+export function loadProjectVerificationPolicy(cwd: string): ProjectVerificationPolicy | null {
+  const filePath = path.join(cwd, '.hive', 'project.md');
+  if (!fs.existsSync(filePath)) return null;
+  return parsePolicyFile(filePath);
+}
+
+export function loadTaskVerificationRules(cwd: string): Record<string, TaskVerificationRule> {
+  const rulesDir = path.join(cwd, '.hive', 'rules');
+  if (!fs.existsSync(rulesDir)) return {};
+
+  const entries = fs.readdirSync(rulesDir, { withFileTypes: true });
+  const rules: Record<string, TaskVerificationRule> = {};
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const source = path.join(rulesDir, entry.name);
+    const parsed = parsePolicyFile(source);
+    if (!parsed) continue;
+    const ruleId = entry.name.replace(/\.md$/i, '');
+    rules[ruleId] = {
+      rule_id: ruleId,
+      source,
+      done_conditions: parsed.done_conditions,
+      hooks: parsed.hooks,
+    };
+  }
+  return rules;
+}
+
+export function describeTaskVerificationRules(cwd: string): string {
+  const rules = Object.values(loadTaskVerificationRules(cwd));
+  if (rules.length === 0) return '(no task verification rules)';
+
+  return rules.map((rule) => {
+    const checks = rule.done_conditions.length > 0
+      ? rule.done_conditions
+        .map((condition) => `${condition.type}:${condition.scope || 'both'}:${condition.label}`)
+        .join(', ')
+      : 'no checks';
+    return `- ${rule.rule_id}: ${checks}`;
+  }).join('\n');
 }
 function parseHookStage(raw: string | undefined): PolicyHookStage | null {
   if (raw === 'pre_merge' || raw === 'post_verify') {

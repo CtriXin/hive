@@ -12,7 +12,7 @@ import { reviewCascade } from '../orchestrator/reviewer.js';
 import { ModelRegistry } from '../orchestrator/model-registry.js';
 import { checkProviderHealth, getAllProviders, resolveProviderForModel, quickPing } from '../orchestrator/provider-resolver.js';
 import { isMmsAvailable, loadMmsRoutes } from '../orchestrator/mms-routes-loader.js';
-import { getBudgetWarning, loadConfig, resolveTierModel, resolveFallback } from '../orchestrator/hive-config.js';
+import { getBudgetStatus, getBudgetWarning, loadConfig, recordSpending, resolveTierModel, resolveFallback } from '../orchestrator/hive-config.js';
 import fs from 'fs';
 
 const server = new McpServer({
@@ -286,7 +286,7 @@ server.tool(
     const registry = new ModelRegistry();
     const config = loadConfig(plan.cwd);
 
-    const dispatchResult = await dispatchBatch(plan, registry, resume_plan_id);
+    const dispatchResult = await dispatchBatch(plan, registry, resume_plan_id, { recordBudget: false });
 
     // 执行 review cascade
     const reviewResults = await Promise.all(
@@ -384,6 +384,9 @@ server.tool(
       claude_equivalent_usd: claudeEquivalent,
       savings_usd: claudeEquivalent - actualCost,
     };
+    const budgetStatus = recordSpending(plan.cwd, actualCost);
+    orchestratorResult.budget_status = budgetStatus ?? undefined;
+    orchestratorResult.budget_warning = budgetStatus?.warning ?? null;
 
     // Persist final result to disk
     const { saveFinalResult } = await import('../orchestrator/result-store.js');
@@ -412,8 +415,11 @@ server.tool(
           `- ${m.taskId}: ${m.merged ? '✅ merged' : `❌ ${m.error}`}`
         ).join('\n')
       : '';
+    const budgetSummary = orchestratorResult.budget_status
+      ? `\n\n## Budget\n- Spent: $${orchestratorResult.budget_status.current_spent_usd.toFixed(4)} / $${orchestratorResult.budget_status.monthly_limit_usd.toFixed(2)}\n- Remaining: $${orchestratorResult.budget_status.remaining_usd.toFixed(4)}\n${orchestratorResult.budget_warning ? `- Warning: ${orchestratorResult.budget_warning}\n` : ''}`
+      : '';
 
-    return { content: [{ type: 'text', text: report + mergeSummary }] };
+    return { content: [{ type: 'text', text: report + mergeSummary + budgetSummary }] };
   }
 );
 
@@ -794,10 +800,17 @@ server.tool(
       });
       const { spec, state, plan } = execution;
       const taskSummary = plan
-        ? plan.tasks.map(t => `- ${t.id}: ${t.description.slice(0, 80)} [${t.assigned_model}]`).join('\n')
+        ? plan.tasks.map(t => `- ${t.id}: ${t.description.slice(0, 80)} [${t.assigned_model}]${t.verification_profile ? ` {rule:${t.verification_profile}}` : ''}`).join('\n')
         : '(no plan)';
       const verificationSummary = state.verification_results
         .map(v => `- [${v.passed ? '✅' : '❌'}] ${v.target.label}${v.failure_class ? ` (${v.failure_class})` : ''}`)
+        .join('\n');
+      const taskVerificationSummary = Object.entries(state.task_verification_results || {})
+        .filter(([, results]) => results.length > 0)
+        .map(([taskId, results]) => {
+          const failed = results.filter((result) => result.target.must_pass && !result.passed).length;
+          return `- ${taskId}: ${results.length} checks${failed > 0 ? `, ${failed} failed` : ''}`;
+        })
         .join('\n');
       let text = `## Run Complete: ${spec.id}\n\n`;
       text += `**Status**: ${state.status}\n`;
@@ -805,11 +818,21 @@ server.tool(
       text += `**Mode**: ${spec.mode}\n\n`;
       text += `### Tasks\n${taskSummary}\n\n`;
       if (verificationSummary) text += `### Verification\n${verificationSummary}\n\n`;
+      if (taskVerificationSummary) text += `### Task Verification\n${taskVerificationSummary}\n\n`;
       if (execution.result?.token_breakdown) {
         text += `### Cost\n`;
         text += `- Actual: $${execution.result.token_breakdown.actual_cost_usd.toFixed(4)}\n`;
         text += `- Claude equivalent: $${execution.result.token_breakdown.claude_equivalent_usd.toFixed(4)}\n`;
         text += `- Savings: $${execution.result.token_breakdown.savings_usd.toFixed(4)}\n\n`;
+      }
+      if (state.budget_status) {
+        text += `### Budget\n`;
+        text += `- Spent: $${state.budget_status.current_spent_usd.toFixed(4)} / $${state.budget_status.monthly_limit_usd.toFixed(2)}\n`;
+        text += `- Remaining: $${state.budget_status.remaining_usd.toFixed(4)}\n`;
+        if (state.budget_warning) {
+          text += `- Warning: ${state.budget_warning}\n`;
+        }
+        text += `\n`;
       }
       text += `### Next Action\n**${state.next_action?.kind}**: ${state.next_action?.reason}\n\n`;
       if (state.final_summary) text += `### Summary\n${state.final_summary}\n`;
@@ -837,6 +860,16 @@ server.tool(
     const { spec, state } = execution;
     let text = `## Run ${execute ? 'Resumed' : 'Restored'}: ${spec.id}\n\n`;
     text += `**Status**: ${state.status}\n**Rounds**: ${state.round}/${spec.max_rounds}\n**Goal**: ${spec.goal}\n\n`;
+    const taskVerificationSummary = Object.entries(state.task_verification_results || {})
+      .filter(([, results]) => results.length > 0)
+      .map(([taskId, results]) => {
+        const failed = results.filter((result) => result.target.must_pass && !result.passed).length;
+        return `- ${taskId}: ${results.length} checks${failed > 0 ? `, ${failed} failed` : ''}`;
+      })
+      .join('\n');
+    if (taskVerificationSummary) {
+      text += `### Task Verification\n${taskVerificationSummary}\n\n`;
+    }
     text += `### Next Action\n**${state.next_action?.kind}**: ${state.next_action?.reason}\n`;
     if (state.final_summary) text += `\n### Summary\n${state.final_summary}\n`;
     return { content: [{ type: 'text', text }] };
@@ -869,11 +902,38 @@ server.tool(
       text += `**Failed**: ${state.failed_task_ids.join(', ') || 'none'}\n`;
       text += `**Merged**: ${state.merged_task_ids?.join(', ') || 'none'}\n`;
       text += `**Result saved**: ${result ? 'yes' : 'no'}\n`;
+      const profiledTasks = plan?.tasks.filter((task) => task.verification_profile) || [];
+      if (profiledTasks.length > 0) {
+        text += `**Task rules**: ${profiledTasks.map((task) => `${task.id}:${task.verification_profile}`).join(', ')}\n`;
+      }
       if (result?.token_breakdown) {
         text += `**Actual cost**: $${result.token_breakdown.actual_cost_usd.toFixed(4)}\n`;
         text += `**Savings vs Claude**: $${result.token_breakdown.savings_usd.toFixed(4)}\n`;
       }
+      if (state.budget_status) {
+        text += `**Budget spent**: $${state.budget_status.current_spent_usd.toFixed(4)} / $${state.budget_status.monthly_limit_usd.toFixed(2)}\n`;
+        text += `**Budget remaining**: $${state.budget_status.remaining_usd.toFixed(4)}\n`;
+      } else {
+        const budgetStatus = getBudgetStatus(loadConfig(effectiveCwd));
+        if (budgetStatus) {
+          text += `**Budget spent**: $${budgetStatus.current_spent_usd.toFixed(4)} / $${budgetStatus.monthly_limit_usd.toFixed(2)}\n`;
+          text += `**Budget remaining**: $${budgetStatus.remaining_usd.toFixed(4)}\n`;
+        }
+      }
+      if (state.budget_warning) {
+        text += `**Budget warning**: ${state.budget_warning}\n`;
+      }
       if (state.final_summary) text += `\n**Summary**: ${state.final_summary}\n`;
+      const taskVerificationSummary = Object.entries(state.task_verification_results || {})
+        .filter(([, results]) => results.length > 0)
+        .map(([taskId, results]) => {
+          const failed = results.filter((result) => result.target.must_pass && !result.passed).length;
+          return `- ${taskId}: ${results.length} checks${failed > 0 ? `, ${failed} failed` : ''}`;
+        })
+        .join('\n');
+      if (taskVerificationSummary) {
+        text += `\n### Task Verification\n${taskVerificationSummary}\n`;
+      }
       text += `\n### Next Action\n**${state.next_action?.kind}**: ${state.next_action?.reason}\n`;
       return { content: [{ type: 'text', text }] };
     }

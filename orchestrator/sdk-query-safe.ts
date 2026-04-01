@@ -11,6 +11,7 @@ export interface SafeQueryOptions {
   options: {
     cwd: string;
     env: Record<string, string>;
+    model?: string;
     maxTurns?: number;
     resume?: string;
   };
@@ -38,6 +39,9 @@ async function claudeCodeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult>
       ...opts.options,
       // Workers run autonomously — bypass interactive permission prompts
       permissionMode: 'bypassPermissions',
+      // Explicit model ensures Claude Code subprocess uses the assigned model,
+      // not its default (claude-sonnet). Env vars alone are not reliable.
+      model: opts.options.model,
     },
   });
 

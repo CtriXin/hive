@@ -4,6 +4,7 @@ import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from './planner.js';
 import { translateToEnglish } from './translator.js';
 import { ModelRegistry } from './model-registry.js';
 import { loadConfig, resolveTierModel, getBudgetWarning } from './hive-config.js';
+import { describeTaskVerificationRules } from './project-policy.js';
 import type { DiscussPlanDiag } from './discuss-bridge.js';
 import { resolveProviderForModel } from './provider-resolver.js';
 
@@ -34,7 +35,8 @@ function collectKeyTypes(cwd: string, maxLines = 50): string {
 export function buildPlannerContext(cwd: string): string {
   const fileTree = collectFileTree(cwd);
   const keyTypes = collectKeyTypes(cwd);
-  return `\n## Codebase Context (auto-collected)\n### File tree\n\`\`\`\n${fileTree}\n\`\`\`\n### Exported types\n\`\`\`\n${keyTypes}\n\`\`\`\n`;
+  const taskRules = describeTaskVerificationRules(cwd);
+  return `\n## Codebase Context (auto-collected)\n### File tree\n\`\`\`\n${fileTree}\n\`\`\`\n### Exported types\n\`\`\`\n${keyTypes}\n\`\`\`\n### Task verification rules\n${taskRules}\n`;
 }
 
 export function parseJsonBlock<T>(raw: string): T {

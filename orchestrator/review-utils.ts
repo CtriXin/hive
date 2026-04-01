@@ -113,6 +113,8 @@ export function classifyReviewError(err: any): FailureType {
 export function shouldAutoPass(
   task: SubTask, changedFiles: string[], policy: ReviewPolicy,
 ): boolean {
+  // Guard: empty changedFiles must never auto-pass ([].every() is vacuously true)
+  if (changedFiles.length === 0) return false;
   const allOk = changedFiles.every((f) => {
     const ext = f.split('.').pop()?.toLowerCase() ?? '';
     return ['md', 'txt', 'rst'].includes(ext)

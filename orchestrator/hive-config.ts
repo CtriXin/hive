@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type { HiveConfig, SubTask, TiersConfig } from './types.js';
+import type { BudgetStatus, HiveConfig, SubTask, TiersConfig } from './types.js';
 import type { ModelRegistry } from './model-registry.js';
 
 export type FailureType = 'rate_limit' | 'server_error' | 'quality_fail';
@@ -220,6 +220,10 @@ export function getModelForTask(
 }
 
 export function getBudgetWarning(config: HiveConfig): string | null {
+  return getBudgetStatus(config)?.warning ?? null;
+}
+
+export function getBudgetStatus(config: HiveConfig): BudgetStatus | null {
   const { budget } = config;
   if (budget.monthly_limit_usd <= 0) {
     return null;
@@ -227,24 +231,35 @@ export function getBudgetWarning(config: HiveConfig): string | null {
 
   const remaining = budget.monthly_limit_usd - budget.current_spent_usd;
   const ratio = remaining / budget.monthly_limit_usd;
+  const blocked = budget.block && ratio <= 0;
+  let warning: string | null = null;
 
-  if (budget.block && ratio <= 0) {
-    return `BLOCKED: Budget exhausted ($${budget.current_spent_usd.toFixed(2)} / $${budget.monthly_limit_usd.toFixed(2)})`;
+  if (blocked) {
+    warning = `BLOCKED: Budget exhausted ($${budget.current_spent_usd.toFixed(2)} / $${budget.monthly_limit_usd.toFixed(2)})`;
+  } else if (ratio <= budget.warn_at) {
+    warning = `Budget warning: ${(ratio * 100).toFixed(0)}% remaining ($${remaining.toFixed(2)} / $${budget.monthly_limit_usd.toFixed(2)})`;
   }
 
-  if (ratio <= budget.warn_at) {
-    return `Budget warning: ${(ratio * 100).toFixed(0)}% remaining ($${remaining.toFixed(2)} / $${budget.monthly_limit_usd.toFixed(2)})`;
-  }
-
-  return null;
+  return {
+    monthly_limit_usd: budget.monthly_limit_usd,
+    current_spent_usd: budget.current_spent_usd,
+    remaining_usd: remaining,
+    remaining_ratio: ratio,
+    warn_at: budget.warn_at,
+    block: budget.block,
+    blocked,
+    warning,
+  };
 }
 
 /**
  * Record spending and write back to global config.
  * Auto-resets on budget.reset_day if month has changed.
  */
-export function recordSpending(cwd: string, amountUsd: number): void {
-  if (amountUsd <= 0) return;
+export function recordSpending(cwd: string, amountUsd: number): BudgetStatus | null {
+  if (amountUsd <= 0) {
+    return getBudgetStatus(loadConfig(cwd));
+  }
   const { global: globalPath } = getConfigSource(cwd);
   const raw = readJsonSafe<HiveConfig>(globalPath);
   const budget = raw.budget || DEFAULT_CONFIG.budget;
@@ -264,6 +279,7 @@ export function recordSpending(cwd: string, amountUsd: number): void {
   budget.current_spent_usd = (budget.current_spent_usd || 0) + amountUsd;
   raw.budget = budget;
   writeJsonSafe(globalPath, raw);
+  return getBudgetStatus(loadConfig(cwd));
 }
 
 export function resolveFallback(

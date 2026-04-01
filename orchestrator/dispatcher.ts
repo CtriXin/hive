@@ -117,7 +117,8 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     prompt: fullPrompt,
     options: {
       cwd: worktreePath,
-      env: buildSdkEnv(config.model, baseUrl, apiKey),
+      model: currentModel,
+      env: buildSdkEnv(currentModel, baseUrl, apiKey),
       maxTurns: config.maxTurns,
     },
   };
@@ -157,6 +158,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       prompt: fullPrompt,
       options: {
         cwd: worktreePath,
+        model: fallbackModel,
         env: buildSdkEnv(fallbackModel, fallback.baseUrl, fallback.apiKey),
         maxTurns: config.maxTurns,
       },
@@ -197,6 +199,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
           options: {
             resume: sessionId,
             cwd: worktreePath,
+            model: currentModel,
             env: buildSdkEnv(currentModel, baseUrl, apiKey),
             maxTurns: config.maxTurns,
           },
@@ -222,7 +225,13 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     changedFiles = diff.files;
   }
 
-  const success = !messages.some(m => m.type === 'error');
+  // Detect failures: explicit error messages OR API errors surfaced as assistant text
+  const apiErrorPattern = /\b(API Error: [45]\d{2}|限流|rate.?limit|overloaded|Please run \/login)\b/i;
+  const hasExplicitError = messages.some(m => m.type === 'error');
+  const hasApiError = messages.some(
+    m => m.type === 'assistant' && apiErrorPattern.test(m.content),
+  );
+  const success = !hasExplicitError && !hasApiError;
 
   return {
     taskId: config.taskId,
@@ -286,6 +295,7 @@ export async function dispatchBatch(
   plan: TaskPlan,
   registry: any,
   resumePlanId?: string,
+  options: { recordBudget?: boolean } = {},
 ): Promise<DispatchResult> {
   const worker_results: WorkerResult[] = [];
   const contextCache = new Map<string, ContextPacket>();
@@ -424,7 +434,7 @@ export async function dispatchBatch(
     const outputCost = wr.token_usage.output * (cap.cost_per_mtok_output || 0);
     totalCostUsd += (inputCost + outputCost) / 1_000_000;
   }
-  if (totalCostUsd > 0) {
+  if (options.recordBudget !== false && totalCostUsd > 0) {
     recordSpending(plan.cwd, totalCostUsd);
   }
 
@@ -441,6 +451,13 @@ function buildTaskPrompt(task: SubTask): string {
     '',
     '### Acceptance Criteria',
     ...task.acceptance_criteria.map(c => `- ${c}`),
+    ...(task.verification_profile
+      ? [
+        '',
+        '### Verification Profile',
+        `- ${task.verification_profile}`,
+      ]
+      : []),
     '',
     '### Files to create/modify',
     ...task.estimated_files.map(f => `- ${f}`),

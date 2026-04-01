@@ -62,14 +62,30 @@ async function main() {
     console.log(`📊 status: ${state.status}`);
     if (execution.plan) {
       console.log(`📋 plan: ${execution.plan.tasks.length} tasks`);
+      const profiledTasks = execution.plan.tasks.filter((task) => task.verification_profile);
+      if (profiledTasks.length > 0) {
+        console.log(`🧩 task verification profiles: ${profiledTasks.map((task) => `${task.id}:${task.verification_profile}`).join(', ')}`);
+      }
     }
     console.log(`✅ done conditions: ${spec.done_conditions.length}`);
     for (const condition of spec.done_conditions) {
       console.log(`   - [${condition.type}] ${condition.label}`);
     }
     console.log(`➡️ next action: ${state.next_action?.kind} — ${state.next_action?.reason}`);
+    if (state.budget_status) {
+      console.log(`💰 budget: $${state.budget_status.current_spent_usd.toFixed(4)} / $${state.budget_status.monthly_limit_usd.toFixed(2)} spent, $${state.budget_status.remaining_usd.toFixed(4)} remaining`);
+    }
+    if (state.budget_warning) {
+      console.log(`⚠️ budget warning: ${state.budget_warning}`);
+    }
     if (state.final_summary) {
       console.log(`🧾 summary: ${state.final_summary}`);
+    }
+    const verifiedTasks = Object.entries(state.task_verification_results || {})
+      .filter(([, results]) => results.length > 0)
+      .map(([taskId, results]) => `${taskId}(${results.length})`);
+    if (verifiedTasks.length > 0) {
+      console.log(`🧪 task verification: ${verifiedTasks.join(', ')}`);
     }
     return;
   }
@@ -96,8 +112,20 @@ async function main() {
     console.log(`📊 status: ${rState.status}`);
     console.log(`🔁 round: ${rState.round}`);
     console.log(`➡️ next action: ${rState.next_action?.kind} — ${rState.next_action?.reason || 'n/a'}`);
+    if (rState.budget_status) {
+      console.log(`💰 budget: $${rState.budget_status.current_spent_usd.toFixed(4)} / $${rState.budget_status.monthly_limit_usd.toFixed(2)} spent, $${rState.budget_status.remaining_usd.toFixed(4)} remaining`);
+    }
+    if (rState.budget_warning) {
+      console.log(`⚠️ budget warning: ${rState.budget_warning}`);
+    }
     if (rState.final_summary) {
       console.log(`🧾 summary: ${rState.final_summary}`);
+    }
+    const verifiedTasks = Object.entries(rState.task_verification_results || {})
+      .filter(([, results]) => results.length > 0)
+      .map(([taskId, results]) => `${taskId}(${results.length})`);
+    if (verifiedTasks.length > 0) {
+      console.log(`🧪 task verification: ${verifiedTasks.join(', ')}`);
     }
     if (!shouldExecute && !isTerminal(rState.status)) {
       console.log(`💡 Use --execute to re-enter the loop`);
@@ -125,6 +153,21 @@ async function main() {
       console.log(`🔁 round: ${sState.round}`);
       console.log(`📋 plan tasks: ${plan?.tasks.length || 0}`);
       console.log(`🧪 verification checks: ${sState.verification_results.length}`);
+      const taskVerificationSummary = Object.entries(sState.task_verification_results || {})
+        .filter(([, results]) => results.length > 0)
+        .map(([taskId, results]) => {
+          const failed = results.filter((result) => result.target.must_pass && !result.passed).length;
+          return `${taskId}:${results.length}${failed > 0 ? `(${failed} failed)` : ''}`;
+        });
+      if (taskVerificationSummary.length > 0) {
+        console.log(`🧩 task verification: ${taskVerificationSummary.join(', ')}`);
+      }
+      if (sState.budget_status) {
+        console.log(`💰 budget: $${sState.budget_status.current_spent_usd.toFixed(4)} / $${sState.budget_status.monthly_limit_usd.toFixed(2)} spent, $${sState.budget_status.remaining_usd.toFixed(4)} remaining`);
+      }
+      if (sState.budget_warning) {
+        console.log(`⚠️ budget warning: ${sState.budget_warning}`);
+      }
       console.log(`🧾 summary: ${sState.final_summary || 'n/a'}`);
       console.log(`📦 result saved: ${result ? 'yes' : 'no'}`);
       return;

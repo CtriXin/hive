@@ -16,6 +16,7 @@ Do NOT call plan_tasks or any other tool. Just output raw JSON text directly.
 3. **Task count**: Maximum 10 tasks
 4. **Parallelism**: Tasks that work on different files can be done in parallel
 5. **Dependencies**: Only specify if absolutely necessary
+6. **verification_profile**: Optional. Only include when the repo exposes a matching rule from .hive/rules/<id>.md
 
 ## Categories:
 schema, utils, api, tests, security, docs, config, algorithms, CRUD, i18n, refactor
@@ -31,6 +32,7 @@ schema, utils, api, tests, security, docs, config, algorithms, CRUD, i18n, refac
       "category": "one of the categories above",
       "estimated_files": ["file1.ts", "file2.ts"],
       "acceptance_criteria": ["criterion 1", "criterion 2"],
+      "verification_profile": "optional-rule-id",
       "depends_on": ["task-id-if-needed"]
     }
   ]
@@ -55,6 +57,9 @@ export function buildPlanFromClaudeOutput(claudeOutput: any): TaskPlan {
       assignment_reason: '',
       estimated_files: task.estimated_files || [],
       acceptance_criteria: task.acceptance_criteria || [],
+      verification_profile: typeof task.verification_profile === 'string' && task.verification_profile.trim()
+        ? task.verification_profile.trim()
+        : undefined,
       discuss_threshold: getDiscussThreshold(task.complexity),
       depends_on: task.depends_on || [],
       review_scale: 'auto'

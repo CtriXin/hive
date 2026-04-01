@@ -46,6 +46,9 @@ export async function reportResults(
     score_updates: result.score_updates,
     total_duration_s: (result.total_duration_ms / 1000).toFixed(1),
     token_breakdown: result.token_breakdown,
+    budget_status: result.budget_status,
+    budget_warning: result.budget_warning,
+    task_verification_results: result.task_verification_results,
   };
 
   if (options.format === 'summary') {
@@ -97,6 +100,25 @@ function formatLocalReport(summary: any): string {
 
   if (summary.token_breakdown) {
     report += formatTokenBreakdown(summary.token_breakdown);
+  }
+
+  if (summary.budget_status) {
+    report += `\n### Budget\n\n`;
+    report += `- 已花费: $${summary.budget_status.current_spent_usd.toFixed(4)} / $${summary.budget_status.monthly_limit_usd.toFixed(2)}\n`;
+    report += `- 剩余: $${summary.budget_status.remaining_usd.toFixed(4)}\n`;
+    if (summary.budget_warning) {
+      report += `- 告警: ${summary.budget_warning}\n`;
+    }
+  }
+
+  if (summary.task_verification_results && Object.keys(summary.task_verification_results).length > 0) {
+    report += `\n### Task Verification\n\n`;
+    for (const [taskId, results] of Object.entries(summary.task_verification_results)) {
+      const failed = (results as any[]).filter((result) => result.target?.must_pass && !result.passed).length;
+      report += `- ${taskId}: ${(results as any[]).length} checks`;
+      if (failed > 0) report += `, ${failed} failed`;
+      report += `\n`;
+    }
   }
 
   return report;
