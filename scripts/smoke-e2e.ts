@@ -12,9 +12,11 @@ import { translateToEnglish } from '../orchestrator/translator.js';
 import { buildTaskFingerprint } from '../orchestrator/task-fingerprint.js';
 import type { SubTask } from '../orchestrator/types.js';
 
-const REAL_HOME = '/Users/xin';
-// Ensure speed-stats path works in sandbox
-process.env.HOME = process.env.HOME?.includes('.config/mms/claude-gateway') ? REAL_HOME : process.env.HOME;
+// Ensure speed-stats path works in sandbox — detect MMS gateway override and strip it
+const detectedHome = process.env.HOME || '';
+const gatewayIdx = detectedHome.indexOf('/.config/mms/claude-gateway');
+const REAL_HOME = gatewayIdx > 0 ? detectedHome.slice(0, gatewayIdx) : detectedHome;
+process.env.HOME = REAL_HOME || process.env.HOME;
 
 let passed = 0;
 let failed = 0;

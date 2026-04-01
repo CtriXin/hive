@@ -16,8 +16,7 @@ import { cleanupStaleLocks } from '../src/agentbus/lock.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Shared absolute path for cross-CLI communication.
-// Do not derive from HOME: different hosts/sandboxes may resolve HOME differently.
-const DEFAULT_DATA_DIR = '/Users/xin/.agentbus';
+const DEFAULT_DATA_DIR = path.join(process.env.HOME || require('os').homedir(), '.agentbus');
 const DATA_DIR = process.env.AGENTBUS_DATA_DIR ?? DEFAULT_DATA_DIR;
 
 // Identity storage

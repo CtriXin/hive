@@ -17,6 +17,22 @@ REVIEW_FINDINGS.md
 findings.md
 progress.md
 task_plan.md
+PARALLEL_HANDOFF.md
+
+# Internal docs — contain personal paths / private infra references
+docs/social/
+docs/agent-bridge/
+docs/AUTOLOOP_BACKGROUND.md
+docs/AUTOLOOP_DESIGN.md
+docs/AUTOLOOP_IMPLEMENTATION_STATUS.md
+docs/CLAUDE_MAIL_ADAPTER.md
+docs/agentbus-design.md
+docs/agentbus-mvp-e2e.md
+docs/MCP_USAGE.md
+docs/examples/
+
+# Benchmark raw outputs — contain personal paths
+benchmark/round4-raw/
 
 # Secrets
 .env

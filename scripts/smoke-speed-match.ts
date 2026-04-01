@@ -18,7 +18,9 @@ const hiveModels: Record<string, { provider: string; speed_tier?: string }> = co
 const statsPath = process.env.MMS_SPEED_STATS_PATH
   || path.join(os.homedir(), '.config', 'mms', 'speed-stats.json');
 // Fallback: try real home if sandbox HOME is different
-const realHome = '/Users/xin';
+const homeDir = os.homedir();
+const gatewayMarker = homeDir.indexOf('/.config/mms/claude-gateway');
+const realHome = gatewayMarker > 0 ? homeDir.slice(0, gatewayMarker) : homeDir;
 const statsPaths = [statsPath, path.join(realHome, '.config', 'mms', 'speed-stats.json')];
 let resolvedStatsPath = '';
 for (const p of statsPaths) {
