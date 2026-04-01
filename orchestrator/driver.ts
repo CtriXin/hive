@@ -608,6 +608,7 @@ function mergePassedTasks(
       worker.worktreePath,
       worker.branch,
       `task ${worker.taskId}: ${task?.description.slice(0, 80) || worker.taskId}`,
+      spec.cwd,
     );
     if (mergeResult.merged) {
       merged.push(worker.taskId);

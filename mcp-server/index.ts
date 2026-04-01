@@ -308,7 +308,7 @@ server.tool(
       if (review.passed) {
         const task = plan.tasks.find(t => t.id === wr.taskId);
         const msg = `task ${wr.taskId}: ${task?.description.slice(0, 80) || wr.taskId}`;
-        const mr = commitAndMergeWorktree(wr.worktreePath, wr.branch, msg);
+        const mr = commitAndMergeWorktree(wr.worktreePath, wr.branch, msg, plan.cwd);
         mergeResults.push({ taskId: wr.taskId, ...mr });
       } else {
         mergeResults.push({ taskId: wr.taskId, merged: false, error: 'review not passed — worktree kept for inspection' });

@@ -73,10 +73,11 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   // 1. Resolve provider (MMS route → providers.json fallback)
   let { baseUrl, apiKey } = resolveProvider(config.provider, config.model);
 
-  // 2. Create worktree
+  // 2. Create worktree (use plan cwd, not process cwd)
   if (config.worktree) {
     const wt = await createWorktree({
       name: `worker-${config.taskId}`,
+      cwd: config.cwd,
     });
     worktreePath = wt.path;
     branch = wt.branch;

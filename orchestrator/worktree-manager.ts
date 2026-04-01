@@ -10,6 +10,7 @@ export interface WorktreeInfo {
 
 export interface WorktreeCreateOptions {
   name: string;
+  cwd?: string;
   branch?: string;
   fromBranch?: string;
 }
@@ -20,12 +21,15 @@ export interface WorktreeDiff {
 
 const WORKTREE_DIR = '.claude/worktrees';
 
-function getProjectRoot(): string {
-  return execSync('git rev-parse --show-toplevel', { encoding: 'utf-8' }).trim();
+function getProjectRoot(cwd?: string): string {
+  return execSync('git rev-parse --show-toplevel', {
+    encoding: 'utf-8',
+    cwd: cwd || undefined,
+  }).trim();
 }
 
-function getWorktreesDir(): string {
-  return path.join(getProjectRoot(), WORKTREE_DIR);
+function getWorktreesDir(cwd?: string): string {
+  return path.join(getProjectRoot(cwd), WORKTREE_DIR);
 }
 
 export function listWorktrees(): WorktreeInfo[] {
@@ -69,10 +73,11 @@ export function createWorktree(
   nameArg?: string,
 ): WorktreeInfo {
   const options = typeof optionsOrProjectRoot === 'string'
-    ? { name: nameArg || 'worker' }
+    ? { name: nameArg || 'worker', cwd: optionsOrProjectRoot }
     : optionsOrProjectRoot;
-  const { name, branch, fromBranch = 'main' } = options;
-  const worktreesDir = getWorktreesDir();
+  const { name, branch, fromBranch = 'main', cwd } = options;
+  const gitOpts = cwd ? { encoding: 'utf-8' as const, cwd } : { encoding: 'utf-8' as const };
+  const worktreesDir = getWorktreesDir(cwd);
   const baseBranchName = branch || `worktree/${name}`;
 
   // Ensure worktrees directory exists
@@ -84,7 +89,7 @@ export function createWorktree(
   let worktreeName = name;
   try {
     execSync(`git rev-parse --verify "${baseBranchName}"`, {
-      encoding: 'utf-8', stdio: 'pipe',
+      ...gitOpts, stdio: 'pipe',
     });
     // Branch exists — use a unique suffix
     const suffix = Date.now().toString(36);
@@ -97,9 +102,7 @@ export function createWorktree(
   const worktreePath = path.join(worktreesDir, worktreeName);
 
   try {
-    execSync(`git worktree add -b "${branchName}" "${worktreePath}" "${fromBranch}"`, {
-      encoding: 'utf-8',
-    });
+    execSync(`git worktree add -b "${branchName}" "${worktreePath}" "${fromBranch}"`, gitOpts);
   } catch (error) {
     // If worktree already exists, just return info
     const existing = listWorktrees().find(w => w.name === worktreeName);
@@ -193,8 +196,9 @@ export function commitAndMergeWorktree(
   worktreePath: string,
   branch: string,
   commitMsg: string,
+  cwd?: string,
 ): MergeResult {
-  const root = getProjectRoot();
+  const root = getProjectRoot(cwd);
   try {
     // Stage and commit in worktree
     const status = execSync('git status --porcelain', {
