@@ -1,9 +1,9 @@
 // orchestrator/mms-routes-loader.ts — Read MMS model-routes.json (read-only, never writes)
-// Fuzzy matching delegated to hive-discuss's fuzzyResolveModel for single-source logic.
+// Fuzzy matching delegated to discuss-lib's fuzzyResolveModel for single-source logic.
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { fuzzyResolveModel } from 'hive-discuss';
+import { fuzzyResolveModel } from './discuss-lib/config.js';
 
 export interface MmsRoute {
   anthropic_base_url: string;
@@ -216,7 +216,7 @@ export function getAvailableModelIds(): string[] {
  * Resolve a fuzzy prefix (e.g. 'minimax', 'kimi', 'qwen') to the best
  * specific model ID in MMS routes. Picks the highest-priority match.
  *
- * Delegates matching to hive-discuss's fuzzyResolveModel (single-source),
+ * Delegates matching to discuss-lib's fuzzyResolveModel (single-source),
  * then looks up the route in hive's own loaded MMS table.
  */
 export function resolveModelByPrefix(
@@ -230,7 +230,7 @@ export function resolveModelByPrefix(
     return { modelId: prefix, route: normalizeResolvedRoute(prefix, table.routes[prefix], table) };
   }
 
-  // Delegate fuzzy matching to hive-discuss, passing the same routes file
+  // Delegate fuzzy matching to discuss-lib, passing the same routes file
   const resolved = fuzzyResolveModel(prefix, {
     model_routes_path: getMmsRoutesPath(),
   });

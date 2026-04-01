@@ -1,5 +1,5 @@
-// orchestrator/a2a-bridge.ts — Thin adapter: hive WorkerResult → hive-discuss runA2aReview
-// All a2a logic (prompts, lenses, verdict) lives in hive-discuss.
+// orchestrator/a2a-bridge.ts — Thin adapter: hive WorkerResult → discuss-lib runA2aReview
+// All a2a logic (prompts, lenses, verdict) lives in discuss-lib.
 // This file only bridges hive's types and provider resolution.
 
 import {
@@ -9,7 +9,7 @@ import {
   type A2aReviewOptions,
   type ModelCaller,
   type ModelCallOptions,
-} from 'hive-discuss';
+} from './discuss-lib/index.js';
 import type { A2aReviewResult, SubTask, WorkerResult } from './types.js';
 import { getRegistry } from './model-registry.js';
 import { resolveProvider } from './provider-resolver.js';
@@ -44,7 +44,7 @@ function createHiveCaller(): ModelCaller {
 }
 
 /**
- * Run a2a 3-lens review using hive-discuss's implementation.
+ * Run a2a 3-lens review using discuss-lib's implementation.
  * Bridges hive's WorkerResult to discuss's A2aReviewInput.
  */
 export async function runA2aReview(

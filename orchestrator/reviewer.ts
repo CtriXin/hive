@@ -413,7 +413,7 @@ export async function reviewCascade(
   const a2aResult = await runA2aReview(workerResult, task);
   findings.push(...a2aResult.all_findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
 
-  // a2a token tracking: hive-discuss doesn't expose token usage yet, record zero
+  // a2a token tracking: discuss-lib doesn't expose token usage yet, record zero
   tokenStages.push({
     stage: `a2a:${workerResult.taskId}`,
     model: 'a2a-lenses',

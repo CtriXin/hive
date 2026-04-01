@@ -1,5 +1,5 @@
 // orchestrator/review-utils.ts — Shared utilities for review cascade
-// Shared primitives (extractJsonObject, normalizeSeverity, etc.) re-exported from hive-discuss.
+// Shared primitives (extractJsonObject, normalizeSeverity, etc.) re-exported from discuss-lib.
 // Hive-specific functions (infra failure detection, auto-pass, review policy) kept here.
 import fs from 'fs';
 import type { SubTask, FindingSeverity, Complexity } from './types.js';
@@ -12,18 +12,18 @@ import type { LegacyModelView } from './model-registry.js';
 import { resolveProjectPath, buildSdkEnv } from './project-paths.js';
 import { safeQuery, extractTextFromMessages, extractTokenUsage } from './sdk-query-safe.js';
 
-// ── Re-export shared primitives from hive-discuss ──
+// ── Re-export shared primitives from discuss-lib ──
 
 export {
   extractJsonObject,
   normalizeSeverity,
-} from 'hive-discuss';
+} from './discuss-lib/index.js';
 
 export {
   getWorktreeFullDiff,
-} from 'hive-discuss';
+} from './discuss-lib/index.js';
 
-// truncateDiff: hive-discuss has it inside cross-review (not exported).
+// truncateDiff: discuss-lib has it inside cross-review (not exported).
 // Keep our own thin version here.
 export function truncateDiff(diff: string, limit: number): string {
   if (diff.length <= limit) return diff;
