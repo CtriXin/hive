@@ -878,7 +878,7 @@ server.tool(
 
 server.tool(
   'run_status',
-  'List all runs or get details of a specific run.',
+  'List all runs or get details of a specific run, including task verification summaries.',
   {
     run_id: z.string().describe('Specific run ID to inspect').optional(),
     cwd: z.string().describe('Working directory').optional(),
