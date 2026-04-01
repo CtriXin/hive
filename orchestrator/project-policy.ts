@@ -16,6 +16,7 @@ export interface ProjectVerificationPolicy {
 
 export interface TaskVerificationRule extends ProjectVerificationPolicy {
   rule_id: string;
+  file_patterns: string[];
 }
 
 function parseScope(raw: string | undefined): VerificationScope {
@@ -136,6 +137,16 @@ function parseMarkdownList(markdown: string): { done_conditions: DoneCondition[]
   };
 }
 
+function parseFilePatterns(markdown: string): string[] {
+  const match = markdown.match(/##\s*File\s+patterns\s*\n([\s\S]*?)(?=\n##|\n$|$)/i);
+  if (!match?.[1]) return [];
+  return match[1]
+    .split('\n')
+    .filter((line) => /^\s*-\s+/.test(line))
+    .map((line) => line.replace(/^\s*-\s*/, '').trim())
+    .filter(Boolean);
+}
+
 function parsePolicyFile(filePath: string): ProjectVerificationPolicy | null {
   try {
     const markdown = fs.readFileSync(filePath, 'utf-8');
@@ -173,12 +184,15 @@ export function loadTaskVerificationRules(cwd: string): Record<string, TaskVerif
   const rules: Record<string, TaskVerificationRule> = {};
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    if (entry.name.toLowerCase() === 'readme.md') continue;
     const source = path.join(rulesDir, entry.name);
     const parsed = parsePolicyFile(source);
     if (!parsed) continue;
     const ruleId = entry.name.replace(/\.md$/i, '');
+    const markdown = fs.readFileSync(source, 'utf-8');
     rules[ruleId] = {
       rule_id: ruleId,
+      file_patterns: parseFilePatterns(markdown),
       source,
       done_conditions: parsed.done_conditions,
       hooks: parsed.hooks,
@@ -187,17 +201,55 @@ export function loadTaskVerificationRules(cwd: string): Record<string, TaskVerif
   return rules;
 }
 
+/**
+ * Suggest the best verification_profile for a task based on estimated_files.
+ * Returns the rule_id with the highest overlap, or undefined if no match.
+ */
+export function suggestVerificationProfile(
+  estimatedFiles: string[],
+  rules: Record<string, TaskVerificationRule>,
+): string | undefined {
+  if (estimatedFiles.length === 0) return undefined;
+
+  let bestRule: string | undefined;
+  let bestScore = 0;
+
+  for (const [ruleId, rule] of Object.entries(rules)) {
+    if (rule.file_patterns.length === 0) continue;
+    let matches = 0;
+    for (const file of estimatedFiles) {
+      for (const pattern of rule.file_patterns) {
+        // Pattern can be a prefix (directory) or exact file path
+        if (file === pattern || file.startsWith(pattern)) {
+          matches++;
+          break;
+        }
+      }
+    }
+    if (matches > bestScore) {
+      bestScore = matches;
+      bestRule = ruleId;
+    }
+  }
+
+  // Only suggest if at least one file matches
+  return bestScore > 0 ? bestRule : undefined;
+}
+
 export function describeTaskVerificationRules(cwd: string): string {
   const rules = Object.values(loadTaskVerificationRules(cwd));
   if (rules.length === 0) return '(no task verification rules)';
 
   return rules.map((rule) => {
+    const files = rule.file_patterns.length > 0
+      ? `files: ${rule.file_patterns.join(', ')}`
+      : 'no file patterns';
     const checks = rule.done_conditions.length > 0
       ? rule.done_conditions
         .map((condition) => `${condition.type}:${condition.scope || 'both'}:${condition.label}`)
         .join(', ')
       : 'no checks';
-    return `- ${rule.rule_id}: ${checks}`;
+    return `- ${rule.rule_id} (${files}) → ${checks}`;
   }).join('\n');
 }
 function parseHookStage(raw: string | undefined): PolicyHookStage | null {

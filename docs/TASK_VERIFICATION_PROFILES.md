@@ -12,6 +12,8 @@ This repo now has four starter profiles:
 | `autoloop-runtime` | `driver` / `dispatcher` / `run-store` / `worktree-manager` / runtime state changes | `build`, runtime regression tests |
 | `review-pipeline` | review cascade / review heuristics / scoring-side review gates | `build`, review-focused tests |
 | `provider-routing` | provider config / routing / MMS fallback selection | `build`, provider-routing tests |
+| `planner-surface` | planner / translator changes | `build`, integration tests |
+| `reporting-surface` | reporter / result-store changes | `build`, result-store tests |
 
 ## How to use
 
@@ -45,14 +47,18 @@ Example:
 - command | npx vitest run tests/foo.test.ts | Focused regression test | suite | required
 ```
 
+## Auto-suggest from estimated_files
+
+When the planner does not set `verification_profile`, the build step automatically suggests a profile by matching the task's `estimated_files` against each rule's `## File patterns` section.
+
+- Matching is prefix-based: `orchestrator/driver.ts` matches pattern `orchestrator/driver.ts` or `orchestrator/`
+- The rule with the most file matches wins
+- If no files match any rule, no profile is assigned (project-level checks only)
+- Explicit planner assignment always takes priority over auto-suggest
+
 ## Current MVP policy
 
-- Assignment is explicit: use `verification_profile`
+- Assignment is explicit or auto-suggested from file patterns
 - Rules are additive, not replacement
 - Prefer narrow regression commands over full-suite duplication
 - Prefer one dominant profile per task
-
-## Suggested next additions
-
-- `planner-surface` if planner changes become frequent enough
-- `reporting-surface` if reporter / output formatting starts drifting often

@@ -41,6 +41,10 @@ Notes:
   - Use for `orchestrator/reviewer.ts`, `review-utils.ts`, `task-fingerprint.ts`, review gating logic
 - `provider-routing`
   - Use for `orchestrator/hive-config.ts`, `provider-resolver.ts`, `mms-routes-loader.ts`
+- `planner-surface`
+  - Use for `orchestrator/planner.ts`, `planner-runner.ts`, `translator.ts`
+- `reporting-surface`
+  - Use for `orchestrator/reporter.ts`, `result-store.ts`
 
 ## Selection guidance
 

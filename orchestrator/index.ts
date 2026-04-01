@@ -228,7 +228,7 @@ async function main() {
 
     const registry = new (ModelRegistry as any)();
     planJson.cwd = cwd;
-    const plan = buildPlanFromClaudeOutput(planJson);
+    const plan = buildPlanFromClaudeOutput(planJson, cwd);
 
     console.log(`\n📋 Plan: ${plan.tasks.length} tasks`);
     console.log(`📋 Groups: ${plan.execution_order.map((g: string[]) => `[${g.join(',')}]`).join(' → ')}\n`);

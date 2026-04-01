@@ -1,4 +1,5 @@
 import type { TaskPlan, SubTask, Complexity } from './types.js';
+import { loadTaskVerificationRules, suggestVerificationProfile } from './project-policy.js';
 
 // Complexity 枚举必须是 4 级：low / medium / medium-high / high
 export const PLAN_PROMPT_TEMPLATE = `
@@ -39,14 +40,20 @@ schema, utils, api, tests, security, docs, config, algorithms, CRUD, i18n, refac
 }
 `;
 
-export function buildPlanFromClaudeOutput(claudeOutput: any): TaskPlan {
+export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): TaskPlan {
   // 验证 complexity 枚举
   const validComplexities: Complexity[] = ['low', 'medium', 'medium-high', 'high'];
+  const rules = loadTaskVerificationRules(cwd || process.cwd());
 
   const tasks: SubTask[] = claudeOutput.tasks.map((task: any) => {
     if (!validComplexities.includes(task.complexity)) {
       throw new Error(`Invalid complexity: ${task.complexity}. Must be one of: ${validComplexities.join(', ')}`);
     }
+
+    const explicitProfile = typeof task.verification_profile === 'string' && task.verification_profile.trim()
+      ? task.verification_profile.trim()
+      : undefined;
+    const estimatedFiles = task.estimated_files || [];
 
     return {
       id: task.id,
@@ -55,11 +62,9 @@ export function buildPlanFromClaudeOutput(claudeOutput: any): TaskPlan {
       category: task.category,
       assigned_model: '', // Will be assigned by registry
       assignment_reason: '',
-      estimated_files: task.estimated_files || [],
+      estimated_files: estimatedFiles,
       acceptance_criteria: task.acceptance_criteria || [],
-      verification_profile: typeof task.verification_profile === 'string' && task.verification_profile.trim()
-        ? task.verification_profile.trim()
-        : undefined,
+      verification_profile: explicitProfile || suggestVerificationProfile(estimatedFiles, rules),
       discuss_threshold: getDiscussThreshold(task.complexity),
       depends_on: task.depends_on || [],
       review_scale: 'auto'

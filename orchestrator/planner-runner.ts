@@ -223,7 +223,7 @@ export async function planGoal(goal: string, cwd: string): Promise<PlanGoalResul
       output_tokens: plannerResult.tokenUsage.output,
     };
     const parsed = parseJsonBlock<{ goal: string; tasks: unknown[] }>(plannerRawOutput);
-    plan = buildPlanFromClaudeOutput(parsed);
+    plan = buildPlanFromClaudeOutput(parsed, cwd);
     plan.cwd = cwd;
     for (const task of plan.tasks) {
       task.assigned_model = registry.assignModel(task);
