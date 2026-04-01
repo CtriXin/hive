@@ -112,6 +112,7 @@ Default order of precedence:
 
 This means development-time verification should be authored intentionally in `.hive/project.md` whenever the project has non-trivial needs.
 Task-specific checks should be authored intentionally in `.hive/rules/` when only part of the plan needs stronger validation.
+Starter profiles and authoring guidance live in [docs/TASK_VERIFICATION_PROFILES.md](./TASK_VERIFICATION_PROFILES.md).
 
 ## Why this loop matters
 

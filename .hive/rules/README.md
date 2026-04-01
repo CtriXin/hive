@@ -30,3 +30,22 @@ Notes:
 - `worktree` and `both` checks run in the task worktree smoke phase.
 - `suite` and `both` checks run after progressive merge on the integrated codebase.
 - Hooks are also supported with the same syntax as `.hive/project.md`, but task-level usage should stay minimal until the contract is exercised more.
+
+## Recommended starter profiles in this repo
+
+- `mcp-surface`
+  - Use for `mcp-server/index.ts` and MCP tool contract changes
+- `autoloop-runtime`
+  - Use for `orchestrator/driver.ts`, `dispatcher.ts`, `run-store.ts`, `worktree-manager.ts`, `types.ts`
+- `review-pipeline`
+  - Use for `orchestrator/reviewer.ts`, `review-utils.ts`, `task-fingerprint.ts`, review gating logic
+- `provider-routing`
+  - Use for `orchestrator/hive-config.ts`, `provider-resolver.ts`, `mms-routes-loader.ts`
+
+## Selection guidance
+
+- Prefer one profile per task for MVP.
+- Pick the profile based on the main blast radius, not every touched file.
+- If no existing profile fits well, either:
+  - leave `verification_profile` empty and rely on project-level checks, or
+  - add a new focused rule file here.
