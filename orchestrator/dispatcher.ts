@@ -19,6 +19,7 @@ import { getRegistry } from './model-registry.js';
 import { buildSdkEnv } from './project-paths.js';
 import type { SDKMessage } from '@anthropic-ai/claude-code';
 import { safeQuery } from './sdk-query-safe.js';
+import { getModelFallbackRoutes } from './mms-routes-loader.js';
 
 // ── DispatchResult (ERRATA §2) ──
 
@@ -129,41 +130,72 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     result = await safeQuery(queryOpts);
   } catch (err: any) {
     const errorType = classifyError(err);
-    const hiveConfig = loadConfig(worktreePath);
-    const registry = getRegistry();
-    const taskForFallback: SubTask = {
-      id: config.taskId,
-      description: config.prompt.slice(0, 200),
-      complexity: 'medium',
-      category: 'general',
-      assigned_model: config.model,
-      assignment_reason: '',
-      estimated_files: [],
-      acceptance_criteria: [],
-      discuss_threshold: config.discussThreshold,
-      depends_on: [],
-      review_scale: 'auto',
-    };
 
-    const fallbackModel = resolveFallback(config.model, errorType, taskForFallback, hiveConfig, registry);
-    const fallbackInfo = registry.get(fallbackModel);
-    const fallbackProvider = fallbackInfo?.provider || fallbackModel;
+    // Step 1: Try same-model channel fallback (different provider, same model)
+    if (errorType === 'rate_limit' || errorType === 'server_error') {
+      const channelFallbacks = getModelFallbackRoutes(currentModel);
+      for (const fb of channelFallbacks) {
+        if (fb.provider_id === currentProvider) continue;
+        try {
+          console.error(`⚠️ ${currentModel}@${currentProvider} ${errorType}, trying channel ${fb.provider_id}`);
+          const fbUrl = fb.anthropic_base_url;
+          result = await safeQuery({
+            prompt: fullPrompt,
+            options: {
+              cwd: worktreePath,
+              model: currentModel,
+              env: buildSdkEnv(currentModel, fbUrl, fb.api_key),
+              maxTurns: config.maxTurns,
+            },
+          });
+          currentProvider = fb.provider_id;
+          baseUrl = fbUrl;
+          apiKey = fb.api_key;
+          break;
+        } catch {
+          // Channel also failed, try next
+        }
+      }
+    }
 
-    const fallback = resolveProvider(fallbackProvider, fallbackModel);
-    currentModel = fallbackModel;
-    currentProvider = fallbackProvider;
-    baseUrl = fallback.baseUrl;
-    apiKey = fallback.apiKey;
-    console.error(`⚠️ ${config.model} failed (${errorType}), falling back to ${fallbackModel}`);
-    result = await safeQuery({
-      prompt: fullPrompt,
-      options: {
-        cwd: worktreePath,
-        model: fallbackModel,
-        env: buildSdkEnv(fallbackModel, fallback.baseUrl, fallback.apiKey),
-        maxTurns: config.maxTurns,
-      },
-    });
+    // Step 2: If channel fallback didn't work, fall back to a different model
+    if (!result) {
+      const hiveConfig = loadConfig(worktreePath);
+      const registry = getRegistry();
+      const taskForFallback: SubTask = {
+        id: config.taskId,
+        description: config.prompt.slice(0, 200),
+        complexity: 'medium',
+        category: 'general',
+        assigned_model: config.model,
+        assignment_reason: '',
+        estimated_files: [],
+        acceptance_criteria: [],
+        discuss_threshold: config.discussThreshold,
+        depends_on: [],
+        review_scale: 'auto',
+      };
+
+      const fallbackModel = resolveFallback(config.model, errorType, taskForFallback, hiveConfig, registry);
+      const fallbackInfo = registry.get(fallbackModel);
+      const fallbackProvider = fallbackInfo?.provider || fallbackModel;
+
+      const fallback = resolveProvider(fallbackProvider, fallbackModel);
+      currentModel = fallbackModel;
+      currentProvider = fallbackProvider;
+      baseUrl = fallback.baseUrl;
+      apiKey = fallback.apiKey;
+      console.error(`⚠️ ${config.model} all channels failed (${errorType}), falling back to model ${fallbackModel}`);
+      result = await safeQuery({
+        prompt: fullPrompt,
+        options: {
+          cwd: worktreePath,
+          model: fallbackModel,
+          env: buildSdkEnv(fallbackModel, fallback.baseUrl, fallback.apiKey),
+          maxTurns: config.maxTurns,
+        },
+      });
+    }
   }
 
   // Process collected messages

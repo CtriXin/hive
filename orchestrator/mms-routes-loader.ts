@@ -12,6 +12,16 @@ export interface MmsRoute {
   priority: number;
   role: string;
   openai_base_url?: string;
+  fallback_routes?: MmsFallbackRoute[];
+}
+
+export interface MmsFallbackRoute {
+  anthropic_base_url: string;
+  api_key: string;
+  provider_id: string;
+  priority: number;
+  role: string;
+  openai_base_url?: string;
 }
 
 export interface MmsRouteTable {
@@ -239,6 +249,15 @@ export function resolveModelByPrefix(
   }
 
   return null;
+}
+
+/**
+ * Get fallback routes for a model (alternate channels for same model).
+ * Used for channel retry before model downgrade on 429.
+ */
+export function getModelFallbackRoutes(modelId: string): MmsFallbackRoute[] {
+  const route = resolveModelRoute(modelId);
+  return route?.fallback_routes ?? [];
 }
 
 export function isMmsAvailable(): boolean {
