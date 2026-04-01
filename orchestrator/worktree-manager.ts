@@ -100,14 +100,16 @@ export function createWorktree(
 
 export function getWorktreeDiff(worktreePath: string): WorktreeDiff {
   try {
-    const output = execSync('git diff --name-only HEAD', {
+    const output = execSync('git status --porcelain', {
       cwd: worktreePath,
       encoding: 'utf-8',
     });
     return {
       files: output
         .split('\n')
-        .map((file) => file.trim())
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.slice(3).trim())
         .filter(Boolean),
     };
   } catch {

@@ -107,6 +107,100 @@ export interface WorkerMessage {
   timestamp: number;
 }
 
+// ── Autonomous Run Loop ──
+
+export type RunMode = 'safe' | 'balanced' | 'aggressive';
+export type RunStatus =
+  | 'planning'
+  | 'executing'
+  | 'verifying'
+  | 'repairing'
+  | 'replanning'
+  | 'blocked'
+  | 'partial'
+  | 'done';
+
+export type DoneConditionType =
+  | 'test'
+  | 'build'
+  | 'lint'
+  | 'command'
+  | 'file_exists'
+  | 'review_pass';
+
+export type VerificationFailureClass =
+  | 'build_fail'
+  | 'test_fail'
+  | 'lint_fail'
+  | 'command_fail'
+  | 'missing_output'
+  | 'review_fail'
+  | 'infra_fail'
+  | 'unknown';
+
+export type NextActionKind =
+  | 'execute'
+  | 'retry_task'
+  | 'repair_task'
+  | 'replan'
+  | 'request_human'
+  | 'finalize';
+
+export interface DoneCondition {
+  type: DoneConditionType;
+  label: string;
+  command?: string;
+  path?: string;
+  must_pass: boolean;
+  timeout_ms?: number;
+}
+
+export interface VerificationResult {
+  target: DoneCondition;
+  passed: boolean;
+  exit_code: number | null;
+  stdout_tail: string;
+  stderr_tail: string;
+  duration_ms: number;
+  failure_class?: VerificationFailureClass;
+}
+
+export interface NextAction {
+  kind: NextActionKind;
+  reason: string;
+  task_ids: string[];
+  instructions?: string;
+}
+
+export interface RunSpec {
+  id: string;
+  goal: string;
+  cwd: string;
+  mode: RunMode;
+  done_conditions: DoneCondition[];
+  max_rounds: number;
+  max_worker_retries: number;
+  max_replans: number;
+  allow_auto_merge: boolean;
+  stop_on_high_risk: boolean;
+  created_at: string;
+}
+
+export interface RunState {
+  run_id: string;
+  status: RunStatus;
+  round: number;
+  current_plan_id?: string;
+  completed_task_ids: string[];
+  failed_task_ids: string[];
+  retry_counts: Record<string, number>;
+  replan_count: number;
+  verification_results: VerificationResult[];
+  next_action?: NextAction;
+  final_summary?: string;
+  updated_at: string;
+}
+
 // ── Context Recycling ──
 
 export interface ContextPacket {
