@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import type { BudgetStatus, HiveConfig, SubTask, TiersConfig } from './types.js';
 import type { ModelRegistry } from './model-registry.js';
+import { resolveModelRoute } from './mms-routes-loader.js';
 
 export type FailureType = 'rate_limit' | 'server_error' | 'quality_fail';
 
@@ -291,13 +292,14 @@ export function resolveFallback(
 ): string {
   if (errorType === 'rate_limit' || errorType === 'server_error') {
     const failedProvider = registry.get(failedModel)?.provider || null;
-    // Exclude Claude models from fallback — they require local Keychain auth
-    // and will hang in non-interactive environments (codex, CI, etc.)
+    // Only exclude Claude models that lack an MMS route (those need Keychain).
+    // If MMS has a route for the model, it's safe to use as fallback.
     const ranked = registry.rankModelsForTask(task)
       .filter((item) => !item.blocked_by?.length
         && item.model !== failedModel
-        && !item.model.startsWith('claude-'));
+        && (!item.model.startsWith('claude-') || resolveModelRoute(item.model) !== null));
 
+    // Prefer a different provider to avoid hitting the same rate limit
     const alternateProvider = ranked.find((item) => {
       const provider = registry.get(item.model)?.provider || null;
       return provider && provider !== failedProvider;
