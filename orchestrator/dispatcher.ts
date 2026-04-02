@@ -13,7 +13,7 @@ import { resolveProvider, quickPing } from './provider-resolver.js';
 import { triggerDiscussion } from './discuss-bridge.js';
 import { createWorktree, getWorktreeDiff } from './worktree-manager.js';
 import { buildContextPacket, formatContextForWorker } from './context-recycler.js';
-import { loadConfig, resolveFallback, recordSpending, type FailureType } from './hive-config.js';
+import { ensureStageModelAllowed, loadConfig, resolveFallback, recordSpending, type FailureType } from './hive-config.js';
 import { saveWorkerResult, saveCheckpoint, loadCheckpoint, loadWorkerResult } from './result-store.js';
 import { getRegistry } from './model-registry.js';
 import { buildSdkEnv } from './project-paths.js';
@@ -70,6 +70,8 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   let branch = '';
   let currentModel = config.model;
   let currentProvider = config.provider;
+
+  ensureStageModelAllowed('executor', currentModel);
 
   // 1. Resolve provider (MMS route → providers.json fallback)
   let { baseUrl, apiKey } = resolveProvider(config.provider, config.model);
@@ -180,10 +182,11 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       const fallbackInfo = registry.get(fallbackModel);
       const fallbackProvider = fallbackInfo?.provider || fallbackModel;
 
-      const fallback = resolveProvider(fallbackProvider, fallbackModel);
-      currentModel = fallbackModel;
-      currentProvider = fallbackProvider;
-      baseUrl = fallback.baseUrl;
+    const fallback = resolveProvider(fallbackProvider, fallbackModel);
+    currentModel = fallbackModel;
+    currentProvider = fallbackProvider;
+    ensureStageModelAllowed('executor', currentModel);
+    baseUrl = fallback.baseUrl;
       apiKey = fallback.apiKey;
       console.error(`⚠️ ${config.model} all channels failed (${errorType}), falling back to model ${fallbackModel}`);
       result = await safeQuery({

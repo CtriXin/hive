@@ -247,7 +247,7 @@ export class ModelRegistry {
     const ranked = this.rankModelsForTask({
       role: 'review', domains: ['typescript', 'architecture'], complexity: 'medium',
       needs_strict_boundary: false, needs_fast_turnaround: false, is_repair_round: false,
-    });
+    }).filter((c) => !c.model.startsWith('claude-'));
     return ranked.find((c) => c.model !== workerModelId && !c.blocked_by?.length)?.model
       || this.firstKnownModel(['kimi-for-coding', 'kimi-k2.5', 'qwen3-max']);
   }
@@ -256,7 +256,7 @@ export class ModelRegistry {
     const ranked = this.rankModelsForTask({
       role: 'review', domains: ['typescript', 'tests'], complexity: 'medium',
       needs_strict_boundary: false, needs_fast_turnaround: false, is_repair_round: false,
-    });
+    }).filter((c) => !c.model.startsWith('claude-'));
     return ranked.find((c) => !c.blocked_by?.length)?.model || this.firstKnownModel(['kimi-for-coding', 'kimi-k2.5']);
   }
 
@@ -264,34 +264,34 @@ export class ModelRegistry {
     const ranked = this.rankModelsForTask({
       role: 'planning', domains: ['typescript', 'architecture'], complexity: 'high',
       needs_strict_boundary: true, needs_fast_turnaround: false, is_repair_round: false,
-    });
+    }).filter((c) => !c.model.startsWith('claude-'));
     return ranked.find((c) => !c.blocked_by?.length)?.model
-      || this.firstKnownModel(['claude-opus-4-6', 'qwen3-max']);
+      || this.firstKnownModel(['qwen3-max', 'kimi-for-coding', 'glm-5-turbo']);
   }
 
   selectForArbitration(): string {
     const ranked = this.rankModelsForTask({
       role: 'review', domains: ['typescript', 'tests'], complexity: 'medium-high',
       needs_strict_boundary: true, needs_fast_turnaround: false, is_repair_round: false,
-    });
+    }).filter((c) => !c.model.startsWith('claude-'));
     return ranked.find((c) => !c.blocked_by?.length)?.model
-      || this.firstKnownModel(['claude-sonnet-4-6', 'kimi-for-coding', 'kimi-k2.5']);
+      || this.firstKnownModel(['kimi-for-coding', 'kimi-k2.5', 'qwen3-max']);
   }
 
   selectForFinalReview(): string {
     const ranked = this.rankModelsForTask({
       role: 'review', domains: ['typescript', 'architecture', 'integration'], complexity: 'high',
       needs_strict_boundary: true, needs_fast_turnaround: false, is_repair_round: false,
-    });
+    }).filter((c) => !c.model.startsWith('claude-'));
     return ranked.find((c) => !c.blocked_by?.length)?.model
-      || this.firstKnownModel(['claude-opus-4-6', 'qwen3-max']);
+      || this.firstKnownModel(['qwen3-max', 'kimi-for-coding', 'kimi-k2.5']);
   }
 
   selectForReporter(): string {
     const ranked = this.rankModelsForTask({
       role: 'planning', domains: ['general'], complexity: 'low',
       needs_strict_boundary: false, needs_fast_turnaround: true, is_repair_round: false,
-    });
+    }).filter((c) => !c.model.startsWith('claude-'));
     const candidates = ranked.filter((c) => !c.blocked_by?.length);
     const withChinese = candidates
       .map((c) => ({ model: c.model, score: c.final_score + (this.models.get(c.model)?.scores.translation ?? 0) * 0.3 }))
@@ -345,13 +345,15 @@ export class ModelRegistry {
     if (config.translator_model) return config.translator_model;
 
     const fastModels = [...this.models.entries()]
-      .filter(([id]) => this.getSpeedTier(id) === 'fast')
+      .filter(([id]) => !id.startsWith('claude-') && this.getSpeedTier(id) === 'fast')
       .map(([id, m]) => ({ id, chinese: m.scores.translation }))
       .sort((a, b) => b.chinese - a.chinese);
 
     if (fastModels.length > 0) return fastModels[0].id;
 
-    const allByChinese = this.getAll().sort((a, b) => b.chinese - a.chinese);
+    const allByChinese = this.getAll()
+      .filter((item) => !item.id.startsWith('claude-'))
+      .sort((a, b) => b.chinese - a.chinese);
     return allByChinese[0]?.id || this.firstKnownModel(['glm-5-turbo', 'kimi-for-coding', 'kimi-k2.5']);
   }
 

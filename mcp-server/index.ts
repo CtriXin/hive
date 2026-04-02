@@ -117,13 +117,18 @@ async function runClaudePlanner(prompt: string, cwd: string, modelId: string): P
     env = buildSdkEnv(agentModel, resolved.baseUrl, resolved.apiKey);
   } catch (err: any) {
     providerResolveFailed = err.message;
+    if (!agentModel.startsWith('claude-')) {
+      throw new Error(
+        `Planner model "${agentModel}" has no resolvable provider route. Refusing implicit Claude fallback. ${providerResolveFailed}`,
+      );
+    }
     env = buildSdkEnv(agentModel);
   }
 
   const maxTurns = 3;
   const result = await safeQuery({
     prompt,
-    options: { cwd, maxTurns, env },
+    options: { cwd, maxTurns, env, model: agentModel },
   });
 
   const text = extractTextFromMessages(result.messages);

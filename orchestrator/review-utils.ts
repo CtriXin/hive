@@ -3,7 +3,7 @@
 // Hive-specific functions (infra failure detection, auto-pass, review policy) kept here.
 import fs from 'fs';
 import type { SubTask, FindingSeverity, Complexity } from './types.js';
-import type { FailureType } from './hive-config.js';
+import { ensureStageModelAllowed, type FailureType, type ModelStage } from './hive-config.js';
 import {
   resolveProvider as resolveConfiguredProvider,
   resolveProviderForModel,
@@ -151,8 +151,9 @@ export interface QueryModelResult {
 
 export async function queryModelText(
   prompt: string, cwd: string, modelId: string,
-  providerId?: string, maxTurns = 2, timeoutMs = 30000,
+  providerId?: string, maxTurns = 2, timeoutMs = 30000, stage: ModelStage = 'cross_review',
 ): Promise<QueryModelResult> {
+  ensureStageModelAllowed(stage, modelId);
   let env: Record<string, string>;
   if (providerId) {
     const resolved = resolveConfiguredProvider(providerId, modelId);
@@ -163,7 +164,7 @@ export async function queryModelText(
   }
 
   const result = await Promise.race([
-    safeQuery({ prompt, options: { cwd, env, maxTurns } }),
+    safeQuery({ prompt, options: { cwd, env, maxTurns, model: modelId } }),
     new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error(`Review model timeout after ${timeoutMs}ms`)), timeoutMs);
     }),

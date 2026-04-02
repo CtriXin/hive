@@ -6,6 +6,15 @@ import type { ModelRegistry } from './model-registry.js';
 import { resolveModelRoute } from './mms-routes-loader.js';
 
 export type FailureType = 'rate_limit' | 'server_error' | 'quality_fail';
+export type ModelStage =
+  | 'translator'
+  | 'planner'
+  | 'discuss'
+  | 'executor'
+  | 'cross_review'
+  | 'arbitration'
+  | 'final_review'
+  | 'reporter';
 
 export const DEFAULT_TIERS: TiersConfig = {
   translator: { model: 'auto', fallback: 'glm-5-turbo' },
@@ -200,24 +209,41 @@ export function getModelForTask(
   config: HiveConfig,
   registry: ModelRegistry,
 ): string {
-  if (config.overrides[task.id]) {
+  if (config.overrides[task.id] && !config.overrides[task.id].startsWith('claude-')) {
     return config.overrides[task.id];
   }
 
-  if (task.complexity === 'high' || task.category.toLowerCase() === 'security') {
-    return config.high_tier;
-  }
-
-  const ranked = registry.rankModelsForTask(task).filter((item) => !item.blocked_by?.length);
+  const ranked = registry.rankModelsForTask(task)
+    .filter((item) => !item.blocked_by?.length && !item.model.startsWith('claude-'));
   if (ranked.length > 0) {
     return ranked[0].model;
   }
 
-  if (config.default_worker) {
+  if (config.default_worker && !config.default_worker.startsWith('claude-')) {
     return config.default_worker;
   }
 
+  if (!config.fallback_worker.startsWith('claude-')) {
+    return config.fallback_worker;
+  }
+
+  if (!config.high_tier.startsWith('claude-')) {
+    return config.high_tier;
+  }
+
   return config.fallback_worker;
+}
+
+export function isClaudeModel(modelId: string): boolean {
+  return modelId.startsWith('claude-');
+}
+
+export function ensureStageModelAllowed(stage: ModelStage, modelId: string): void {
+  if (!isClaudeModel(modelId)) return;
+  if (stage === 'planner' || stage === 'final_review') return;
+  throw new Error(
+    `Claude model "${modelId}" is not allowed in stage "${stage}". Only planner and final_review may use explicit Claude models.`,
+  );
 }
 
 export function getBudgetWarning(config: HiveConfig): string | null {
@@ -290,35 +316,46 @@ export function resolveFallback(
   config: HiveConfig,
   registry: ModelRegistry,
 ): string {
+  const safeRanked = registry.rankModelsForTask(task)
+    .filter((item) => !item.blocked_by?.length
+      && item.model !== failedModel
+      && !item.model.startsWith('claude-'));
+
   if (errorType === 'rate_limit' || errorType === 'server_error') {
     const failedProvider = registry.get(failedModel)?.provider || null;
-    // Only exclude Claude models that lack an MMS route (those need Keychain).
-    // If MMS has a route for the model, it's safe to use as fallback.
-    const ranked = registry.rankModelsForTask(task)
-      .filter((item) => !item.blocked_by?.length
-        && item.model !== failedModel
-        && (!item.model.startsWith('claude-') || resolveModelRoute(item.model) !== null));
 
     // Prefer a different provider to avoid hitting the same rate limit
-    const alternateProvider = ranked.find((item) => {
+    const alternateProvider = safeRanked.find((item) => {
       const provider = registry.get(item.model)?.provider || null;
       return provider && provider !== failedProvider;
     });
     if (alternateProvider) {
       return alternateProvider.model;
     }
-    if (ranked.length > 0) {
-      return ranked[0].model;
+    if (safeRanked.length > 0) {
+      return safeRanked[0].model;
     }
   }
 
   if (errorType === 'quality_fail') {
-    return config.review_tier;
+    if (safeRanked.length > 0) {
+      return safeRanked[0].model;
+    }
   }
 
-  if (config.fallback_worker !== failedModel) {
+  if (config.fallback_worker !== failedModel && !config.fallback_worker.startsWith('claude-')) {
     return config.fallback_worker;
   }
 
-  return config.high_tier;
+  if (!config.high_tier.startsWith('claude-')) {
+    return config.high_tier;
+  }
+
+  const knownSafe = ['glm-5-turbo', 'kimi-for-coding', 'kimi-k2.5', 'qwen3-max', 'qwen3.5-plus']
+    .find((modelId) => modelId !== failedModel && registry.get(modelId));
+  if (knownSafe) {
+    return knownSafe;
+  }
+
+  return failedModel;
 }

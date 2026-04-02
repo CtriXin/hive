@@ -1,4 +1,5 @@
 import type { OrchestratorResult, ReportOptions, TokenBreakdown } from './types.js';
+import { ensureStageModelAllowed } from './hive-config.js';
 import { resolveProvider } from './provider-resolver.js';
 import { buildSdkEnv } from './project-paths.js';
 import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
@@ -57,6 +58,7 @@ export async function reportResults(
   }
 
   // detailed 模式：用国产模型生成自然语言报告
+  ensureStageModelAllowed('reporter', reporterModel);
   const { baseUrl, apiKey } = resolveProvider(reporterProvider, reporterModel);
 
   const queryResult = await safeQuery({
@@ -64,6 +66,7 @@ export async function reportResults(
     options: {
       cwd: process.cwd(),
       env: buildSdkEnv(reporterModel, baseUrl, apiKey),
+      model: reporterModel,
       maxTurns: 1,
     }
   });

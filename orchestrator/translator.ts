@@ -1,7 +1,7 @@
 import type { TranslationResult } from './types.js';
 import { resolveProvider } from './provider-resolver.js';
 import { getRegistry } from './model-registry.js';
-import { loadConfig, resolveTierModel } from './hive-config.js';
+import { ensureStageModelAllowed, loadConfig, resolveTierModel } from './hive-config.js';
 import { buildSdkEnv } from './project-paths.js';
 import { safeQuery, extractTextFromMessages, extractTokenUsage } from './sdk-query-safe.js';
 
@@ -67,6 +67,7 @@ async function doTranslate(
   provider: string,
 ): Promise<TranslationResult> {
   const startTime = Date.now();
+  ensureStageModelAllowed('translator', model);
   const { baseUrl, apiKey } = resolveProvider(provider, model);
 
   const result = await safeQuery({
@@ -74,6 +75,7 @@ async function doTranslate(
     options: {
       cwd: process.cwd(),
       env: buildSdkEnv(model, baseUrl, apiKey),
+      model,
       maxTurns: 1,
     }
   });

@@ -27,6 +27,9 @@ export interface SafeQueryResult {
  * Claude Code CLI does NOT validate model names (Ug() returns true).
  */
 export async function safeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult> {
+  if (!opts.options.model) {
+    throw new Error('safeQuery requires explicit options.model to avoid implicit Claude fallback');
+  }
   return claudeCodeQuery(opts);
 }
 

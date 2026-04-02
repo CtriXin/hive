@@ -10,7 +10,7 @@ import type {
 } from './types.js';
 import type { ModelRegistry } from './model-registry.js';
 import { getRegistry } from './model-registry.js';
-import { loadConfig, resolveTierModel } from './hive-config.js';
+import { ensureStageModelAllowed, loadConfig, resolveTierModel } from './hive-config.js';
 import { resolveProviderForModel } from './provider-resolver.js';
 import { buildSdkEnv } from './project-paths.js';
 import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
@@ -29,6 +29,19 @@ function resolveProviderConfig(
       baseUrl: process.env[`${envKey}_BASE_URL`] || '',
       apiKey: process.env[`${envKey}_API_KEY`] || '',
     };
+  }
+}
+
+function ensureNoImplicitClaudeFallback(
+  modelId: string,
+  baseUrl: string,
+  apiKey: string,
+): void {
+  if (modelId.startsWith('claude-')) return;
+  if (!baseUrl || !apiKey) {
+    throw new Error(
+      `Model "${modelId}" has no explicit provider route/key. Refusing implicit Claude fallback.`,
+    );
   }
 }
 
@@ -75,6 +88,7 @@ function resolveDiscussPartners(
       registry,
       'review',
     );
+    ensureStageModelAllowed('discuss', id);
     if (!resolved.includes(id)) resolved.push(id);
   }
   return resolved;
@@ -149,11 +163,13 @@ async function runSingleDiscuss(
   workDir: string,
 ): Promise<DiscussionReply | null> {
   const { baseUrl, apiKey } = resolveProviderConfig(partnerId);
+  ensureNoImplicitClaudeFallback(partnerId, baseUrl, apiKey);
   const result = await safeQuery({
     prompt,
     options: {
       cwd: workDir,
       env: buildSdkEnv(partnerId, baseUrl, apiKey),
+      model: partnerId,
       maxTurns: 3,
     },
   });
@@ -289,11 +305,13 @@ async function runSinglePlanDiscuss(
   cwd: string,
 ): Promise<RawPlanReview | null> {
   const { baseUrl, apiKey } = resolveProviderConfig(partnerId);
+  ensureNoImplicitClaudeFallback(partnerId, baseUrl, apiKey);
   const result = await safeQuery({
     prompt,
     options: {
       cwd,
       env: buildSdkEnv(partnerId, baseUrl, apiKey),
+      model: partnerId,
       maxTurns: 1,
     },
   });
@@ -360,6 +378,7 @@ export async function discussPlan(
             options: {
               cwd: plan.cwd || process.cwd(),
               env: buildSdkEnv(id, baseUrl, apiKey),
+              model: id,
               maxTurns: 1,
             },
           });
@@ -401,6 +420,7 @@ export async function discussPlan(
             options: {
               cwd: plan.cwd || process.cwd(),
               env: buildSdkEnv(fallbackModel, baseUrl, apiKey),
+              model: fallbackModel,
               maxTurns: 1,
             },
           });

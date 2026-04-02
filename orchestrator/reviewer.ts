@@ -59,11 +59,11 @@ Rules:
   try {
     let qr;
     try {
-      qr = await queryModelText(prompt, workerResult.worktreePath, reviewerModel, reviewerProvider, 2);
+      qr = await queryModelText(prompt, workerResult.worktreePath, reviewerModel, reviewerProvider, 2, 30000, 'cross_review');
     } catch (err: any) {
       const fallbackModel = resolveFallback(reviewerModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
       const fallbackProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
-      qr = await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fallbackProvider, 2);
+      qr = await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fallbackProvider, 2, 30000, 'cross_review');
     }
 
     const jsonPayload = extractJsonObject(qr.text);
@@ -177,14 +177,14 @@ Rules:
 
   let qr;
   try {
-    qr = await queryModelText(prompt, workerResult.worktreePath, arbitrationModel, undefined, 1);
+    qr = await queryModelText(prompt, workerResult.worktreePath, arbitrationModel, undefined, 1, 30000, 'arbitration');
   } catch (err: any) {
     try {
       const fallbackModel = resolveFallback(arbitrationModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
       const fbProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
       qr = fbProvider
-        ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fbProvider, 2)
-        : await queryModelText(prompt, workerResult.worktreePath, fallbackModel, undefined, 1);
+        ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fbProvider, 2, 30000, 'arbitration')
+        : await queryModelText(prompt, workerResult.worktreePath, fallbackModel, undefined, 1, 30000, 'arbitration');
     } catch (fbErr: any) {
       console.error(`    ❌ Arbitration failed: ${fbErr.message?.slice(0, 100)}`);
       return {
@@ -286,14 +286,14 @@ Rules:
 
   let qr;
   try {
-    qr = await queryModelText(prompt, workerResult.worktreePath, finalReviewModel, undefined, 1);
+    qr = await queryModelText(prompt, workerResult.worktreePath, finalReviewModel, undefined, 1, 30000, 'final_review');
   } catch (err: any) {
     try {
       const fallbackModel = resolveFallback(finalReviewModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
       const fbProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
       qr = fbProvider
-        ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fbProvider, 2)
-        : await queryModelText(prompt, workerResult.worktreePath, fallbackModel, undefined, 1);
+        ? await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fbProvider, 2, 30000, 'final_review')
+        : await queryModelText(prompt, workerResult.worktreePath, fallbackModel, undefined, 1, 30000, 'final_review');
     } catch (fbErr: any) {
       console.error(`    ❌ Final review failed: ${fbErr.message?.slice(0, 100)}`);
       return {

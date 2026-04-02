@@ -15,6 +15,28 @@ describe('model-registry claude filter', () => {
     });
   });
 
+  describe('auto tier selectors', () => {
+    it('planning auto selector never returns a claude-* model', () => {
+      expect(registry.selectForPlanning()).not.toMatch(/^claude-/);
+    });
+
+    it('arbitration auto selector never returns a claude-* model', () => {
+      expect(registry.selectForArbitration()).not.toMatch(/^claude-/);
+    });
+
+    it('final review auto selector never returns a claude-* model', () => {
+      expect(registry.selectForFinalReview()).not.toMatch(/^claude-/);
+    });
+
+    it('discuss auto partner never returns a claude-* model', () => {
+      expect(registry.selectDiscussPartner('glm-5-turbo')).not.toMatch(/^claude-/);
+    });
+
+    it('translator auto selector never returns a claude-* model', () => {
+      expect(registry.selectTranslator()).not.toMatch(/^claude-/);
+    });
+  });
+
   describe('selectA2aLensModels', () => {
     it('never returns claude-* models', () => {
       const workerModels = ['glm-5-turbo', 'kimi-for-coding', 'kimi-k2.5'];
