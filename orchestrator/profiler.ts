@@ -267,7 +267,12 @@ interface ScorecardPayload {
 const SCORECARD_MODEL_ALIASES: Record<string, string> = {
   'glm5-turbo': 'glm-5-turbo',
   'glm-5-turbo': 'glm-5-turbo',
+  'minimax-m2.1': 'MiniMax-M2.1',
+  'MiniMax-M2.1': 'MiniMax-M2.1',
+  'minimax-m2.5': 'MiniMax-M2.5',
+  'MiniMax-M2.5': 'MiniMax-M2.5',
   'minimax-2.7': 'MiniMax-M2.7',
+  'minimax-m2.7': 'MiniMax-M2.7',
   'MiniMax-M2.7': 'MiniMax-M2.7',
   'kimi-coding': 'kimi-for-coding',
   'kimi-for-coding': 'kimi-for-coding',

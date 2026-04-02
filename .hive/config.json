@@ -1,12 +1,12 @@
 {
   "tiers": {
     "translator": { "model": "glm-5-turbo", "fallback": "qwen3.5-plus" },
-    "planner": { "model": "glm-5-turbo", "fallback": "kimi-for-coding" },
-    "discuss": { "model": ["glm-5-turbo", "qwen3.5-plus"], "fallback": "kimi-for-coding", "mode": "off" },
-    "executor": { "model": "glm-5-turbo", "fallback": "kimi-for-coding" },
+    "planner": { "model": "gpt-5", "fallback": "kimi-for-coding" },
+    "discuss": { "model": ["qwen3-max", "glm-4.7"], "fallback": "kimi-for-coding", "mode": "auto" },
+    "executor": { "model": "auto", "fallback": "kimi-for-coding" },
     "reviewer": {
-      "cross_review": { "model": "glm-5-turbo", "fallback": "qwen3.5-plus" },
-      "arbitration": { "model": "kimi-for-coding", "fallback": "qwen3.5-plus" },
+      "cross_review": { "model": "MiniMax-M2.7", "fallback": "qwen3.5-plus" },
+      "arbitration": { "model": "kimi-k2.5", "fallback": "qwen3.5-plus" },
       "final_review": { "model": "qwen3-max", "fallback": "kimi-for-coding" }
     },
     "reporter": { "model": "glm-5-turbo", "fallback": "qwen3.5-plus" }

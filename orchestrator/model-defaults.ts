@@ -47,10 +47,14 @@ const MODEL_ID_ALIASES: Record<string, string> = {
   'qwen3.5': 'qwen-3.5',
   'qwen-3.5': 'qwen-3.5',
   'qwen-max': 'qwen-max',
+  'minimax-m2.1': 'MiniMax-M2.1',
+  'minimax-m2.5': 'MiniMax-M2.5',
+  'minimax-m2.7': 'MiniMax-M2.7',
 };
 
 export function normalizeModelId(modelId: string): string {
-  return MODEL_ID_ALIASES[modelId] || modelId;
+  const normalized = modelId.trim();
+  return MODEL_ID_ALIASES[normalized] || MODEL_ID_ALIASES[normalized.toLowerCase()] || normalized;
 }
 
 export function titleCaseModelId(id: string): string {

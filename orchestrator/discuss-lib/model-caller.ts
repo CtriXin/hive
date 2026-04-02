@@ -5,6 +5,7 @@
 // Default implementation uses @anthropic-ai/claude-code SDK query().
 
 import { query } from '@anthropic-ai/claude-code';
+import { normalizeModelId } from '../model-defaults.js';
 
 // ── Interface ──
 
@@ -77,9 +78,10 @@ export function createDefaultCaller(): ModelCaller {
         maxTurns = 3,
         timeoutMs = 180_000,
       } = options;
+      const canonicalModelId = normalizeModelId(modelId);
 
       const env: Record<string, string> = {
-        ANTHROPIC_MODEL: modelId,
+        ANTHROPIC_MODEL: canonicalModelId,
         PATH: process.env['PATH'] || '/usr/local/bin:/usr/bin:/bin',
         HOME: process.env['HOME'] || '',
       };

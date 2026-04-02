@@ -17,6 +17,7 @@ import { ensureStageModelAllowed, loadConfig, resolveFallback, recordSpending, t
 import { saveWorkerResult, saveCheckpoint, loadCheckpoint, loadWorkerResult } from './result-store.js';
 import { getRegistry } from './model-registry.js';
 import { buildSdkEnv } from './project-paths.js';
+import { ensureModelProxy } from './model-proxy.js';
 import type { SDKMessage } from '@anthropic-ai/claude-code';
 import { safeQuery } from './sdk-query-safe.js';
 import { getModelFallbackRoutes } from './mms-routes-loader.js';
@@ -355,6 +356,14 @@ export async function dispatchBatch(
     }
   }
 
+  // Start model name proxy if any non-Claude model is used
+  const hasNonClaudeModels = plan.tasks.some(
+    t => !t.assigned_model.startsWith('claude-'),
+  );
+  if (hasNonClaudeModels) {
+    await ensureModelProxy();
+  }
+
   // Update manifest
   await updateManifest(plan, 'executing');
 
@@ -393,7 +402,7 @@ export async function dispatchBatch(
     // Preflight: quickPing unique models, replace unhealthy ones
     const uniqueModels = [...new Set(workerConfigs.map(c => c.model))];
     const pingResults = await Promise.all(
-      uniqueModels.map(async m => ({ model: m, ...(await quickPing(m)) })),
+      uniqueModels.map(async m => ({ model: m, ...(await quickPing(m, 15000)) })),
     );
     const unhealthy = new Set(pingResults.filter(p => !p.ok).map(p => p.model));
     if (unhealthy.size > 0) {

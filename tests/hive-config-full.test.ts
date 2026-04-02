@@ -104,9 +104,10 @@ describe('hive-config (extended)', () => {
       expect(result).toBe('glm-5-turbo'); // different provider than kimi
     });
 
-    it('returns review_tier on quality_fail', () => {
+    it('returns non-claude model on quality_fail', () => {
       const result = resolveFallback('kimi-k2.5', 'quality_fail', task, DEFAULT_CONFIG, mockRegistry);
-      expect(result).toBe('claude-sonnet');
+      // GPT fix: claude models filtered from fallback — picks from ranked list
+      expect(result).toBe('glm-5-turbo');
     });
 
     it('returns fallback_worker when different from failed model', () => {
@@ -118,13 +119,14 @@ describe('hive-config (extended)', () => {
       expect(result).toBe('glm-5-turbo');
     });
 
-    it('returns high_tier when fallback_worker is the failed model', () => {
+    it('returns known safe model when fallback_worker is the failed model', () => {
       const result = resolveFallback('glm-5-turbo', 'server_error', task, DEFAULT_CONFIG, {
         ...mockRegistry,
-        get: () => ({ provider: 'bailian' }),
+        get: (id: string) => id === 'kimi-for-coding' ? { provider: 'kimi' } : { provider: 'bailian' },
         rankModelsForTask: () => [],
       } as any);
-      expect(result).toBe('claude-opus');
+      // GPT fix: claude models blocked — falls through to knownSafe list
+      expect(result).toBe('kimi-for-coding');
     });
   });
 });

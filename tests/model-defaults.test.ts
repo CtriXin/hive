@@ -9,6 +9,9 @@ describe('model-defaults', () => {
       expect(normalizeModelId('kimi-coding')).toBe('kimi-for-coding');
       expect(normalizeModelId('glm5-turbo')).toBe('glm-5-turbo');
       expect(normalizeModelId('qwen3.5')).toBe('qwen-3.5');
+      expect(normalizeModelId('minimax-m2.1')).toBe('MiniMax-M2.1');
+      expect(normalizeModelId('minimax-m2.5')).toBe('MiniMax-M2.5');
+      expect(normalizeModelId('minimax-m2.7')).toBe('MiniMax-M2.7');
     });
 
     it('passes through unknown IDs', () => {

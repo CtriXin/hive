@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getModelProxyPort, isModelProxyRunning } from './model-proxy.js';
+import { normalizeModelId } from './model-defaults.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +16,7 @@ const __dirname = path.dirname(__filename);
  */
 export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): Record<string, string> {
   const env: Record<string, string> = {};
+  const canonicalModel = normalizeModelId(model);
   // Inherit all parent env (preserves PATH, HOME, NVM_DIR, etc.)
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) env[k] = v;
@@ -30,34 +33,37 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
   // Override ALL model-related vars — force Claude Code SDK internal calls
   // (small-fast, subagent, reasoning, permissions) to use the target model,
   // not inherited MMS gateway values like claude-opus-4-6
-  env.ANTHROPIC_MODEL = model;
-  env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
-  env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
-  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
-  env.ANTHROPIC_REASONING_MODEL = model;
-  env.CLAUDE_CODE_SUBAGENT_MODEL = model;
+  env.ANTHROPIC_MODEL = canonicalModel;
+  env.ANTHROPIC_DEFAULT_SONNET_MODEL = canonicalModel;
+  env.ANTHROPIC_DEFAULT_OPUS_MODEL = canonicalModel;
+  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = canonicalModel;
+  env.ANTHROPIC_REASONING_MODEL = canonicalModel;
+  env.CLAUDE_CODE_SUBAGENT_MODEL = canonicalModel;
 
-  // Non-Anthropic models (GPT, Gemini) need MMS gateway for protocol adaptation.
-  // Claude Code SDK only speaks Anthropic protocol; MMS gateway converts to OpenAI format.
-  const needsMmsGateway = /^(gpt-|gemini-|o[134]-)/i.test(model);
+  // GPT/Gemini/O-series need MMS gateway for protocol adaptation.
+  const needsMmsGateway = /^(gpt-|gemini-|o[134]-)/i.test(canonicalModel);
   const mmsBaseUrl = process.env.ANTHROPIC_BASE_URL;
   const mmsToken = process.env.ANTHROPIC_AUTH_TOKEN;
-
-  // Always ensure ANTHROPIC_AUTH_TOKEN is set to prevent Claude Code
-  // subprocess from falling back to macOS Keychain (which triggers popups).
-  // Priority: explicit apiKey > MMS token > inherited env token.
   const inheritedToken = process.env.ANTHROPIC_AUTH_TOKEN || '';
 
-  if (needsMmsGateway && mmsBaseUrl) {
+  // Non-Claude domestic models: route through local model proxy.
+  // Claude Code CLI lowercases model names (e.g. "MiniMax-M2.7" → "minimax-m2.7")
+  // which breaks case-sensitive provider APIs. The model proxy restores
+  // correct casing from MMS model-routes.json before forwarding.
+  const needsModelProxy = !canonicalModel.startsWith('claude-')
+    && !needsMmsGateway
+    && isModelProxyRunning();
+
+  if (needsModelProxy) {
+    env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${getModelProxyPort()}`;
+    env.ANTHROPIC_AUTH_TOKEN = 'proxy-managed';
+  } else if (needsMmsGateway && mmsBaseUrl) {
     env.ANTHROPIC_BASE_URL = mmsBaseUrl;
     env.ANTHROPIC_AUTH_TOKEN = mmsToken || inheritedToken;
   } else if (baseUrl) {
     env.ANTHROPIC_BASE_URL = baseUrl.replace(/\/v1\/?$/, '');
     env.ANTHROPIC_AUTH_TOKEN = apiKey || inheritedToken;
   } else {
-    // No explicit baseUrl — keep inherited values, never delete
-    // If neither baseUrl nor token exist, the subprocess will use
-    // its own default resolution (but won't hit Keychain if token is set)
     if (inheritedToken) {
       env.ANTHROPIC_AUTH_TOKEN = inheritedToken;
     }

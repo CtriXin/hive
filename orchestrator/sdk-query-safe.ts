@@ -36,15 +36,22 @@ export async function safeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult
 // ── Claude Code SDK path (for claude-* models) ──
 
 async function claudeCodeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult> {
+  const modelId = opts.options.model!;
+
+  // Claude Code CLI --model flag lowercases model names internally,
+  // breaking case-sensitive proxies (e.g. "MiniMax-M2.7" → "minimax-m2.7").
+  // For non-Claude models, we rely on ANTHROPIC_MODEL env var (set by buildSdkEnv)
+  // which is sent as-is in the API request body, preserving original casing.
+  // Only pass --model for Claude models where the CLI knows the name natively.
+  const passModelFlag = modelId.startsWith('claude-');
+
   const stream = query({
     prompt: opts.prompt,
     options: {
       ...opts.options,
       // Workers run autonomously — bypass interactive permission prompts
       permissionMode: 'bypassPermissions',
-      // Explicit model ensures Claude Code subprocess uses the assigned model,
-      // not its default (claude-sonnet). Env vars alone are not reliable.
-      model: opts.options.model,
+      model: passModelFlag ? modelId : undefined,
     },
   });
 

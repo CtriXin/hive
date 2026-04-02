@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import type { ProviderEntry, ProvidersConfig } from './types.js';
 import { loadConfig } from './hive-config.js';
+import { normalizeModelId } from './model-defaults.js';
 import { resolveProjectPath } from './project-paths.js';
 import {
   resolveModelRoute,
@@ -214,17 +215,18 @@ export async function quickPing(
 ): Promise<QuickPingResult> {
   const start = Date.now();
   try {
-    const needsMmsGateway = /^(gpt-|gemini-|o[134]-)/i.test(modelId);
+    const canonicalModelId = normalizeModelId(modelId);
+    const useMmsGateway = /^(gpt-|gemini-|o[134]-)/i.test(canonicalModelId);
     let url: string;
     let apiKey: string;
 
-    if (needsMmsGateway) {
+    if (useMmsGateway) {
       const mmsBase = process.env.ANTHROPIC_BASE_URL;
       if (!mmsBase) return { ok: true, ms: 0 }; // Can't ping, assume ok
       url = mmsBase.replace(/\/v1\/?$/, '') + '/v1/messages';
       apiKey = process.env.ANTHROPIC_AUTH_TOKEN || '';
     } else {
-      const resolved = resolveProviderForModel(modelId);
+      const resolved = resolveProviderForModel(canonicalModelId);
       url = resolved.baseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
       apiKey = resolved.apiKey;
     }
@@ -237,7 +239,7 @@ export async function quickPing(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: modelId,
+        model: canonicalModelId,
         max_tokens: 1,
         stream: true,
         messages: [{ role: 'user', content: 'ping' }],
