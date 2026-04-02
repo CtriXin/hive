@@ -1,0 +1,202 @@
+import fs from 'fs';
+import path from 'path';
+import type { OrchestratorResult, TaskPlan, SubTask } from './types.js';
+import type { CompactPacketWorker, RunCompactPacketResult } from './compact-packet.js';
+
+const MCP_DIR_SEGMENTS = ['.ai', 'mcp'];
+const MAX_FOCUS_DESCRIPTION = 96;
+
+export const LATEST_PLAN_ARTIFACT = 'latest-plan.json';
+
+function getMcpDir(cwd: string): string {
+  return path.join(cwd, ...MCP_DIR_SEGMENTS);
+}
+
+export function ensureDir(dir: string): void {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+export function writeMcpJsonArtifact(
+  cwd: string,
+  prefix: string,
+  payload: unknown,
+): string {
+  const dir = getMcpDir(cwd);
+  ensureDir(dir);
+  const filePath = path.join(dir, `${prefix}-${Date.now()}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+  return filePath;
+}
+
+export function writeMcpTextArtifact(
+  cwd: string,
+  prefix: string,
+  content: string,
+): string {
+  const dir = getMcpDir(cwd);
+  ensureDir(dir);
+  const filePath = path.join(dir, `${prefix}-${Date.now()}.md`);
+  fs.writeFileSync(filePath, content, 'utf-8');
+  return filePath;
+}
+
+export function writeStableMcpJsonArtifact(
+  cwd: string,
+  fileName: string,
+  payload: unknown,
+): string {
+  const dir = getMcpDir(cwd);
+  ensureDir(dir);
+  const filePath = path.join(dir, fileName);
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+  return filePath;
+}
+
+export function resolveLatestPlanArtifact(cwd: string): string | null {
+  const filePath = path.join(getMcpDir(cwd), LATEST_PLAN_ARTIFACT);
+  return fs.existsSync(filePath) ? filePath : null;
+}
+
+export function relPath(cwd: string, target: string): string {
+  const rel = target.startsWith(cwd)
+    ? target.slice(cwd.length).replace(/^\/+/, '')
+    : target;
+  return rel || target;
+}
+
+function compressTaskDescription(description: string): string {
+  const singleLine = description.replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= MAX_FOCUS_DESCRIPTION) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, MAX_FOCUS_DESCRIPTION - 3)}...`;
+}
+
+function formatFocusTask(task: SubTask): string {
+  return `${task.id} | ${task.assigned_model} | ${compressTaskDescription(task.description)}`;
+}
+
+interface PlanCardOptions {
+  artifactPath: string;
+  plannerModel: string;
+  stablePlanPath: string;
+  translationModel?: string;
+  discussQualityGate?: string | null;
+  budgetWarning?: string | null;
+}
+
+export function summarizePlanCard(
+  plan: TaskPlan,
+  options: PlanCardOptions,
+): string {
+  const focusTask = plan.tasks[0];
+  const extraCount = Math.max(0, plan.tasks.length - 1);
+
+  return [
+    `Hive plan ${plan.id} ready.`,
+    `- result: ${plan.tasks.length} task(s) via ${options.plannerModel}`,
+    options.translationModel ? `- translated: ${options.translationModel}` : '',
+    options.discussQualityGate ? `- discuss: ${options.discussQualityGate}` : '',
+    options.budgetWarning ? `- budget: ${options.budgetWarning}` : '',
+    focusTask
+      ? `- focus: ${formatFocusTask(focusTask)}${extraCount > 0 ? ` +${extraCount} more` : ''}`
+      : '',
+    '- next: execute_plan',
+    `- plan: ${relPath(plan.cwd, options.stablePlanPath)}`,
+    `- artifact: ${relPath(plan.cwd, options.artifactPath)}`,
+  ].filter(Boolean).join('\n');
+}
+
+function formatFocusWorker(worker: CompactPacketWorker): string {
+  return `${worker.agent_id} | ${worker.status} | ${worker.task_summary}`;
+}
+
+function buildAgentLines(cwd: string, worker?: CompactPacketWorker): string[] {
+  if (!worker) return [];
+  return [
+    `- agent: ${worker.agent_id}`,
+    worker.transcript_path ? `- transcript: ${relPath(cwd, worker.transcript_path)}` : '',
+  ].filter(Boolean);
+}
+
+function buildInspectLine(commands: string[]): string {
+  return `- next: ${commands.join(' | ')}`;
+}
+
+interface ExecutionCardOptions {
+  reportPath: string;
+  compactPacket?: RunCompactPacketResult | null;
+  mergeResults: Array<{ taskId: string; merged: boolean; error?: string }>;
+}
+
+export function summarizeExecutionCard(
+  plan: TaskPlan,
+  orchestratorResult: OrchestratorResult,
+  options: ExecutionCardOptions,
+): string {
+  const passedWorkers = orchestratorResult.worker_results.filter((worker) => worker.success).length;
+  const passedReviews = orchestratorResult.review_results.filter((review) => review.passed).length;
+  const totalWorkers = orchestratorResult.worker_results.length;
+  const totalReviews = orchestratorResult.review_results.length;
+  const blockedCount = options.mergeResults.filter((item) => !item.merged).length;
+  const focusWorker = options.compactPacket?.packet.worker_focus[0];
+  const restorePath = options.compactPacket
+    ? relPath(plan.cwd, options.compactPacket.latestRestorePromptPath)
+    : undefined;
+  const inspectCommands = focusWorker
+    ? [`hive workers ${focusWorker.task_id}`, 'hive status', 'hive compact']
+    : ['hive status', 'hive workers', 'hive compact'];
+
+  return [
+    `Hive run ${plan.id} ready.`,
+    `- result: ${blockedCount > 0 ? 'partial' : 'ok'} | workers ${passedWorkers}/${totalWorkers} | reviews ${passedReviews}/${totalReviews}`,
+    focusWorker ? `- focus: ${formatFocusWorker(focusWorker)}` : '',
+    ...buildAgentLines(plan.cwd, focusWorker),
+    blockedCount > 0 ? `- note: ${blockedCount} task(s) stayed in worktree for inspection` : '',
+    buildInspectLine(inspectCommands),
+    restorePath ? `- restore: ${restorePath}` : '',
+    `- artifact: ${options.reportPath}`,
+  ].filter(Boolean).join('\n');
+}
+
+interface DispatchCardOutput {
+  taskId: string;
+  model: string;
+  success: boolean;
+  discuss_triggered: boolean;
+  preflight_fallback: string | null;
+}
+
+interface DispatchCardOptions {
+  cwd: string;
+  artifactPath: string;
+  compactPacket?: RunCompactPacketResult | null;
+}
+
+export function summarizeDispatchCard(
+  output: DispatchCardOutput,
+  options: DispatchCardOptions,
+): string {
+  const focusWorker = options.compactPacket?.packet.worker_focus[0];
+  const restorePath = options.compactPacket
+    ? relPath(options.cwd, options.compactPacket.latestRestorePromptPath)
+    : undefined;
+  const resultParts = [
+    output.success ? 'ok' : 'failed',
+    `via ${output.model}`,
+    output.preflight_fallback ? `fallback ${output.preflight_fallback}` : '',
+    output.discuss_triggered ? 'discuss triggered' : '',
+  ].filter(Boolean);
+
+  return [
+    `Hive worker ${output.taskId} ready.`,
+    `- result: ${resultParts.join(' | ')}`,
+    focusWorker ? `- focus: ${formatFocusWorker(focusWorker)}` : '',
+    ...buildAgentLines(options.cwd, focusWorker),
+    buildInspectLine([`hive workers ${output.taskId}`, 'hive compact']),
+    restorePath ? `- restore: ${restorePath}` : '',
+    `- artifact: ${options.artifactPath}`,
+  ].filter(Boolean).join('\n');
+}

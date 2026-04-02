@@ -85,6 +85,11 @@ export interface WorkerConfig {
   discussThreshold: number;
   maxTurns: number; // Safety limit, default 25
   sessionId?: string; // For resume
+  assignedModel?: string;
+  runId?: string;
+  planId?: string;
+  round?: number;
+  taskDescription?: string;
 }
 
 export interface WorkerResult {
@@ -106,6 +111,73 @@ export interface WorkerMessage {
   type: 'assistant' | 'tool_use' | 'tool_result' | 'error' | 'system';
   content: string;
   timestamp: number;
+}
+
+// ── Worker Status (hiveshell) ──
+
+export type WorkerLifecycleStatus =
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'discussing'
+  | 'completed'
+  | 'failed';
+
+export interface WorkerStatusEntry {
+  task_id: string;
+  status: WorkerLifecycleStatus;
+  assigned_model: string;
+  active_model: string;
+  provider: string;
+  agent_id: string;
+  task_description?: string;
+  session_id?: string;
+  branch?: string;
+  worktree_path?: string;
+  discuss_triggered: boolean;
+  started_at?: string;
+  finished_at?: string;
+  updated_at: string;
+  task_summary?: string;
+  last_message?: string;
+  changed_files_count?: number;
+  success?: boolean;
+  error?: string;
+  transcript_path?: string;
+}
+
+export interface WorkerStatusSnapshot {
+  run_id: string;
+  plan_id: string;
+  goal?: string;
+  round: number;
+  updated_at: string;
+  workers: WorkerStatusEntry[];
+}
+
+export interface WorkerStatusEvent {
+  run_id: string;
+  plan_id: string;
+  round: number;
+  task_id: string;
+  agent_id: string;
+  status: WorkerLifecycleStatus;
+  timestamp: string;
+  message?: string;
+  active_model?: string;
+  provider?: string;
+  transcript_path?: string;
+}
+
+export interface WorkerTranscriptEntry {
+  run_id: string;
+  plan_id: string;
+  task_id: string;
+  agent_id: string;
+  session_id?: string;
+  type: WorkerMessage['type'];
+  timestamp: string;
+  content: string;
 }
 
 // ── Autonomous Run Loop ──
@@ -227,6 +299,8 @@ export interface RunSpec {
   id: string;
   goal: string;
   cwd: string;
+  origin_cwd?: string;
+  task_cwd?: string;
   mode: RunMode;
   done_conditions: DoneCondition[];
   max_rounds: number;
@@ -546,4 +620,74 @@ export interface HiveConfig {
   providers_path?: string;
   // Per-tier model configuration
   tiers: TiersConfig;
+}
+
+// ── Planning Input & Runtime Hooks (hiveshell) ──
+
+export interface PlanningInput {
+  goal: string;
+  context_blocks: string[];
+}
+
+export interface RunHookContext {
+  spec: RunSpec;
+  state: RunState;
+  action: NextActionKind;
+  round: number;
+  planning_input?: PlanningInput;
+  plan?: TaskPlan | null;
+  worker_results?: WorkerResult[];
+  review_results?: ReviewResult[];
+  verification_results?: VerificationResult[];
+}
+
+export type RunHook = (
+  context: RunHookContext,
+) => void | Promise<void>;
+
+export interface RunRuntimeHooks {
+  beforePlan?: RunHook;
+  afterPlan?: RunHook;
+  afterExecution?: RunHook;
+  beforeReview?: RunHook;
+  afterReview?: RunHook;
+  afterRun?: RunHook;
+}
+
+// ── Score History (hiveshell) ──
+
+export interface RunScoreSignals {
+  worker_count: number;
+  worker_success_count: number;
+  review_count: number;
+  review_pass_count: number;
+  verification_count: number;
+  verification_pass_count: number;
+  verification_fail_count: number;
+  discuss_triggered_count: number;
+  changed_files_count: number;
+  total_duration_ms: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+}
+
+export interface RoundScoreEntry {
+  run_id: string;
+  round: number;
+  action: NextActionKind;
+  status: RunStatus;
+  created_at: string;
+  score: number;
+  delta_from_previous?: number;
+  summary: string;
+  signals: RunScoreSignals;
+}
+
+export interface RunScoreHistory {
+  run_id: string;
+  goal?: string;
+  updated_at: string;
+  latest_score?: number;
+  best_score?: number;
+  rounds: RoundScoreEntry[];
 }

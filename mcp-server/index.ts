@@ -13,7 +13,22 @@ import { ModelRegistry } from '../orchestrator/model-registry.js';
 import { checkProviderHealth, getAllProviders, resolveProviderForModel, quickPing } from '../orchestrator/provider-resolver.js';
 import { isMmsAvailable, loadMmsRoutes } from '../orchestrator/mms-routes-loader.js';
 import { getBudgetStatus, getBudgetWarning, loadConfig, recordSpending, resolveTierModel, resolveFallback } from '../orchestrator/hive-config.js';
+import { saveRoundScore } from '../orchestrator/score-history.js';
+import { saveRunPlan, saveRunResult, saveRunSpec, saveRunState } from '../orchestrator/run-store.js';
+import { loadCompactPacket, loadLatestCompactRestore, loadWorkspaceCompactPacket } from '../orchestrator/compact-packet.js';
+import {
+  LATEST_PLAN_ARTIFACT,
+  relPath,
+  resolveLatestPlanArtifact,
+  summarizeDispatchCard,
+  summarizeExecutionCard,
+  summarizePlanCard,
+  writeMcpJsonArtifact,
+  writeMcpTextArtifact,
+  writeStableMcpJsonArtifact,
+} from '../orchestrator/mcp-surface.js';
 import fs from 'fs';
+import path from 'path';
 
 const server = new McpServer({
   name: 'hive-mcp',
@@ -86,6 +101,88 @@ function parseJsonBlock<T>(raw: string): T {
   throw new Error('Planner did not return valid JSON');
 }
 
+// ── MCP execution snapshot (from hiveshell) ──
+
+function persistMcpExecutionSnapshot(
+  plan: TaskPlan,
+  orchestratorResult: OrchestratorResult,
+): void {
+  const now = new Date().toISOString();
+  const allReviewsPassed = orchestratorResult.review_results.every((review) => review.passed);
+  const status = allReviewsPassed ? 'done' : 'partial';
+  const nextAction = allReviewsPassed
+    ? {
+        kind: 'finalize' as const,
+        reason: 'All review gates passed for MCP execution.',
+        task_ids: [],
+      }
+    : {
+        kind: 'repair_task' as const,
+        reason: 'Some tasks failed review during MCP execution.',
+        task_ids: orchestratorResult.review_results
+          .filter((review) => !review.passed)
+          .map((review) => review.taskId),
+      };
+
+  saveRunSpec(plan.cwd, {
+    id: plan.id,
+    goal: plan.goal,
+    cwd: plan.cwd,
+    origin_cwd: process.cwd(),
+    task_cwd: plan.cwd,
+    mode: 'safe',
+    done_conditions: [],
+    max_rounds: 1,
+    max_worker_retries: 0,
+    max_replans: 0,
+    allow_auto_merge: true,
+    stop_on_high_risk: false,
+    created_at: now,
+  });
+  saveRunPlan(plan.cwd, plan.id, plan);
+  saveRunResult(plan.cwd, plan.id, orchestratorResult);
+  saveRunState(plan.cwd, {
+    run_id: plan.id,
+    status,
+    round: 1,
+    current_plan_id: plan.id,
+    completed_task_ids: orchestratorResult.worker_results
+      .filter((worker) => worker.success)
+      .map((worker) => worker.taskId),
+    failed_task_ids: orchestratorResult.worker_results
+      .filter((worker) => !worker.success)
+      .map((worker) => worker.taskId),
+    review_failed_task_ids: orchestratorResult.review_results
+      .filter((review) => !review.passed)
+      .map((review) => review.taskId),
+    merged_task_ids: [],
+    retry_counts: {},
+    replan_count: 0,
+    task_states: {},
+    task_verification_results: {},
+    repair_history: [],
+    round_cost_history: [],
+    policy_hook_results: [],
+    verification_results: [],
+    next_action: nextAction,
+    final_summary: allReviewsPassed
+      ? 'MCP execution finished with all reviews passing.'
+      : 'MCP execution finished with review failures.',
+    updated_at: now,
+  });
+  saveRoundScore({
+    cwd: plan.cwd,
+    runId: plan.id,
+    goal: plan.goal,
+    round: 1,
+    action: 'execute',
+    status,
+    workerResults: orchestratorResult.worker_results,
+    reviewResults: orchestratorResult.review_results,
+    verificationResults: [],
+  });
+}
+
 interface PlannerRunResult {
   text: string;
   diagnostics: {
@@ -117,6 +214,7 @@ async function runClaudePlanner(prompt: string, cwd: string, modelId: string): P
     env = buildSdkEnv(agentModel, resolved.baseUrl, resolved.apiKey);
   } catch (err: any) {
     providerResolveFailed = err.message;
+    // INVARIANT: non-claude models must NOT fallback to Claude
     if (!agentModel.startsWith('claude-')) {
       throw new Error(
         `Planner model "${agentModel}" has no resolvable provider route. Refusing implicit Claude fallback. ${providerResolveFailed}`,
@@ -126,6 +224,7 @@ async function runClaudePlanner(prompt: string, cwd: string, modelId: string): P
   }
 
   const maxTurns = 3;
+  // INVARIANT: explicit model in safeQuery options
   const result = await safeQuery({
     prompt,
     options: { cwd, maxTurns, env, model: agentModel },
@@ -251,27 +350,52 @@ server.tool(
     }
 
     const budgetWarning = getBudgetWarning(config);
+    const artifactPayload = {
+      plan,
+      plan_discuss: planDiscussResult,
+      discuss_debug: planDiscussResult ? undefined : {
+        mode: discussMode,
+        skip_reason: discussSkipReason,
+        config_tiers_discuss: config.tiers.discuss,
+        discuss_diag: discussDiag,
+      },
+      translation: translationResult,
+      planner_model: plannerModel,
+      planner_prompt: plannerFallbackPrompt,
+      planner_diagnostics: plannerDiagnostics,
+      planner_error: plannerError,
+      planner_raw_output: plan ? undefined : plannerOutput?.slice(0, 500),
+      budget_warning: budgetWarning,
+    };
+    const artifactPath = writeMcpJsonArtifact(
+      effectiveCwd,
+      'plan-tasks',
+      artifactPayload,
+    );
+    const stablePlanPath = writeStableMcpJsonArtifact(
+      effectiveCwd,
+      LATEST_PLAN_ARTIFACT,
+      artifactPayload,
+    );
+    const summaryText = plan
+      ? summarizePlanCard(plan, {
+          artifactPath,
+          plannerModel,
+          stablePlanPath,
+          translationModel: translationResult?.translator_model,
+          discussQualityGate: planDiscussResult?.quality_gate,
+          budgetWarning,
+        })
+      : [
+          `Planning failed with ${plannerModel}.`,
+          plannerError ? `- error: ${plannerError}` : '',
+          `- diagnostics: ${relPath(effectiveCwd, artifactPath)}`,
+        ].filter(Boolean).join('\n');
 
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({
-          plan,
-          plan_discuss: planDiscussResult,
-          discuss_debug: planDiscussResult ? undefined : {
-            mode: discussMode,
-            skip_reason: discussSkipReason,
-            config_tiers_discuss: config.tiers.discuss,
-            discuss_diag: discussDiag,
-          },
-          translation: translationResult,
-          planner_model: plannerModel,
-          planner_prompt: plannerFallbackPrompt,
-          planner_diagnostics: plannerDiagnostics,
-          planner_error: plannerError,
-          planner_raw_output: plan ? undefined : plannerOutput?.slice(0, 500),
-          budget_warning: budgetWarning,
-        }, null, 2),
+        text: summaryText,
       }],
     };
   }
@@ -282,12 +406,35 @@ server.tool(
   'execute_plan',
   'Execute a task plan.',
   {
-    plan_json: z.string().describe('TaskPlan JSON'),
+    plan_json: z.string().describe('TaskPlan JSON').optional(),
+    plan_path: z.string().describe('Path to saved planning artifact or raw plan JSON file').optional(),
     report_language: z.enum(['zh', 'en']).default('zh'),
     resume_plan_id: z.string().describe('Plan ID to resume from checkpoint').optional(),
   },
-  async ({ plan_json, report_language, resume_plan_id }) => {
-    const plan: TaskPlan = JSON.parse(plan_json);
+  async ({ plan_json, plan_path, report_language, resume_plan_id }) => {
+    const effectiveCwd = process.cwd();
+    let plan: TaskPlan;
+    if (plan_json) {
+      plan = JSON.parse(plan_json);
+    } else if (plan_path) {
+      const raw = fs.readFileSync(path.resolve(effectiveCwd, plan_path), 'utf-8');
+      const parsed = JSON.parse(raw);
+      plan = parsed.plan ? parsed.plan as TaskPlan : parsed as TaskPlan;
+    } else {
+      const latestPlanPath = resolveLatestPlanArtifact(effectiveCwd);
+      if (!latestPlanPath) {
+        return {
+          content: [{
+            type: 'text',
+            text: `execute_plan needs a plan. Run plan_tasks first, or pass plan_path. Expected stable plan: .ai/mcp/${LATEST_PLAN_ARTIFACT}`,
+          }],
+          isError: true,
+        };
+      }
+      const raw = fs.readFileSync(latestPlanPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      plan = parsed.plan ? parsed.plan as TaskPlan : parsed as TaskPlan;
+    }
     const registry = new ModelRegistry();
     const config = loadConfig(plan.cwd);
 
@@ -414,17 +561,20 @@ server.tool(
       { language: report_language, format: 'summary', target: 'stdout' }
     );
 
-    // Append merge summary
-    const mergeSummary = mergeResults.length > 0
-      ? '\n\n## Worktree Merge\n' + mergeResults.map(m =>
-          `- ${m.taskId}: ${m.merged ? '✅ merged' : `❌ ${m.error}`}`
-        ).join('\n')
-      : '';
-    const budgetSummary = orchestratorResult.budget_status
-      ? `\n\n## Budget\n- Spent: $${orchestratorResult.budget_status.current_spent_usd.toFixed(4)} / $${orchestratorResult.budget_status.monthly_limit_usd.toFixed(2)}\n- Remaining: $${orchestratorResult.budget_status.remaining_usd.toFixed(4)}\n${orchestratorResult.budget_warning ? `- Warning: ${orchestratorResult.budget_warning}\n` : ''}`
-      : '';
-
-    return { content: [{ type: 'text', text: report + mergeSummary + budgetSummary }] };
+    // Persist execution snapshot for run_status
+    persistMcpExecutionSnapshot(plan, orchestratorResult);
+    const reportPath = writeMcpTextArtifact(plan.cwd, 'execute-plan-report', report);
+    const compactPacket = loadCompactPacket(plan.cwd, plan.id);
+    return {
+      content: [{
+        type: 'text',
+        text: summarizeExecutionCard(plan, orchestratorResult, {
+          mergeResults,
+          reportPath: relPath(plan.cwd, reportPath),
+          compactPacket,
+        }),
+      }],
+    };
   }
 );
 
@@ -450,6 +600,7 @@ server.tool(
     }
 
     try {
+      const runId = `dispatch-${task_id}-${Date.now()}`;
       // Preflight: quickPing before spawning
       let actualModel = model;
       let preflightFallback: string | null = null;
@@ -478,6 +629,10 @@ server.tool(
         contextInputs: [],
         discussThreshold: discuss_threshold,
         maxTurns: 25,
+        runId,
+        planId: `dispatch-${task_id}`,
+        round: 1,
+        taskDescription: prompt.slice(0, 120),
       });
 
       // Record spending for single dispatch
@@ -492,8 +647,27 @@ server.tool(
         }
       }
 
-      const output = { ...result, preflight_fallback: preflightFallback };
-      return { content: [{ type: 'text', text: JSON.stringify(output) }] };
+      const output = {
+        ...result,
+        runId,
+        preflight_fallback: preflightFallback,
+      };
+      const artifactPath = writeMcpJsonArtifact(
+        cwd || process.cwd(),
+        `dispatch-${task_id}`,
+        output,
+      );
+      const compactPacket = loadCompactPacket(cwd || process.cwd(), runId);
+      return {
+        content: [{
+          type: 'text',
+          text: summarizeDispatchCard(output, {
+            cwd: cwd || process.cwd(),
+            artifactPath: relPath(cwd || process.cwd(), artifactPath),
+            compactPacket,
+          }),
+        }],
+      };
     } catch (err: any) {
       return {
         content: [{
@@ -755,7 +929,75 @@ server.tool(
   }
 );
 
-// 工具 5: report
+// 工具 5: compact_run
+server.tool(
+  'compact_run',
+  'Build a minimal compact/restore card for the latest or specified Hive run.',
+  {
+    cwd: z.string().describe('Working directory').optional(),
+    run_id: z.string().describe('Run ID').optional(),
+  },
+  async ({ cwd, run_id }) => {
+    const effectiveCwd = cwd || process.cwd();
+    const compactPacket = loadCompactPacket(effectiveCwd, run_id);
+    const workspaceCompact = compactPacket ? null : loadWorkspaceCompactPacket(effectiveCwd);
+    if (!compactPacket) {
+      if (workspaceCompact) {
+        return {
+          content: [{
+            type: 'text',
+            text: [
+              'Hive workspace restore card ready.',
+              `- restore prompt: ${relPath(effectiveCwd, workspaceCompact.restorePromptPath)}`,
+              `- latest restore prompt: ${relPath(effectiveCwd, workspaceCompact.latestRestorePromptPath)}`,
+              `- packet: ${relPath(effectiveCwd, workspaceCompact.jsonPath)}`,
+              '',
+              workspaceCompact.packet.restore_prompt,
+            ].join('\n'),
+          }],
+        };
+      }
+      const latestRestore = loadLatestCompactRestore(effectiveCwd);
+      if (latestRestore) {
+        return {
+          content: [{
+            type: 'text',
+            text: [
+              `Hive latest restore card ready${latestRestore.runId ? ` for ${latestRestore.runId}` : ''}.`,
+              `- restore prompt: ${relPath(effectiveCwd, latestRestore.restorePromptPath)}`,
+              latestRestore.packetPath ? `- packet: ${relPath(effectiveCwd, latestRestore.packetPath)}` : '',
+              '',
+              latestRestore.restorePrompt,
+            ].filter(Boolean).join('\n'),
+          }],
+        };
+      }
+      return {
+        content: [{
+          type: 'text',
+          text: 'No Hive restore surface is available in this repository yet.',
+        }],
+        isError: true,
+      };
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: [
+          `Hive compact card ready for ${compactPacket.runId}.`,
+          `- restore prompt: ${relPath(effectiveCwd, compactPacket.restorePromptPath)}`,
+          `- latest restore prompt: ${relPath(effectiveCwd, compactPacket.latestRestorePromptPath)}`,
+          `- packet: ${relPath(effectiveCwd, compactPacket.jsonPath)}`,
+          '',
+          compactPacket.packet.restore_prompt,
+        ].join('\n'),
+      }],
+    };
+  },
+);
+
+// 工具 6: report
 server.tool(
   'report',
   'Generate report.',
@@ -779,7 +1021,16 @@ server.tool(
     const report = await reportResults(result, reporterModel, reporterProvider, {
       language: 'zh', format, target: 'stdout',
     });
-    return { content: [{ type: 'text', text: report }] };
+    const reportPath = writeMcpTextArtifact(process.cwd(), 'report', report);
+    return {
+      content: [{
+        type: 'text',
+        text: [
+          `Generated ${format} report with ${reporterModel}.`,
+          `- saved to: ${relPath(process.cwd(), reportPath)}`,
+        ].join('\n'),
+      }],
+    };
   }
 );
 

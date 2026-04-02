@@ -1,0 +1,177 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import {
+  appendWorkerTranscriptEntry,
+  buildWorkerAgentId,
+  findWorkerStatusEntry,
+  loadWorkerEvents,
+  loadWorkerStatusSnapshot,
+  loadWorkerTranscript,
+  listWorkerStatusSnapshots,
+  summarizeWorkerSnapshot,
+  updateWorkerStatus,
+} from '../orchestrator/worker-status-store.js';
+
+const TMP_DIR = '/tmp/hive-worker-status-test';
+const RUN_ID = 'run-worker-123';
+const OTHER_RUN_ID = 'run-worker-456';
+
+function resetDir(): void {
+  if (fs.existsSync(TMP_DIR)) {
+    fs.rmSync(TMP_DIR, { recursive: true });
+  }
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+}
+
+describe('worker-status-store', () => {
+  beforeEach(() => {
+    resetDir();
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TMP_DIR)) {
+      fs.rmSync(TMP_DIR, { recursive: true });
+    }
+  });
+
+  it('creates and updates a worker snapshot entry', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'queued',
+      plan_id: 'plan-a',
+      goal: 'Ship worker visibility',
+      round: 2,
+      assigned_model: 'qwen3-max',
+      active_model: 'qwen3-max',
+      provider: 'bailian',
+      event_message: 'Queued',
+    });
+
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'running',
+      plan_id: 'plan-a',
+      round: 2,
+      session_id: 'worker-task-a-1',
+      worktree_path: '/tmp/wt-a',
+      last_message: 'Applying changes now',
+      event_message: 'Started',
+    });
+
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'completed',
+      plan_id: 'plan-a',
+      round: 2,
+      changed_files_count: 3,
+      success: true,
+      event_message: 'Finished',
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.goal).toBe('Ship worker visibility');
+    expect(snapshot!.round).toBe(2);
+    expect(snapshot!.workers).toHaveLength(1);
+    expect(snapshot!.workers[0].status).toBe('completed');
+    expect(snapshot!.workers[0].assigned_model).toBe('qwen3-max');
+    expect(snapshot!.workers[0].session_id).toBe('worker-task-a-1');
+    expect(snapshot!.workers[0].changed_files_count).toBe(3);
+    expect(snapshot!.workers[0].success).toBe(true);
+  });
+
+  it('writes append-only event history', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'queued',
+      plan_id: 'plan-a',
+      event_message: 'Queued',
+    });
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'running',
+      plan_id: 'plan-a',
+      event_message: 'Started',
+    });
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'failed',
+      plan_id: 'plan-a',
+      error: 'boom',
+    });
+
+    const events = loadWorkerEvents(TMP_DIR, RUN_ID);
+    expect(events).toHaveLength(3);
+    expect(events[0].status).toBe('queued');
+    expect(events[1].status).toBe('running');
+    expect(events[2].status).toBe('failed');
+    expect(events[2].message).toBe('boom');
+
+    const eventsFile = path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'worker-events.jsonl');
+    expect(fs.existsSync(eventsFile)).toBe(true);
+  });
+
+  it('summarizes multiple runs by most recent update', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'completed',
+      plan_id: 'plan-a',
+      assigned_model: 'glm-5-turbo',
+      active_model: 'glm-5-turbo',
+      provider: 'zhipu',
+      success: true,
+    });
+    updateWorkerStatus(TMP_DIR, OTHER_RUN_ID, {
+      task_id: 'task-b',
+      status: 'running',
+      plan_id: 'plan-b',
+      assigned_model: 'kimi-k2.5',
+      active_model: 'kimi-k2.5',
+      provider: 'moonshot',
+      event_message: 'Started',
+    });
+
+    const snapshots = listWorkerStatusSnapshots(TMP_DIR);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0].run_id).toBe(OTHER_RUN_ID);
+
+    const counts = summarizeWorkerSnapshot(snapshots[0]);
+    expect(counts.total).toBe(1);
+    expect(counts.active).toBe(1);
+    expect(counts.completed).toBe(0);
+  });
+
+  it('stores claude-style worker metadata and transcript artifacts', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'running',
+      plan_id: 'plan-a',
+      task_description: 'Draft the worker adapter',
+      task_summary: 'Writing transcript adapter',
+      session_id: 'worker-task-a-2',
+      event_message: 'Started',
+    });
+    appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      plan_id: 'plan-a',
+      session_id: 'worker-task-a-2',
+      type: 'assistant',
+      content: 'Implementing the transcript surface now.',
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-a');
+    expect(worker).not.toBeNull();
+    expect(worker!.agent_id).toBe(buildWorkerAgentId(RUN_ID, 'task-a'));
+    expect(worker!.task_summary).toBe('Writing transcript adapter');
+    expect(worker!.transcript_path).toContain('.ai/runs/run-worker-123/workers/task-a.transcript.jsonl');
+
+    const transcriptByTask = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task-a');
+    const transcriptByAgent = loadWorkerTranscript(TMP_DIR, RUN_ID, worker!.agent_id);
+    expect(transcriptByTask).toHaveLength(1);
+    expect(transcriptByAgent).toHaveLength(1);
+    expect(transcriptByTask[0].agent_id).toBe(worker!.agent_id);
+    expect(transcriptByTask[0].content).toContain('transcript surface');
+  });
+});

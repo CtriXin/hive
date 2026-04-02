@@ -21,11 +21,20 @@ import { ensureModelProxy } from './model-proxy.js';
 import type { SDKMessage } from '@anthropic-ai/claude-code';
 import { safeQuery } from './sdk-query-safe.js';
 import { getModelFallbackRoutes } from './mms-routes-loader.js';
+import { appendWorkerTranscriptEntry, updateWorkerStatus } from './worker-status-store.js';
 
 // ── DispatchResult (ERRATA §2) ──
 
 export interface DispatchResult {
   worker_results: WorkerResult[];
+}
+
+export interface DispatchRuntimeOptions {
+  resumePlanId?: string;
+  runId?: string;
+  round?: number;
+  goal?: string;
+  recordBudget?: boolean;
 }
 
 // ── Helpers ──
@@ -63,6 +72,21 @@ function classifyError(err: any): FailureType {
   return 'quality_fail';
 }
 
+function normalizeDispatchOptions(
+  input?: string | DispatchRuntimeOptions,
+): DispatchRuntimeOptions {
+  if (!input) return {};
+  return typeof input === 'string' ? { resumePlanId: input } : input;
+}
+
+function summarizeMessage(content: string): string | undefined {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (!normalized) return undefined;
+  return normalized.length <= 180
+    ? normalized
+    : `${normalized.slice(0, 177)}...`;
+}
+
 // ── spawnWorker ──
 
 export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
@@ -71,11 +95,51 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   let branch = '';
   let currentModel = config.model;
   let currentProvider = config.provider;
+  const sessionId = config.sessionId || `worker-${config.taskId}-${Date.now()}`;
+  const assignedModel = config.assignedModel || config.model;
+  const runId = config.runId;
+  const planId = config.planId || runId || config.taskId;
+  const round = config.round ?? 0;
 
   ensureStageModelAllowed('executor', currentModel);
 
   // 1. Resolve provider (MMS route → providers.json fallback)
   let { baseUrl, apiKey } = resolveProvider(config.provider, config.model);
+
+  const reportStatus = (
+    status: 'starting' | 'running' | 'discussing' | 'completed' | 'failed',
+    extra: Partial<Parameters<typeof updateWorkerStatus>[2]> = {},
+  ): void => {
+    if (!runId) return;
+    updateWorkerStatus(config.cwd, runId, {
+      task_id: config.taskId,
+      status,
+      plan_id: planId,
+      round,
+      assigned_model: assignedModel,
+      active_model: currentModel,
+      provider: currentProvider,
+      task_description: config.taskDescription,
+      session_id: sessionId,
+      branch,
+      worktree_path: worktreePath,
+      ...extra,
+    });
+  };
+
+  const appendTranscript = (
+    type: WorkerMessage['type'],
+    content: string,
+  ): void => {
+    if (!runId) return;
+    appendWorkerTranscriptEntry(config.cwd, runId, {
+      task_id: config.taskId,
+      plan_id: planId,
+      session_id: sessionId,
+      type,
+      content,
+    });
+  };
 
   // 2. Create worktree (use plan cwd, not process cwd)
   if (config.worktree) {
@@ -112,11 +176,28 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   ].join('\n');
 
   // 4-5. Stream via Claude Code SDK
-  const sessionId = config.sessionId || `worker-${config.taskId}-${Date.now()}`;
   const messages: WorkerMessage[] = [];
   let discussTriggered = false;
   const discussResults: DiscussResult[] = [];
   let tokenUsage = { input: 0, output: 0 };
+  reportStatus('starting', {
+    started_at: new Date(startTime).toISOString(),
+    task_summary: config.taskDescription,
+    event_message: 'Worker session started',
+  });
+  appendTranscript('system', `Worker started for ${config.taskId}`);
+
+  const handleLiveMessage = (msg: SDKMessage): void => {
+    if (msg.type !== 'assistant' && msg.type !== 'result') return;
+    const content = extractContent(msg);
+    const preview = summarizeMessage(content);
+    if (!preview) return;
+    reportStatus('running', {
+      task_summary: preview,
+      last_message: preview,
+    });
+    appendTranscript(categorizeMessage(msg), content);
+  };
 
   const queryOpts = {
     prompt: fullPrompt,
@@ -126,6 +207,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       env: buildSdkEnv(currentModel, baseUrl, apiKey),
       maxTurns: config.maxTurns,
     },
+    onMessage: handleLiveMessage,
   };
 
   let result;
@@ -150,6 +232,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
               env: buildSdkEnv(currentModel, fbUrl, fb.api_key),
               maxTurns: config.maxTurns,
             },
+            onMessage: handleLiveMessage,
           });
           currentProvider = fb.provider_id;
           baseUrl = fbUrl;
@@ -183,13 +266,20 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       const fallbackInfo = registry.get(fallbackModel);
       const fallbackProvider = fallbackInfo?.provider || fallbackModel;
 
-    const fallback = resolveProvider(fallbackProvider, fallbackModel);
-    currentModel = fallbackModel;
-    currentProvider = fallbackProvider;
-    ensureStageModelAllowed('executor', currentModel);
-    baseUrl = fallback.baseUrl;
+      const fallback = resolveProvider(fallbackProvider, fallbackModel);
+      currentModel = fallbackModel;
+      currentProvider = fallbackProvider;
+      ensureStageModelAllowed('executor', currentModel);
+      baseUrl = fallback.baseUrl;
       apiKey = fallback.apiKey;
       console.error(`⚠️ ${config.model} all channels failed (${errorType}), falling back to model ${fallbackModel}`);
+      reportStatus('running', {
+        active_model: currentModel,
+        provider: currentProvider,
+        task_summary: `Falling back to ${fallbackModel}`,
+        event_message: `Primary model failed (${errorType}); falling back to ${fallbackModel}`,
+      });
+      appendTranscript('system', `Primary model failed (${errorType}); falling back to ${fallbackModel}`);
       result = await safeQuery({
         prompt: fullPrompt,
         options: {
@@ -198,6 +288,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
           env: buildSdkEnv(fallbackModel, fallback.baseUrl, fallback.apiKey),
           maxTurns: config.maxTurns,
         },
+        onMessage: handleLiveMessage,
       });
     }
   }
@@ -220,10 +311,24 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       && !content.includes('Include the marker [DISCUSS_TRIGGER]');
     if (isActiveTrigger && !discussTriggered) {
       discussTriggered = true;
+      reportStatus('discussing', {
+        discuss_triggered: true,
+        task_summary: 'Waiting for discuss result',
+        last_message: summarizeMessage(content),
+        event_message: 'Worker requested discuss assistance',
+      });
+      appendTranscript('system', 'Worker requested discuss assistance');
       const discussResult = await handleDiscussTrigger(
         config, worktreePath, baseUrl, apiKey,
       );
       discussResults.push(discussResult);
+      reportStatus('running', {
+        discuss_triggered: true,
+        task_summary: summarizeMessage(discussResult.decision),
+        event_message: `Discussion resolved with ${discussResult.quality_gate}`,
+        last_message: summarizeMessage(discussResult.decision),
+      });
+      appendTranscript('system', `Discuss result (${discussResult.quality_gate}): ${discussResult.decision}`);
 
       if (discussResult.quality_gate !== 'fail') {
         const resumeResult = await safeQuery({
@@ -240,6 +345,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
             env: buildSdkEnv(currentModel, baseUrl, apiKey),
             maxTurns: config.maxTurns,
           },
+          onMessage: handleLiveMessage,
         });
 
         for (const resumeMsg of resumeResult.messages) {
@@ -269,6 +375,17 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     m => m.type === 'assistant' && apiErrorPattern.test(m.content),
   );
   const success = !hasExplicitError && !hasApiError;
+
+  reportStatus(success ? 'completed' : 'failed', {
+    discuss_triggered: discussTriggered,
+    changed_files_count: changedFiles.length,
+    success,
+    finished_at: new Date().toISOString(),
+    task_summary: summarizeMessage(messages[messages.length - 1]?.content || ''),
+    last_message: summarizeMessage(messages[messages.length - 1]?.content || ''),
+    event_message: success ? 'Worker finished successfully' : 'Worker finished with errors',
+  });
+  appendTranscript(success ? 'system' : 'error', success ? 'Worker finished successfully' : 'Worker finished with errors');
 
   return {
     taskId: config.taskId,
@@ -331,16 +448,21 @@ async function handleDiscussTrigger(
 export async function dispatchBatch(
   plan: TaskPlan,
   registry: any,
-  resumePlanId?: string,
+  resumePlanIdOrOptions?: string | DispatchRuntimeOptions,
   options: { recordBudget?: boolean } = {},
 ): Promise<DispatchResult> {
+  const runtime = normalizeDispatchOptions(resumePlanIdOrOptions);
+  const runId = runtime.runId || plan.id;
+  const round = runtime.round ?? 0;
+  // Merge recordBudget: runtime option takes precedence, then legacy options param
+  const shouldRecordBudget = runtime.recordBudget ?? options.recordBudget;
   const worker_results: WorkerResult[] = [];
   const contextCache = new Map<string, ContextPacket>();
   let startGroupIndex = 0;
 
   // Resume: load checkpoint and skip completed groups
-  if (resumePlanId) {
-    const checkpoint = loadCheckpoint(resumePlanId, plan.cwd);
+  if (runtime.resumePlanId) {
+    const checkpoint = loadCheckpoint(runtime.resumePlanId, plan.cwd);
     if (checkpoint) {
       startGroupIndex = checkpoint.completed_groups;
       // Restore contextCache
@@ -349,7 +471,7 @@ export async function dispatchBatch(
       }
       // Restore prior worker results
       for (const taskId of checkpoint.completed_task_ids) {
-        const prior = loadWorkerResult(resumePlanId, plan.cwd, taskId);
+        const prior = loadWorkerResult(runtime.resumePlanId, plan.cwd, taskId);
         if (prior) worker_results.push(prior);
       }
       console.log(`♻️ Resuming plan from group ${startGroupIndex}, ${checkpoint.completed_task_ids.length} tasks already done`);
@@ -396,6 +518,11 @@ export async function dispatchBatch(
         contextInputs,
         discussThreshold: task.discuss_threshold,
         maxTurns: 25,
+        assignedModel: task.assigned_model,
+        runId,
+        planId: plan.id,
+        round,
+        taskDescription: task.description,
       } satisfies WorkerConfig;
     });
 
@@ -418,22 +545,63 @@ export async function dispatchBatch(
       }
     }
 
+    // Report queued status for each worker in the group
+    for (const cfg of workerConfigs) {
+      updateWorkerStatus(plan.cwd, runId, {
+        task_id: cfg.taskId,
+        status: 'queued',
+        plan_id: plan.id,
+        goal: runtime.goal || plan.goal,
+        round,
+        assigned_model: cfg.assignedModel || cfg.model,
+        active_model: cfg.model,
+        provider: cfg.provider,
+        task_description: cfg.taskDescription,
+        task_summary: cfg.taskDescription,
+        event_message: 'Queued for worker dispatch',
+      });
+    }
+
     // Parallel spawn within group
     if (workerConfigs.length > 0) {
-      const failResult = (cfg: WorkerConfig, err: Error): WorkerResult => ({
-        taskId: cfg.taskId,
-        model: cfg.model,
-        worktreePath: cfg.cwd,
-        branch: '',
-        sessionId: `error-${cfg.taskId}`,
-        output: [{ type: 'error' as const, content: err.message, timestamp: Date.now() }],
-        changedFiles: [],
-        success: false,
-        duration_ms: 0,
-        token_usage: { input: 0, output: 0 },
-        discuss_triggered: false,
-        discuss_results: [],
-      });
+      const failResult = (cfg: WorkerConfig, err: Error): WorkerResult => {
+        updateWorkerStatus(plan.cwd, runId, {
+          task_id: cfg.taskId,
+          status: 'failed',
+          plan_id: plan.id,
+          round,
+          assigned_model: cfg.assignedModel || cfg.model,
+          active_model: cfg.model,
+          provider: cfg.provider,
+          task_description: cfg.taskDescription,
+          session_id: `error-${cfg.taskId}`,
+          worktree_path: cfg.cwd,
+          success: false,
+          error: err.message,
+          event_message: 'Worker crashed before returning a result',
+        });
+        appendWorkerTranscriptEntry(plan.cwd, runId, {
+          task_id: cfg.taskId,
+          plan_id: plan.id,
+          session_id: `error-${cfg.taskId}`,
+          type: 'error',
+          content: err.message,
+        });
+        return {
+          taskId: cfg.taskId,
+          model: cfg.model,
+          worktreePath: cfg.cwd,
+          branch: '',
+          sessionId: `error-${cfg.taskId}`,
+          output: [{ type: 'error' as const, content: err.message, timestamp: Date.now() }],
+          changedFiles: [],
+          success: false,
+          duration_ms: 0,
+          token_usage: { input: 0, output: 0 },
+          discuss_triggered: false,
+          discuss_results: [],
+        };
+      };
 
       const results = await Promise.all(
         workerConfigs.map(cfg => spawnWorker(cfg).catch(err => failResult(cfg, err))),
@@ -479,7 +647,7 @@ export async function dispatchBatch(
     const outputCost = wr.token_usage.output * (cap.cost_per_mtok_output || 0);
     totalCostUsd += (inputCost + outputCost) / 1_000_000;
   }
-  if (options.recordBudget !== false && totalCostUsd > 0) {
+  if (shouldRecordBudget !== false && totalCostUsd > 0) {
     recordSpending(plan.cwd, totalCostUsd);
   }
 

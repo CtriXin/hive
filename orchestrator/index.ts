@@ -14,6 +14,28 @@ export { triggerDiscussion } from './discuss-bridge.js';
 export { bootstrapRun, createRunSpec, createInitialRunState, resumeRun, inferDefaultDoneConditions, executeRun, runGoal } from './driver.js';
 export { saveRunSpec, loadRunSpec, saveRunState, loadRunState, listRuns, loadRunPlan, loadRunResult } from './run-store.js';
 export { runVerification, runVerificationSuite, allRequiredChecksPassed } from './verifier.js';
+export {
+  buildWorkerAgentId,
+  findWorkerStatusEntry,
+  loadWorkerStatusSnapshot,
+  loadWorkerEvents,
+  loadWorkerTranscript,
+  listWorkerStatusSnapshots,
+  summarizeWorkerSnapshot,
+} from './worker-status-store.js';
+export { buildRoundScoreEntry, buildRoundScoreSignals, computeRoundScore, loadRunScoreHistory, saveRoundScore } from './score-history.js';
+export { loadHiveShellDashboard, renderHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashboard.js';
+export {
+  buildCompactPacket,
+  buildWorkspaceCompactPacket,
+  loadCompactPacket,
+  loadLatestCompactRestore,
+  loadWorkspaceCompactPacket,
+  renderCompactPacket,
+  renderWorkspaceCompactPacket,
+  saveCompactPacket,
+  saveWorkspaceCompactPacket,
+} from './compact-packet.js';
 export * from './types.js';
 
 // ── CLI entry (only runs when executed directly) ──
@@ -23,17 +45,264 @@ async function main() {
 
   const args = process.argv.slice(2);
   const command = args[0];
+  const flagsWithValues = new Set([
+    '--goal',
+    '--cwd',
+    '--mode',
+    '--mindkeeper-thread',
+    '--run-id',
+    '--interval-ms',
+    '--events',
+    '--plan',
+    '--worker',
+  ]);
+  const positionalArgsAfterCommand: string[] = [];
+  for (let i = 1; i < args.length; i += 1) {
+    const arg = args[i];
+    if (flagsWithValues.has(arg)) {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('-')) continue;
+    positionalArgsAfterCommand.push(arg);
+  }
+  const firstPositionalAfterCommand = positionalArgsAfterCommand[0];
+  const secondPositionalAfterCommand = positionalArgsAfterCommand[1];
 
   const getFlag = (flag: string): string | undefined => {
     const idx = args.indexOf(flag);
     return idx >= 0 ? args[idx + 1] : undefined;
   };
-
   const isTerminal = (s: string) => s === 'done' || s === 'blocked';
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const formatScoreDelta = (delta?: number): string =>
+    typeof delta === 'number' && delta !== 0
+      ? `${delta > 0 ? '+' : ''}${delta}`
+      : '0';
+
+  const formatWorkerLine = (worker: any): string => {
+    const modelText = worker.assigned_model === worker.active_model
+      ? worker.active_model
+      : `${worker.assigned_model} -> ${worker.active_model}`;
+    const details = [
+      worker.agent_id ? `agent=${worker.agent_id}` : '',
+      worker.provider ? `provider=${worker.provider}` : '',
+      worker.branch ? `branch=${worker.branch}` : '',
+      worker.session_id ? `session=${worker.session_id}` : '',
+      typeof worker.changed_files_count === 'number'
+        ? `changed=${worker.changed_files_count}`
+        : '',
+    ].filter(Boolean);
+    const summary = worker.task_summary || worker.last_message;
+    return `- ${worker.task_id} [${worker.status}] ${modelText}${details.length ? ` (${details.join(', ')})` : ''}${summary ? ` | ${summary}` : ''}`;
+  };
+
+  const resolveWorkerRunId = async (cwd: string, runId?: string): Promise<string | null> => {
+    const { listRuns } = await import('./run-store.js');
+    const { listWorkerStatusSnapshots } = await import('./worker-status-store.js');
+    return runId
+      || listWorkerStatusSnapshots(cwd)[0]?.run_id
+      || listRuns(cwd)[0]?.id
+      || null;
+  };
+
+  const printWorkerDetails = async (
+    cwd: string,
+    runId: string,
+    workerSelector: string,
+  ): Promise<boolean> => {
+    const {
+      findWorkerStatusEntry,
+      loadWorkerStatusSnapshot,
+      loadWorkerTranscript,
+    } = await import('./worker-status-store.js');
+    const snapshot = loadWorkerStatusSnapshot(cwd, runId);
+    const worker = findWorkerStatusEntry(snapshot, workerSelector);
+    if (!worker) {
+      console.error(`❌ worker not found: ${workerSelector}`);
+      return false;
+    }
+
+    const transcript = loadWorkerTranscript(cwd, runId, worker.task_id).slice(-12);
+    console.log(`🟡 Worker: ${worker.task_id}`);
+    console.log(`🪪 agent: ${worker.agent_id}`);
+    console.log(`📊 status: ${worker.status}`);
+    console.log(`🤖 model: ${worker.assigned_model === worker.active_model ? worker.active_model : `${worker.assigned_model} -> ${worker.active_model}`}`);
+    console.log(`📝 summary: ${worker.task_summary || worker.last_message || '-'}`);
+    if (worker.transcript_path) {
+      console.log(`🧵 transcript: ${worker.transcript_path}`);
+    }
+    if (worker.session_id) {
+      console.log(`🆔 session: ${worker.session_id}`);
+    }
+    if (worker.branch) {
+      console.log(`🌿 branch: ${worker.branch}`);
+    }
+    if (worker.worktree_path) {
+      console.log(`📁 worktree: ${worker.worktree_path}`);
+    }
+    if (transcript.length === 0) {
+      console.log('📝 transcript preview: none');
+      return true;
+    }
+
+    console.log('📝 transcript preview:');
+    for (const entry of transcript) {
+      const content = entry.content.replace(/\s+/g, ' ').trim();
+      console.log(`- ${entry.timestamp} [${entry.type}] ${content}`);
+    }
+    return true;
+  };
+
+  const printWorkerSnapshot = async (
+    cwd: string,
+    runId?: string,
+    eventLimit = 5,
+    workerSelector?: string,
+  ): Promise<boolean> => {
+    const {
+      loadWorkerStatusSnapshot,
+      summarizeWorkerSnapshot,
+      loadWorkerEvents,
+    } = await import('./worker-status-store.js');
+
+    const resolvedRunId = await resolveWorkerRunId(cwd, runId);
+
+    if (!resolvedRunId) {
+      console.error('❌ no run with worker status found');
+      return false;
+    }
+
+    if (workerSelector) {
+      return printWorkerDetails(cwd, resolvedRunId, workerSelector);
+    }
+
+    const snapshot = loadWorkerStatusSnapshot(cwd, resolvedRunId);
+    if (!snapshot) {
+      console.error(`❌ worker status not found for run: ${resolvedRunId}`);
+      return false;
+    }
+
+    const counts = summarizeWorkerSnapshot(snapshot);
+    const events = loadWorkerEvents(cwd, resolvedRunId).slice(-eventLimit);
+
+    console.log(`🟡 Worker snapshot: ${resolvedRunId}`);
+    console.log(`📋 plan: ${snapshot.plan_id}`);
+    console.log(`🔁 round: ${snapshot.round}`);
+    console.log(`👷 workers: ${counts.total} total / ${counts.active} active / ${counts.completed} completed / ${counts.failed} failed / ${counts.queued} queued`);
+    if (snapshot.goal) {
+      console.log(`🎯 goal: ${snapshot.goal}`);
+    }
+    console.log(`🕒 updated: ${snapshot.updated_at}`);
+    for (const worker of snapshot.workers) {
+      console.log(formatWorkerLine(worker));
+    }
+    if (events.length > 0) {
+      console.log('📝 recent events:');
+      for (const event of events) {
+        const label = event.agent_id ? `${event.task_id}/${event.agent_id}` : event.task_id;
+        console.log(`- ${event.timestamp} ${label} [${event.status}] ${event.message || ''}`.trim());
+      }
+    }
+    const firstWorker = snapshot.workers[0];
+    if (firstWorker) {
+      console.log(`💡 drill into one worker: hive workers ${firstWorker.task_id}`);
+    }
+    return true;
+  };
+
+  const printScoreHistory = async (cwd: string, runId?: string): Promise<boolean> => {
+    const { listRuns } = await import('./run-store.js');
+    const { loadRunScoreHistory } = await import('./score-history.js');
+
+    const resolvedRunId = runId || listRuns(cwd)[0]?.id;
+    if (!resolvedRunId) {
+      console.error('❌ no run with score history found');
+      return false;
+    }
+
+    const history = loadRunScoreHistory(cwd, resolvedRunId);
+    if (!history) {
+      console.error(`❌ score history not found for run: ${resolvedRunId}`);
+      return false;
+    }
+
+    console.log(`🟡 Score history: ${resolvedRunId}`);
+    if (history.goal) {
+      console.log(`🎯 goal: ${history.goal}`);
+    }
+    console.log(`📈 latest: ${history.latest_score ?? 'n/a'}`);
+    console.log(`🏆 best: ${history.best_score ?? 'n/a'}`);
+    console.log(`🕒 updated: ${history.updated_at}`);
+
+    for (const round of history.rounds) {
+      console.log(
+        `- round ${round.round} [${round.action}] ${round.status} `
+          + `score=${round.score} delta=${formatScoreDelta(round.delta_from_previous)} `
+          + `| ${round.summary}`,
+      );
+    }
+
+    return true;
+  };
+
+  const printHiveShell = async (cwd: string, runId?: string): Promise<boolean> => {
+    const { loadHiveShellDashboard, renderHiveShellDashboard } = await import('./hiveshell-dashboard.js');
+    const dashboard = loadHiveShellDashboard(cwd, runId);
+    if (!dashboard) {
+      console.error('❌ no run available for hiveshell');
+      return false;
+    }
+
+    console.log(renderHiveShellDashboard(dashboard));
+    return true;
+  };
+
+  const printCompactPacket = async (cwd: string, runId?: string): Promise<boolean> => {
+    const { loadCompactPacket, loadWorkspaceCompactPacket } = await import('./compact-packet.js');
+    const result = loadCompactPacket(cwd, runId);
+    const workspaceResult = result ? null : loadWorkspaceCompactPacket(cwd);
+    const effectiveResult = result || workspaceResult;
+    if (!effectiveResult) {
+      console.error('❌ unable to build compact restore card');
+      return false;
+    }
+
+    console.log(effectiveResult.markdown);
+    console.log('');
+    console.log(`🧾 packet json: ${effectiveResult.jsonPath}`);
+    console.log(`🧾 packet md: ${effectiveResult.markdownPath}`);
+    console.log(`🧾 restore prompt: ${effectiveResult.restorePromptPath}`);
+    console.log(`🧾 latest restore prompt: ${effectiveResult.latestRestorePromptPath}`);
+    if (result?.latestRunPath) {
+      console.log(`🧾 latest run: ${result.runId}`);
+    }
+    return true;
+  };
+
+  const printLatestRestore = async (cwd: string): Promise<boolean> => {
+    const { loadLatestCompactRestore } = await import('./compact-packet.js');
+    const result = loadLatestCompactRestore(cwd);
+    if (!result) {
+      console.error('❌ no latest compact restore prompt found');
+      return false;
+    }
+
+    console.log(result.restorePrompt);
+    console.log('');
+    console.log(`🧾 latest restore prompt: ${result.restorePromptPath}`);
+    if (result.packetPath) {
+      console.log(`🧾 latest packet: ${result.packetPath}`);
+    }
+    if (result.runId) {
+      console.log(`🧾 latest run: ${result.runId}`);
+    }
+    return true;
+  };
 
   if (command === 'run') {
     const { bootstrapRun, runGoal } = await import('./driver.js');
-    const goal = getFlag('--goal') || '';
+    const goal = getFlag('--goal') || firstPositionalAfterCommand || '';
     const cwd = getFlag('--cwd') || process.cwd();
     const mode = (getFlag('--mode') || 'safe') as 'safe' | 'balanced' | 'aggressive';
     const initOnly = args.includes('--init-only');
@@ -65,41 +334,32 @@ async function main() {
     console.log(`📊 status: ${state.status}`);
     if (execution.plan) {
       console.log(`📋 plan: ${execution.plan.tasks.length} tasks`);
-      const profiledTasks = execution.plan.tasks.filter((task) => task.verification_profile);
-      if (profiledTasks.length > 0) {
-        console.log(`🧩 task verification profiles: ${profiledTasks.map((task) => `${task.id}:${task.verification_profile}`).join(', ')}`);
-      }
     }
     console.log(`✅ done conditions: ${spec.done_conditions.length}`);
     for (const condition of spec.done_conditions) {
       console.log(`   - [${condition.type}] ${condition.label}`);
     }
     console.log(`➡️ next action: ${state.next_action?.kind} — ${state.next_action?.reason}`);
-    if (state.budget_status) {
-      console.log(`💰 budget: $${state.budget_status.current_spent_usd.toFixed(4)} / $${state.budget_status.monthly_limit_usd.toFixed(2)} spent, $${state.budget_status.remaining_usd.toFixed(4)} remaining`);
-    }
-    if (state.budget_warning) {
-      console.log(`⚠️ budget warning: ${state.budget_warning}`);
-    }
     if (state.final_summary) {
       console.log(`🧾 summary: ${state.final_summary}`);
     }
-    const verifiedTasks = Object.entries(state.task_verification_results || {})
-      .filter(([, results]) => results.length > 0)
-      .map(([taskId, results]) => `${taskId}(${results.length})`);
-    if (verifiedTasks.length > 0) {
-      console.log(`🧪 task verification: ${verifiedTasks.join(', ')}`);
+    const { loadRunScoreHistory } = await import('./score-history.js');
+    const scoreHistory = loadRunScoreHistory(spec.cwd, spec.id);
+    const latestScore = scoreHistory?.rounds.at(-1);
+    if (latestScore) {
+      console.log(`📈 score: ${latestScore.score} (delta ${formatScoreDelta(latestScore.delta_from_previous)})`);
     }
     return;
   }
 
   if (command === 'resume') {
     const { resumeRun } = await import('./driver.js');
-    const runId = getFlag('--run-id') || '';
     const cwd = getFlag('--cwd') || process.cwd();
+    const { listRuns } = await import('./run-store.js');
+    const runId = getFlag('--run-id') || firstPositionalAfterCommand || listRuns(cwd)[0]?.id || '';
 
     if (!runId.trim()) {
-      console.error('❌ resume requires --run-id <run-id>');
+      console.error('❌ no run found to resume');
       process.exit(1);
     }
 
@@ -115,20 +375,15 @@ async function main() {
     console.log(`📊 status: ${rState.status}`);
     console.log(`🔁 round: ${rState.round}`);
     console.log(`➡️ next action: ${rState.next_action?.kind} — ${rState.next_action?.reason || 'n/a'}`);
-    if (rState.budget_status) {
-      console.log(`💰 budget: $${rState.budget_status.current_spent_usd.toFixed(4)} / $${rState.budget_status.monthly_limit_usd.toFixed(2)} spent, $${rState.budget_status.remaining_usd.toFixed(4)} remaining`);
-    }
-    if (rState.budget_warning) {
-      console.log(`⚠️ budget warning: ${rState.budget_warning}`);
-    }
     if (rState.final_summary) {
       console.log(`🧾 summary: ${rState.final_summary}`);
     }
-    const verifiedTasks = Object.entries(rState.task_verification_results || {})
-      .filter(([, results]) => results.length > 0)
-      .map(([taskId, results]) => `${taskId}(${results.length})`);
-    if (verifiedTasks.length > 0) {
-      console.log(`🧪 task verification: ${verifiedTasks.join(', ')}`);
+    if (shouldExecute) {
+      const { loadRunScoreHistory } = await import('./score-history.js');
+      const latestScore = loadRunScoreHistory(cwd, runId)?.rounds.at(-1);
+      if (latestScore) {
+        console.log(`📈 score: ${latestScore.score} (delta ${formatScoreDelta(latestScore.delta_from_previous)})`);
+      }
     }
     if (!shouldExecute && !isTerminal(rState.status)) {
       console.log(`💡 Use --execute to re-enter the loop`);
@@ -139,47 +394,179 @@ async function main() {
   if (command === 'status') {
     const { listRuns, loadRunPlan, loadRunResult } = await import('./run-store.js');
     const cwd = getFlag('--cwd') || process.cwd();
-    const runId = getFlag('--run-id');
+    const { resolveHiveShellRunId } = await import('./hiveshell-dashboard.js');
+    const runId = getFlag('--run-id')
+      || firstPositionalAfterCommand
+      || resolveHiveShellRunId(cwd)
+      || listRuns(cwd)[0]?.id;
 
     if (runId) {
       const { loadRunSpec, loadRunState } = await import('./run-store.js');
       const sSpec = loadRunSpec(cwd, runId);
       const sState = loadRunState(cwd, runId);
-      if (!sSpec || !sState) {
-        console.error(`❌ run not found: ${runId}`);
-        process.exit(1);
-      }
       const plan = loadRunPlan(cwd, runId);
       const result = loadRunResult(cwd, runId);
+      const { loadWorkerStatusSnapshot, summarizeWorkerSnapshot } = await import('./worker-status-store.js');
+      const workerSnapshot = loadWorkerStatusSnapshot(cwd, runId);
+      const { loadRunScoreHistory } = await import('./score-history.js');
+      const latestScore = loadRunScoreHistory(cwd, runId)?.rounds.at(-1);
+
+      if (!sSpec || !sState) {
+        if (!workerSnapshot && !latestScore) {
+          console.error(`❌ run not found: ${runId}`);
+          process.exit(1);
+        }
+        const counts = workerSnapshot ? summarizeWorkerSnapshot(workerSnapshot) : null;
+        const inferredStatus = counts
+          ? (counts.active > 0 ? 'executing' : counts.failed > 0 ? 'partial' : 'done')
+          : 'unknown';
+        console.log(`🟡 Run: ${runId}`);
+        console.log(`📊 status: ${inferredStatus}`);
+        console.log(`🔁 round: ${workerSnapshot?.round ?? latestScore?.round ?? 0}`);
+        console.log(`📋 plan tasks: ${workerSnapshot?.workers.length || 0}`);
+        console.log('🧪 verification checks: 0');
+        console.log('🧾 summary: artifact-only run');
+        console.log(`📦 result saved: ${result ? 'yes' : 'no'}`);
+        if (counts) {
+          console.log(`👷 workers: ${counts.total} total / ${counts.active} active / ${counts.completed} completed / ${counts.failed} failed / ${counts.queued} queued`);
+          const firstWorker = workerSnapshot?.workers[0]?.task_id;
+          console.log(`💡 inspect workers: ${firstWorker ? `hive workers ${firstWorker}` : 'hive workers'}`);
+        }
+        if (latestScore) {
+          console.log(`📈 latest score: ${latestScore.score} (delta ${formatScoreDelta(latestScore.delta_from_previous)})`);
+          console.log('💡 inspect score: hive score');
+        }
+        return;
+      }
       console.log(`🟡 Run: ${runId}`);
       console.log(`📊 status: ${sState.status}`);
       console.log(`🔁 round: ${sState.round}`);
       console.log(`📋 plan tasks: ${plan?.tasks.length || 0}`);
       console.log(`🧪 verification checks: ${sState.verification_results.length}`);
-      const taskVerificationSummary = Object.entries(sState.task_verification_results || {})
-        .filter(([, results]) => results.length > 0)
-        .map(([taskId, results]) => {
-          const failed = results.filter((result) => result.target.must_pass && !result.passed).length;
-          return `${taskId}:${results.length}${failed > 0 ? `(${failed} failed)` : ''}`;
-        });
-      if (taskVerificationSummary.length > 0) {
-        console.log(`🧩 task verification: ${taskVerificationSummary.join(', ')}`);
-      }
-      if (sState.budget_status) {
-        console.log(`💰 budget: $${sState.budget_status.current_spent_usd.toFixed(4)} / $${sState.budget_status.monthly_limit_usd.toFixed(2)} spent, $${sState.budget_status.remaining_usd.toFixed(4)} remaining`);
-      }
-      if (sState.budget_warning) {
-        console.log(`⚠️ budget warning: ${sState.budget_warning}`);
-      }
       console.log(`🧾 summary: ${sState.final_summary || 'n/a'}`);
       console.log(`📦 result saved: ${result ? 'yes' : 'no'}`);
+      if (workerSnapshot) {
+        const counts = summarizeWorkerSnapshot(workerSnapshot);
+        console.log(`👷 workers: ${counts.total} total / ${counts.active} active / ${counts.completed} completed / ${counts.failed} failed / ${counts.queued} queued`);
+        const firstWorker = workerSnapshot.workers[0]?.task_id;
+        console.log(`💡 inspect workers: ${firstWorker ? `hive workers ${firstWorker}` : 'hive workers'}`);
+      }
+      if (latestScore) {
+        console.log(`📈 latest score: ${latestScore.score} (delta ${formatScoreDelta(latestScore.delta_from_previous)})`);
+        console.log('💡 inspect score: hive score');
+      }
       return;
     }
 
+    console.error('❌ no run found');
+    process.exit(1);
+  }
+
+  if (command === 'runs') {
+    const { listRuns } = await import('./run-store.js');
+    const cwd = getFlag('--cwd') || process.cwd();
     const runs = listRuns(cwd);
     for (const run of runs) {
       console.log(`${run.id}  ${run.state?.status || 'unknown'}  ${run.spec?.goal || '(no goal)'}`);
     }
+    return;
+  }
+
+  if (command === 'workers') {
+    const cwd = getFlag('--cwd') || process.cwd();
+    const requestedRunId = getFlag('--run-id');
+    let runId = requestedRunId;
+    let workerSelector = getFlag('--worker');
+    const watch = args.includes('--watch');
+    const intervalMs = Number(getFlag('--interval-ms') || 1500);
+    const eventLimit = Number(getFlag('--events') || 5);
+
+    if (!runId && firstPositionalAfterCommand && secondPositionalAfterCommand) {
+      runId = firstPositionalAfterCommand;
+      workerSelector = workerSelector || secondPositionalAfterCommand;
+    } else if (!runId && !workerSelector && firstPositionalAfterCommand) {
+      const resolvedRunId = await resolveWorkerRunId(cwd);
+      if (resolvedRunId) {
+        const { findWorkerStatusEntry, loadWorkerStatusSnapshot } = await import('./worker-status-store.js');
+        const snapshot = loadWorkerStatusSnapshot(cwd, resolvedRunId);
+        if (findWorkerStatusEntry(snapshot, firstPositionalAfterCommand)) {
+          workerSelector = firstPositionalAfterCommand;
+        } else {
+          runId = firstPositionalAfterCommand;
+        }
+      } else {
+        runId = firstPositionalAfterCommand;
+      }
+    }
+
+    if (!watch) {
+      const ok = await printWorkerSnapshot(cwd, runId, eventLimit, workerSelector);
+      if (!ok) process.exit(1);
+      return;
+    }
+
+    while (true) {
+      process.stdout.write('\x1Bc');
+      console.log(`=== ${new Date().toISOString()} ===`);
+      const ok = await printWorkerSnapshot(cwd, runId, eventLimit, workerSelector);
+      if (!ok) process.exit(1);
+      await sleep(intervalMs);
+    }
+  }
+
+  if (command === 'score') {
+    const cwd = getFlag('--cwd') || process.cwd();
+    const runId = getFlag('--run-id') || firstPositionalAfterCommand;
+    const ok = await printScoreHistory(cwd, runId);
+    if (!ok) process.exit(1);
+    return;
+  }
+
+  if (command === 'shell' || command === 'dashboard') {
+    const cwd = getFlag('--cwd') || process.cwd();
+    const runId = getFlag('--run-id') || firstPositionalAfterCommand;
+    const watch = args.includes('--watch');
+    const intervalMs = Number(getFlag('--interval-ms') || 1500);
+
+    if (!watch) {
+      const ok = await printHiveShell(cwd, runId);
+      if (!ok) process.exit(1);
+      return;
+    }
+
+    while (true) {
+      process.stdout.write('\x1Bc');
+      const ok = await printHiveShell(cwd, runId);
+      if (!ok) process.exit(1);
+      await sleep(intervalMs);
+    }
+  }
+
+  if (command === 'watch') {
+    const cwd = getFlag('--cwd') || process.cwd();
+    const runId = getFlag('--run-id') || firstPositionalAfterCommand;
+    const intervalMs = Number(getFlag('--interval-ms') || 1500);
+
+    while (true) {
+      process.stdout.write('\x1Bc');
+      const ok = await printHiveShell(cwd, runId);
+      if (!ok) process.exit(1);
+      await sleep(intervalMs);
+    }
+  }
+
+  if (command === 'compact') {
+    const cwd = getFlag('--cwd') || process.cwd();
+    const runId = getFlag('--run-id') || firstPositionalAfterCommand;
+    const ok = await printCompactPacket(cwd, runId);
+    if (!ok) process.exit(1);
+    return;
+  }
+
+  if (command === 'restore') {
+    const cwd = getFlag('--cwd') || process.cwd();
+    const ok = await printLatestRestore(cwd);
+    if (!ok) process.exit(1);
     return;
   }
 
@@ -190,9 +577,16 @@ async function main() {
 
   if (goalIdx < 0 && planIdx < 0) {
     console.log('Usage:');
-    console.log('  hive --goal "Build auth system" --cwd /path/to/project');
+    console.log('  hive run "Build auth system"');
     console.log('  hive --goal "构建认证系统" --cwd /path --translate');
     console.log('  hive --plan plan.json --cwd /path');
+    console.log('  hive status');
+    console.log('  hive workers');
+    console.log('  hive score');
+    console.log('  hive watch');
+    console.log('  hive compact');
+    console.log('  hive restore');
+    console.log('  hive runs');
     process.exit(1);
   }
 
@@ -231,7 +625,7 @@ async function main() {
 
     const registry = new (ModelRegistry as any)();
     planJson.cwd = cwd;
-    const plan = buildPlanFromClaudeOutput(planJson, cwd);
+    const plan = buildPlanFromClaudeOutput(planJson);
 
     console.log(`\n📋 Plan: ${plan.tasks.length} tasks`);
     console.log(`📋 Groups: ${plan.execution_order.map((g: string[]) => `[${g.join(',')}]`).join(' → ')}\n`);

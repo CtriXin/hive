@@ -15,6 +15,7 @@ export interface SafeQueryOptions {
     maxTurns?: number;
     resume?: string;
   };
+  onMessage?: (message: SDKMessage) => void | Promise<void>;
 }
 
 export interface SafeQueryResult {
@@ -61,6 +62,7 @@ async function claudeCodeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult>
   try {
     for await (const msg of stream) {
       messages.push(msg);
+      await opts.onMessage?.(msg);
     }
   } catch (err: any) {
     const isExitCode1 = err.message?.includes('exited with code 1');
