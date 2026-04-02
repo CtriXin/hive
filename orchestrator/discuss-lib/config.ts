@@ -269,8 +269,8 @@ export function fuzzyResolveModel(
     return 'kimi-for-coding';
   }
 
-  // 3. Scored fuzzy match
-  type Candidate = { id: string; priority: number; matchScore: number };
+  // 3. Scored fuzzy match — use_count first (matches MMS TUI behavior)
+  type Candidate = { id: string; priority: number; useCount: number; matchScore: number };
   const candidates: Candidate[] = [];
 
   for (const [id, route] of entries) {
@@ -282,17 +282,23 @@ export function fuzzyResolveModel(
       matchScore = 10; // substring: weaker signal
     }
     if (matchScore > 0) {
-      candidates.push({ id, priority: route.priority ?? 0, matchScore });
+      candidates.push({
+        id,
+        priority: route.priority ?? 0,
+        useCount: (route as any).use_count ?? 0,
+        matchScore,
+      });
     }
   }
 
   if (candidates.length === 0) return null;
 
-  // Sort: matchScore desc → priority desc → model ID desc (higher version wins)
+  // Sort: matchScore desc → use_count desc → priority desc
+  // Matches MMS TUI: most-used model within the family wins
   candidates.sort((a, b) =>
     b.matchScore - a.matchScore
-    || b.priority - a.priority
-    || b.id.localeCompare(a.id),
+    || b.useCount - a.useCount
+    || b.priority - a.priority,
   );
 
   return candidates[0].id;

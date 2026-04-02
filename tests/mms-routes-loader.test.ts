@@ -10,9 +10,9 @@ const MOCK_ROUTES = {
   routes: {
     'gpt-5.4': { anthropic_base_url: 'https://example.com/openai', openai_base_url: 'https://example.com/openai', api_key: 'gpt-direct', provider_id: 'companycrsopenai', priority: 160, role: 'auto' },
     'gpt-5': { anthropic_base_url: 'http://gateway', openai_base_url: 'http://gateway', api_key: 'gpt-gateway', provider_id: 'xin', priority: 145, role: 'auto' },
-    'MiniMax-M2': { anthropic_base_url: 'http://a', api_key: 'k1', provider_id: 'minimax-cn', priority: 85, role: 'auto' },
-    'MiniMax-M2.5': { anthropic_base_url: 'http://b', api_key: 'k2', provider_id: 'xin', priority: 125, role: 'auto' },
-    'MiniMax-M2.7': { anthropic_base_url: 'http://c', api_key: 'k3', provider_id: 'xin', priority: 125, role: 'auto' },
+    'MiniMax-M2': { anthropic_base_url: 'http://a', api_key: 'k1', provider_id: 'minimax-cn', priority: 85, role: 'auto', use_count: 0 },
+    'MiniMax-M2.5': { anthropic_base_url: 'http://b', api_key: 'k2', provider_id: 'xin', priority: 125, role: 'auto', use_count: 3 },
+    'MiniMax-M2.7': { anthropic_base_url: 'http://c', api_key: 'k3', provider_id: 'xin', priority: 125, role: 'auto', use_count: 12 },
     'kimi-k2.5': { anthropic_base_url: 'http://d', api_key: 'k4', provider_id: 'xin', priority: 125, role: 'auto' },
     'kimi-for-coding': { anthropic_base_url: 'http://e', api_key: 'k5', provider_id: 'xin', priority: 100, role: 'auto' },
     'qwen3-max': { anthropic_base_url: 'http://f', api_key: 'k6', provider_id: 'xin', priority: 125, role: 'auto' },
