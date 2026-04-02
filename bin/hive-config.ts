@@ -114,6 +114,9 @@ function resetConfig(cwd: string, useLocal: boolean, confirmed: boolean): void {
 }
 
 async function main(): Promise<void> {
+  const { maybePrintUpgradeNotice } = await import('../orchestrator/update-check.js');
+  await maybePrintUpgradeNotice();
+
   const args = process.argv.slice(2);
   const command = args[0];
   const cwd = process.cwd();

@@ -18,6 +18,9 @@ export * from './types.js';
 
 // ── CLI entry (only runs when executed directly) ──
 async function main() {
+  const { maybePrintUpgradeNotice } = await import('./update-check.js');
+  await maybePrintUpgradeNotice();
+
   const args = process.argv.slice(2);
   const command = args[0];
 
