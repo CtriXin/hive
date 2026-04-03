@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -74,6 +75,13 @@ export function listWorktrees(): WorktreeInfo[] {
   return worktrees;
 }
 
+const UNTRACKED_MANIFEST = '.untracked-manifest.json';
+
+function fileHash(filePath: string): string {
+  const content = fs.readFileSync(filePath);
+  return crypto.createHash('md5').update(content).digest('hex');
+}
+
 function copyUntrackedFiles(repoRoot: string, worktreePath: string): void {
   try {
     const output = execSync(
@@ -82,6 +90,7 @@ function copyUntrackedFiles(repoRoot: string, worktreePath: string): void {
     ).trim();
     if (!output) return;
 
+    const manifest: Record<string, string> = {};
     for (const relPath of output.split('\n')) {
       if (!relPath || relPath.startsWith('.claude/') || relPath.startsWith('.ai/')) continue;
       const src = path.join(repoRoot, relPath);
@@ -91,12 +100,45 @@ function copyUntrackedFiles(repoRoot: string, worktreePath: string): void {
         if (!stat.isFile()) continue;
         fs.mkdirSync(path.dirname(dst), { recursive: true });
         fs.copyFileSync(src, dst);
+        manifest[relPath] = fileHash(src);
       } catch {
-        // Skip files that can't be copied (permissions, dirs, etc.)
+        // Skip files that can't be copied
       }
     }
+    // Save manifest so we can filter unchanged copies at commit time
+    if (Object.keys(manifest).length > 0) {
+      fs.writeFileSync(
+        path.join(worktreePath, UNTRACKED_MANIFEST),
+        JSON.stringify(manifest),
+      );
+    }
   } catch {
-    // Non-critical — worker can still function without untracked files
+    // Non-critical
+  }
+}
+
+/** Returns files that were copied as untracked but NOT modified by the worker */
+export function getUnchangedCopiedFiles(worktreePath: string): string[] {
+  const manifestPath = path.join(worktreePath, UNTRACKED_MANIFEST);
+  if (!fs.existsSync(manifestPath)) return [];
+  try {
+    const manifest: Record<string, string> = JSON.parse(
+      fs.readFileSync(manifestPath, 'utf-8'),
+    );
+    const unchanged: string[] = [];
+    for (const [relPath, originalHash] of Object.entries(manifest)) {
+      const filePath = path.join(worktreePath, relPath);
+      try {
+        if (fs.existsSync(filePath) && fileHash(filePath) === originalHash) {
+          unchanged.push(relPath);
+        }
+      } catch {
+        // File may have been deleted — that's a real change, don't add
+      }
+    }
+    return unchanged;
+  } catch {
+    return [];
   }
 }
 
@@ -161,9 +203,11 @@ export function getWorktreeDiff(worktreePath: string): WorktreeDiff {
       cwd: worktreePath,
       encoding: 'utf-8',
     });
-    return {
-      files: parsePorcelainChangedFiles(output),
-    };
+    const allFiles = parsePorcelainChangedFiles(output);
+    // Filter out untracked files that were copied but not modified
+    const unchangedCopies = new Set(getUnchangedCopiedFiles(worktreePath));
+    const realChanges = allFiles.filter(f => !unchangedCopies.has(f));
+    return { files: realChanges };
   } catch {
     return { files: [] };
   }
@@ -241,16 +285,19 @@ export function commitAndMergeWorktree(
 ): MergeResult {
   const root = getProjectRoot(cwd);
   try {
-    // Stage and commit in worktree
-    const status = execSync('git status --porcelain', {
-      cwd: worktreePath, encoding: 'utf-8',
-    }).trim();
-    const changedFiles = parsePorcelainChangedFiles(status);
+    // Stage only real changes (exclude unchanged untracked copies)
+    const diff = getWorktreeDiff(worktreePath);
+    const changedFiles = diff.files;
     if (changedFiles.length > 0) {
-      execSync(
-        "git add -A -- . ':(exclude).ai' ':(exclude).claude'",
-        { cwd: worktreePath, encoding: 'utf-8' },
-      );
+      // Stage each real change individually instead of git add -A
+      for (const file of changedFiles) {
+        try {
+          execSync(`git add -- "${file}"`, { cwd: worktreePath, encoding: 'utf-8' });
+        } catch {
+          // File may have been deleted
+          execSync(`git rm --cached -- "${file}"`, { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' }).toString();
+        }
+      }
       execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, {
         cwd: worktreePath, encoding: 'utf-8',
       });
