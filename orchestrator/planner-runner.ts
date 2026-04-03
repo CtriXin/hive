@@ -7,6 +7,8 @@ import type {
   StageTokenUsage,
   PlannerDiscussRoomRef,
   CollabConfig,
+  CollabLifecycleEvent,
+  CollabStatusSnapshot,
   PlanningBrief,
 } from './types.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from './planner.js';
@@ -20,7 +22,10 @@ import {
   openPlannerDiscussRoom,
   collectPlannerDiscussReplies,
   buildRoomRef,
+  closePlannerDiscussRoom,
 } from './agentbus-adapter.js';
+
+const MAX_COLLAB_EVENTS = 8;
 
 function collectFileTree(cwd: string, maxLines = 80): string {
   try {
@@ -128,6 +133,7 @@ export interface PlanGoalResult {
   plan_discuss: PlanDiscussResult | null;
   discuss_diag: DiscussPlanDiag | null;
   plan_discuss_room: PlannerDiscussRoomRef | null;
+  plan_discuss_collab: CollabStatusSnapshot | null;
   budget_warning: string | null;
 }
 
@@ -135,6 +141,15 @@ export interface PlannerDiscussExecutionResult {
   plan_discuss: PlanDiscussResult | null;
   discuss_diag: DiscussPlanDiag | null;
   plan_discuss_room: PlannerDiscussRoomRef | null;
+  plan_discuss_collab: CollabStatusSnapshot | null;
+}
+
+export interface PlannerDiscussProgressHooks {
+  onSnapshot?: (snapshot: CollabStatusSnapshot) => void | Promise<void>;
+}
+
+export interface PlanGoalHooks {
+  onPlannerDiscussSnapshot?: (snapshot: CollabStatusSnapshot) => void | Promise<void>;
 }
 
 function collectReviewFocus(plan: TaskPlan): string {
@@ -238,6 +253,88 @@ export function buildPlanningBrief(
     review_focus: collectReviewFocus(plan),
     questions: collectPlanningQuestions(plan),
   };
+}
+
+function cloneCollabSnapshot(
+  snapshot: CollabStatusSnapshot,
+): CollabStatusSnapshot {
+  return {
+    card: { ...snapshot.card },
+    recent_events: snapshot.recent_events.map((event) => ({ ...event })),
+  };
+}
+
+async function publishCollabSnapshot(
+  snapshot: CollabStatusSnapshot | null,
+  hooks?: PlannerDiscussProgressHooks,
+): Promise<void> {
+  if (!snapshot) {
+    return;
+  }
+  await hooks?.onSnapshot?.(cloneCollabSnapshot(snapshot));
+}
+
+function buildInitialCollabSnapshot(
+  roomId: string,
+  joinHint?: string,
+): CollabStatusSnapshot {
+  return {
+    card: {
+      room_id: roomId,
+      room_kind: 'plan',
+      status: 'open',
+      replies: 0,
+      join_hint: joinHint,
+      next: 'room opened; waiting to start collecting replies',
+    },
+    recent_events: [],
+  };
+}
+
+async function updateCollabCard(
+  snapshot: CollabStatusSnapshot | null,
+  updates: Partial<CollabStatusSnapshot['card']>,
+  hooks?: PlannerDiscussProgressHooks,
+): Promise<void> {
+  if (!snapshot) {
+    return;
+  }
+  snapshot.card = {
+    ...snapshot.card,
+    ...updates,
+  };
+  await publishCollabSnapshot(snapshot, hooks);
+}
+
+async function recordCollabEvent(
+  snapshot: CollabStatusSnapshot | null,
+  event: CollabLifecycleEvent,
+  hooks?: PlannerDiscussProgressHooks,
+): Promise<void> {
+  if (!snapshot) {
+    return;
+  }
+  snapshot.recent_events = [
+    ...snapshot.recent_events,
+    event,
+  ].slice(-MAX_COLLAB_EVENTS);
+  await publishCollabSnapshot(snapshot, hooks);
+}
+
+async function safeClosePlannerDiscussRoom(
+  roomId: string,
+  orchestratorId: string,
+  summary: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await closePlannerDiscussRoom({
+      room_id: roomId,
+      orchestrator_id: orchestratorId,
+      summary,
+    });
+  } catch (err: any) {
+    console.log(`  ⚠️ AgentBus close failed for ${roomId}: ${err.message?.slice(0, 80)}`);
+  }
 }
 
 export async function runClaudePlanner(prompt: string, cwd: string, modelId: string): Promise<PlannerRunResult> {
@@ -405,10 +502,12 @@ export async function executePlannerDiscuss(
   config: { tiers: { discuss?: { mode?: string; model?: string | string[]; fallback?: string } }; collab?: CollabConfig },
   registry: ModelRegistry,
   cwd: string,
+  hooks?: PlannerDiscussProgressHooks,
 ): Promise<PlannerDiscussExecutionResult> {
   let planDiscussResult: PlanDiscussResult | null = null;
   let discussDiag: DiscussPlanDiag | null = null;
   let planDiscussRoom: PlannerDiscussRoomRef | null = null;
+  let planDiscussCollab: CollabStatusSnapshot | null = null;
   const discussMode = config.tiers.discuss?.mode || 'auto';
 
   if (discussMode !== 'always') {
@@ -416,6 +515,7 @@ export async function executePlannerDiscuss(
       plan_discuss: null,
       discuss_diag: null,
       plan_discuss_room: null,
+      plan_discuss_collab: null,
     };
   }
 
@@ -434,20 +534,117 @@ export async function executePlannerDiscuss(
 
       const timeoutMs = collab?.plan_discuss_timeout_ms ?? 15000;
       const minReplies = collab?.plan_discuss_min_replies ?? 0;
+      planDiscussCollab = buildInitialCollabSnapshot(room.room_id, room.join_hint);
+      await recordCollabEvent(planDiscussCollab, {
+        type: 'room:opened',
+        room_id: room.room_id,
+        room_kind: 'plan',
+        at: new Date().toISOString(),
+        reply_count: 0,
+        note: 'Planner discuss room opened on AgentBus.',
+      }, hooks);
+      await updateCollabCard(planDiscussCollab, {
+        status: 'collecting',
+        next: minReplies > 0
+          ? `collecting replies until ${minReplies} arrive or timeout`
+          : 'collecting quick replies before synthesis fallback',
+      }, hooks);
+
       const replies = await collectPlannerDiscussReplies({
         cwd, room_id: room.room_id,
         timeout_ms: timeoutMs,
         min_replies: minReplies,
+        on_reply: async (reply) => {
+          if (!planDiscussCollab) {
+            return;
+          }
+          planDiscussCollab.card.replies += 1;
+          planDiscussCollab.card.last_reply_at = reply.received_at;
+          planDiscussCollab.card.status = 'collecting';
+          planDiscussCollab.card.next = 'reply received; waiting for more replies or timeout';
+          await recordCollabEvent(planDiscussCollab, {
+            type: 'reply:arrived',
+            room_id: room.room_id,
+            room_kind: 'plan',
+            at: reply.received_at,
+            reply_count: planDiscussCollab.card.replies,
+            note: `Reply from ${reply.participant_id}`,
+          }, hooks);
+        },
       });
 
       planDiscussRoom = buildRoomRef(room, replies, timeoutMs);
 
       if (replies.length > 0) {
+        await updateCollabCard(planDiscussCollab, {
+          status: 'synthesizing',
+          replies: replies.length,
+          next: 'synthesizing collected planner discuss replies',
+        }, hooks);
+        await recordCollabEvent(planDiscussCollab, {
+          type: 'synthesis:started',
+          room_id: room.room_id,
+          room_kind: 'plan',
+          at: new Date().toISOString(),
+          reply_count: replies.length,
+          note: 'Planner discuss synthesis started.',
+        }, hooks);
         planDiscussResult = await synthesizeAgentBusReplies(
           briefText, replies, plannerModel, config, registry,
         );
+        await updateCollabCard(planDiscussCollab, {
+          status: 'closed',
+          next: 'planner discuss complete',
+        }, hooks);
+        await recordCollabEvent(planDiscussCollab, {
+          type: 'synthesis:done',
+          room_id: room.room_id,
+          room_kind: 'plan',
+          at: new Date().toISOString(),
+          reply_count: replies.length,
+          note: planDiscussResult.quality_gate === 'pass'
+            ? 'Planner discuss synthesis completed.'
+            : `Planner discuss synthesis completed with ${planDiscussResult.quality_gate}.`,
+        }, hooks);
+        await safeClosePlannerDiscussRoom(room.room_id, room.orchestrator_id, {
+          quality_gate: planDiscussResult.quality_gate,
+          reply_count: replies.length,
+        });
+        await recordCollabEvent(planDiscussCollab, {
+          type: 'room:closed',
+          room_id: room.room_id,
+          room_kind: 'plan',
+          at: new Date().toISOString(),
+          reply_count: replies.length,
+          note: 'Planner discuss room closed after synthesis.',
+        }, hooks);
       } else {
         console.log('  ⚠️ AgentBus discuss: no replies collected, falling back to local');
+        await updateCollabCard(planDiscussCollab, {
+          status: 'fallback',
+          next: 'no replies collected; continuing with local discuss fallback',
+        }, hooks);
+        await recordCollabEvent(planDiscussCollab, {
+          type: 'fallback:local',
+          room_id: room.room_id,
+          room_kind: 'plan',
+          at: new Date().toISOString(),
+          reply_count: 0,
+          note: 'No AgentBus replies arrived before timeout.',
+        }, hooks);
+        await safeClosePlannerDiscussRoom(room.room_id, room.orchestrator_id, {
+          quality_gate: 'fallback',
+          reply_count: 0,
+          fallback: 'local-discuss',
+        });
+        await recordCollabEvent(planDiscussCollab, {
+          type: 'room:closed',
+          room_id: room.room_id,
+          room_kind: 'plan',
+          at: new Date().toISOString(),
+          reply_count: 0,
+          note: 'Planner discuss room closed after local fallback.',
+        }, hooks);
         const { discussPlan } = await import('./discuss-bridge.js');
         const dr = await discussPlan(plan, plannerModel, config as any, registry);
         planDiscussResult = dr.result;
@@ -461,6 +658,7 @@ export async function executePlannerDiscuss(
       planDiscussResult = dr.result;
       discussDiag = dr.diag;
       planDiscussRoom = null;
+      planDiscussCollab = null;
     }
   } else {
     const { discussPlan } = await import('./discuss-bridge.js');
@@ -473,10 +671,15 @@ export async function executePlannerDiscuss(
     plan_discuss: planDiscussResult,
     discuss_diag: discussDiag,
     plan_discuss_room: planDiscussRoom,
+    plan_discuss_collab: planDiscussCollab,
   };
 }
 
-export async function planGoal(goal: string, cwd: string): Promise<PlanGoalResult> {
+export async function planGoal(
+  goal: string,
+  cwd: string,
+  hooks: PlanGoalHooks = {},
+): Promise<PlanGoalResult> {
   const registry = new ModelRegistry();
   const config = loadConfig(cwd);
   const plannerModel = resolveTierModel(
@@ -514,41 +717,65 @@ export async function planGoal(goal: string, cwd: string): Promise<PlanGoalResul
   let plannerStageUsage: StageTokenUsage | null = null;
   let plannerError: string | null = null;
 
-  try {
-    const plannerResult = await runClaudePlanner(claudePrompt, cwd, plannerModel);
-    plannerRawOutput = plannerResult.text;
-    plannerDiagnostics = plannerResult.diagnostics;
-    plannerStageUsage = {
-      stage: 'planner',
-      model: plannerModel,
-      input_tokens: plannerResult.tokenUsage.input,
-      output_tokens: plannerResult.tokenUsage.output,
-    };
-    const parsed = parseJsonBlock<{ goal: string; tasks: unknown[] }>(plannerRawOutput);
-    plan = buildPlanFromClaudeOutput(parsed, cwd);
-    plan.cwd = cwd;
-    for (const task of plan.tasks) {
-      task.assigned_model = registry.assignModel(task);
-      task.assignment_reason = `Assigned by registry for ${task.complexity} ${task.category} task`;
+  // Planner with fallback chain: primary → config fallback → hardcoded fallback
+  const plannerFallbacks = [
+    plannerModel,
+    config.tiers.planner.fallback,
+    'glm-5-turbo',
+  ].filter((m, i, arr) => m && arr.indexOf(m) === i) as string[];
+
+  let usedPlannerModel = plannerModel;
+  for (const tryModel of plannerFallbacks) {
+    try {
+      console.log(`  🧠 Trying planner: ${tryModel}`);
+      const plannerResult = await runClaudePlanner(claudePrompt, cwd, tryModel);
+      plannerRawOutput = plannerResult.text;
+      plannerDiagnostics = plannerResult.diagnostics;
+      usedPlannerModel = tryModel;
+      plannerStageUsage = {
+        stage: 'planner',
+        model: tryModel,
+        input_tokens: plannerResult.tokenUsage.input,
+        output_tokens: plannerResult.tokenUsage.output,
+      };
+      const parsed = parseJsonBlock<{ goal: string; tasks: unknown[] }>(plannerRawOutput);
+      plan = buildPlanFromClaudeOutput(parsed, cwd);
+      plan.cwd = cwd;
+      for (const task of plan.tasks) {
+        task.assigned_model = registry.assignModel(task);
+        task.assignment_reason = `Assigned by registry for ${task.complexity} ${task.category} task`;
+      }
+      plannerError = null;
+      break;
+    } catch (err: any) {
+      plannerError = `${tryModel}: ${err.message}`;
+      console.log(`  ⚠️ Planner ${tryModel} failed: ${err.message.slice(0, 100)}`);
     }
-  } catch (err: any) {
-    plannerError = err.message;
   }
 
   let planDiscussResult: PlanDiscussResult | null = null;
   let discussDiag: DiscussPlanDiag | null = null;
   let planDiscussRoom: PlannerDiscussRoomRef | null = null;
+  let planDiscussCollab: CollabStatusSnapshot | null = null;
   if (plan) {
-    const discussExecution = await executePlannerDiscuss(plan, plannerModel, config as any, registry, cwd);
+    const discussExecution = await executePlannerDiscuss(
+      plan,
+      plannerModel,
+      config as any,
+      registry,
+      cwd,
+      { onSnapshot: hooks.onPlannerDiscussSnapshot },
+    );
     planDiscussResult = discussExecution.plan_discuss;
     discussDiag = discussExecution.discuss_diag;
     planDiscussRoom = discussExecution.plan_discuss_room;
+    planDiscussCollab = discussExecution.plan_discuss_collab;
   }
 
   return {
     plan,
     translation: translationResult,
-    planner_model: plannerModel,
+    planner_model: usedPlannerModel,
     planner_stage_usage: plannerStageUsage,
     extra_stage_usages: [
       ...(translationResult?.stage_usage ? [translationResult.stage_usage] : []),
@@ -559,6 +786,7 @@ export async function planGoal(goal: string, cwd: string): Promise<PlanGoalResul
     planner_diagnostics: plannerDiagnostics,
     plan_discuss: planDiscussResult,
     plan_discuss_room: planDiscussRoom,
+    plan_discuss_collab: planDiscussCollab,
     discuss_diag: discussDiag,
     budget_warning: getBudgetWarning(config),
   };
