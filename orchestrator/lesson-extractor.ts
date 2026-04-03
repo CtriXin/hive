@@ -23,7 +23,8 @@ export type FailureType =
   | 'no_output'
   | 'constraint_ignored'
   | 'wrong_enum'
-  | 'partial_implementation';
+  | 'partial_implementation'
+  | 'worker_timeout';
 
 export interface Lesson {
   id: string;
@@ -81,6 +82,14 @@ export function classifyFailure(
   const types: Set<FailureType> = new Set();
   const allText = findings.map((f) => `${f.issue} ${f.decision_reason || ''}`).join(' ');
 
+  // Worker timeout / crash detection
+  if (!workerResult.success) {
+    const outputText = workerResult.output?.map((o) => o.content || '').join(' ') || '';
+    if (/timeout|timed out|max_turns/i.test(outputText)) {
+      types.add('worker_timeout');
+    }
+  }
+
   // No output detection
   if (workerResult.success && workerResult.changedFiles.length === 0) {
     types.add('no_output');
@@ -131,8 +140,8 @@ export function extractLessons(
   workerResult: WorkerResult,
   reviewResult: ReviewResult,
 ): Lesson[] {
-  if (reviewResult.passed && workerResult.changedFiles.length > 0) {
-    return []; // No lessons from successful tasks
+  if (reviewResult.passed && workerResult.success && workerResult.changedFiles.length > 0) {
+    return []; // No lessons from fully successful tasks
   }
 
   const failureTypes = classifyFailure(reviewResult.findings, workerResult, task);
@@ -172,6 +181,8 @@ function generateRule(ft: FailureType, _modelId: string): string {
       return 'Include enum/constant values in task prompt, not just field names';
     case 'partial_implementation':
       return 'Reduce task scope or increase complexity rating';
+    case 'worker_timeout':
+      return 'Avoid assigning large-file edits; split into smaller targeted changes';
   }
 }
 
@@ -184,6 +195,7 @@ const SCORE_PENALTIES: Record<FailureType, { key: 'spec_adherence' | 'scope_disc
   no_output:              [{ key: 'spec_adherence', signal: 0.1 }],
   wrong_enum:             [{ key: 'spec_adherence', signal: 0.3 }],
   partial_implementation: [{ key: 'spec_adherence', signal: 0.4 }],
+  worker_timeout:         [{ key: 'spec_adherence', signal: 0.1 }],
 };
 
 export function updateDisciplineScores(
