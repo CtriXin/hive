@@ -717,11 +717,13 @@ export async function planGoal(
   let plannerStageUsage: StageTokenUsage | null = null;
   let plannerError: string | null = null;
 
-  // Planner with fallback chain: primary → config fallback → hardcoded fallback
+  // Planner fallback chain: primary → config fallback → domestic trio
   const plannerFallbacks = [
     plannerModel,
     config.tiers.planner.fallback,
+    'kimi-for-coding',
     'glm-5-turbo',
+    'qwen3-max',
   ].filter((m, i, arr) => m && arr.indexOf(m) === i) as string[];
 
   let usedPlannerModel = plannerModel;
@@ -758,10 +760,23 @@ export async function planGoal(
   let planDiscussRoom: PlannerDiscussRoomRef | null = null;
   let planDiscussCollab: CollabStatusSnapshot | null = null;
   if (plan) {
+    // If planner fell back, widen discuss to cross-check with more models
+    const effectiveConfig = { ...config };
+    if (usedPlannerModel !== plannerModel) {
+      console.log(`  🔄 Planner fell back ${plannerModel} → ${usedPlannerModel}, widening discuss`);
+      effectiveConfig.tiers = {
+        ...config.tiers,
+        discuss: {
+          ...config.tiers.discuss,
+          model: ['qwen3-max', 'glm-5', 'kimi-k2.5'].filter(m => m !== usedPlannerModel),
+          mode: 'always',
+        },
+      };
+    }
     const discussExecution = await executePlannerDiscuss(
       plan,
-      plannerModel,
-      config as any,
+      usedPlannerModel,
+      effectiveConfig as any,
       registry,
       cwd,
       { onSnapshot: hooks.onPlannerDiscussSnapshot },

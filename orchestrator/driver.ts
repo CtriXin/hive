@@ -21,6 +21,7 @@ import type {
   TokenBreakdown,
   VerificationResult,
   WorkerResult,
+  CollabStatusSnapshot,
   PlannerDiscussRoomRef,
 } from './types.js';
 import {
@@ -65,6 +66,7 @@ export interface RunExecutionResult {
   planner_model?: string;
   plan_discuss?: PlanDiscussResult | null;
   plan_discuss_room?: PlannerDiscussRoomRef | null;
+  plan_discuss_collab?: CollabStatusSnapshot | null;
   planner_diagnostics?: Record<string, unknown> | null;
 }
 
@@ -839,13 +841,21 @@ export async function executeRun(
   onProgress?: ProgressCallback,
 ): Promise<RunExecutionResult> {
   const progressCb = onProgress || (() => {});
+  let planDiscussCollab: CollabStatusSnapshot | null | undefined;
   const emitProgress = (phase: LoopPhase, reason: string, extra?: {
     focus_task_id?: string; focus_model?: string; focus_summary?: string;
+    collab?: CollabStatusSnapshot | null;
   }) => {
+    const collab = extra?.collab === undefined
+      ? planDiscussCollab
+      : extra.collab;
     writeLoopProgress(spec.cwd, spec.id, {
       run_id: spec.id, round: currentState.round, phase, reason,
       planner_model: plannerModel,
-      ...extra,
+      collab: collab || undefined,
+      focus_task_id: extra?.focus_task_id,
+      focus_model: extra?.focus_model,
+      focus_summary: extra?.focus_summary,
     });
     progressCb(phase, reason);
   };
@@ -903,7 +913,17 @@ export async function executeRun(
       );
       emitProgress('planning', 'Generating plan via LLM planner...');
 
-      const planning = await planGoal(spec.goal, spec.cwd);
+      const planning = await planGoal(spec.goal, spec.cwd, {
+        onPlannerDiscussSnapshot: (snapshot) => {
+          planDiscussCollab = snapshot;
+          const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+          emitProgress(
+            'discussing',
+            `Planner discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+            {},
+          );
+        },
+      });
       if (!planning.plan) {
         currentState.status = 'blocked';
         currentState.next_action = makeNextAction(
@@ -915,7 +935,16 @@ export async function executeRun(
         currentState.final_summary =
           planning.planner_error || 'Planner failed';
         saveRunState(spec.cwd, currentState);
-        return { spec, state: currentState, plan: null, planner_model: plannerModel, plan_discuss: planDiscuss, plan_discuss_room: planDiscussRoom, planner_diagnostics: plannerDiagnostics };
+        return {
+          spec,
+          state: currentState,
+          plan: null,
+          planner_model: plannerModel,
+          plan_discuss: planDiscuss,
+          plan_discuss_room: planDiscussRoom,
+          plan_discuss_collab: planDiscussCollab,
+          planner_diagnostics: plannerDiagnostics,
+        };
       }
 
       roundExtraStages = planning.extra_stage_usages;
@@ -923,6 +952,7 @@ export async function executeRun(
       plannerModel = planning.planner_model;
       planDiscuss = planning.plan_discuss;
       planDiscussRoom = planning.plan_discuss_room;
+      planDiscussCollab = planning.plan_discuss_collab;
       plannerDiagnostics = planning.planner_diagnostics;
       emitProgress('executing', `Plan ready: ${plan.tasks.length} tasks via ${plannerModel || 'auto'}${planDiscuss ? ` | discuss: ${planDiscuss.quality_gate}` : ''}`);
       seedTaskStatesFromPlan(currentState, plan);
@@ -972,7 +1002,17 @@ export async function executeRun(
         'Please create a revised plan that addresses the remaining failures only.',
       ].join('\n');
 
-      const planning = await planGoal(replanGoal, spec.cwd);
+      const planning = await planGoal(replanGoal, spec.cwd, {
+        onPlannerDiscussSnapshot: (snapshot) => {
+          planDiscussCollab = snapshot;
+          const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+          emitProgress(
+            'discussing',
+            `Planner discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+            {},
+          );
+        },
+      });
       if (!planning.plan) {
         currentState.status = 'blocked';
         currentState.next_action = makeNextAction(
@@ -985,6 +1025,11 @@ export async function executeRun(
 
       roundExtraStages = planning.extra_stage_usages;
       plan = planning.plan;
+      plannerModel = planning.planner_model;
+      planDiscuss = planning.plan_discuss;
+      planDiscussRoom = planning.plan_discuss_room;
+      planDiscussCollab = planning.plan_discuss_collab;
+      plannerDiagnostics = planning.planner_diagnostics;
       seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
       saveRunPlan(spec.cwd, spec.id, plan);
@@ -1342,6 +1387,7 @@ export async function executeRun(
     planner_model: plannerModel,
     plan_discuss: planDiscuss,
     plan_discuss_room: planDiscussRoom,
+    plan_discuss_collab: planDiscussCollab,
     planner_diagnostics: plannerDiagnostics,
   };
 }
