@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "lessons": {
+    "glm-5-turbo": [
+      {
+        "id": "les-seed-001",
+        "run_id": "plan-1775191405742",
+        "task_id": "task-c",
+        "category": "tests",
+        "failure_type": "api_mismatch",
+        "description": "Wrote tests referencing get_health_status() and latency_bucket() but actual API exports are get_model_health() and _determine_latency_bucket(). Test file unusable without full rewrite.",
+        "rule": "When assigning test-writing tasks, include exact function signatures from the module under test",
+        "severity": "high",
+        "created_at": "2026-04-03T12:00:00Z"
+      },
+      {
+        "id": "les-seed-002",
+        "run_id": "plan-1775191405742",
+        "task_id": "task-d",
+        "category": "tests",
+        "failure_type": "no_output",
+        "description": "Worker reported success but produced zero file changes. No test_events.py was created despite clear task instructions.",
+        "rule": "For test tasks, prefer splitting into smaller scopes; glm-5-turbo may silently fail on larger test files",
+        "severity": "high",
+        "created_at": "2026-04-03T12:00:00Z"
+      }
+    ],
+    "kimi-k2.5": [
+      {
+        "id": "les-seed-003",
+        "run_id": "plan-1775192446176",
+        "task_id": "task-1",
+        "category": "api",
+        "failure_type": "api_mismatch",
+        "description": "Imported private function _emit_event instead of public emit_event. Called emit_event('started', {dict}) but actual signature is emit_event(type, model, *, note=None). Fallback function had wrong arity.",
+        "rule": "Include exact import statements and function signatures in task prompt when modifying files that call new modules",
+        "severity": "medium",
+        "created_at": "2026-04-03T12:30:00Z"
+      },
+      {
+        "id": "les-seed-004",
+        "run_id": "plan-1775192446176",
+        "task_id": "task-2",
+        "category": "api",
+        "failure_type": "scope_violation",
+        "description": "Task specified 'only modify mms_launchers.py' but worker modified 4 files: mms_core.py, mms_tui.py, mms_router.py, mms_launchers.py. Also moved variable declarations between functions and used wrong module name mms_health instead of mms_health_cache.",
+        "rule": "Always include explicit 'ONLY modify these files: [list]' constraint. kimi-k2.5 aggressively expands scope.",
+        "severity": "critical",
+        "created_at": "2026-04-03T12:30:00Z"
+      },
+      {
+        "id": "les-seed-005",
+        "run_id": "plan-1775192446176",
+        "task_id": "task-3",
+        "category": "config",
+        "failure_type": "api_mismatch",
+        "description": "Used $TMPDIR/health-cache.json instead of ~/.config/mms/health-cache.json. Parsed .status at JSON root but actual structure is .records[model].status. Used wrong status enum values (healthy/unhealthy vs ok/slow/degraded/blocked).",
+        "rule": "When task involves reading JSON files, include the exact file path and a sample of the JSON structure in the task prompt",
+        "severity": "medium",
+        "created_at": "2026-04-03T12:30:00Z"
+      }
+    ]
+  },
+  "rules": {
+    "glm-5-turbo": [
+      "Weak at cross-file API references: when writing tests or code that imports another module, MUST include exact function signatures (name, params, return type) in the task description",
+      "May produce zero output on complex tasks: prefer splitting into smaller scopes, each targeting 1 file with clear acceptance criteria"
+    ],
+    "kimi-k2.5": [
+      "Aggressively expands modification scope: ALWAYS include 'ONLY modify these files: [explicit list]' in task prompt. Will modify unrelated files if not constrained.",
+      "Wrong import paths when module names are similar: include exact 'from X import Y' statements in the task description",
+      "When reading/writing JSON or config files: include exact file path AND a sample of the JSON structure (not just field names)"
+    ]
+  }
+}

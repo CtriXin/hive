@@ -357,6 +357,18 @@ export async function reviewCascade(
         workerResult.model, result.passed, result.iterations,
         task.complexity, fingerprint.role, fingerprint.needs_fast_turnaround, fingerprint.needs_strict_boundary,
       );
+
+      // Lesson extraction — update spec_adherence / scope_discipline and persist (fire-and-forget)
+      import('./lesson-extractor.js').then((le) => {
+        const lessons = le.extractLessons(
+          task.id, _plan.id, workerResult.model, task, workerResult, result,
+        );
+        if (lessons.length > 0) {
+          le.updateDisciplineScores(workerResult.model, lessons);
+          le.persistLessons(workerResult.model, lessons);
+          console.log(`    📝 ${lessons.length} lesson(s) extracted for ${workerResult.model}`);
+        }
+      }).catch(() => { /* lesson extraction is best-effort */ });
     }
     result.token_stages = tokenStages;
     return result;

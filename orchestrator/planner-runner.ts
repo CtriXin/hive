@@ -589,9 +589,10 @@ export async function executePlannerDiscuss(
           reply_count: replies.length,
           note: 'Planner discuss synthesis started.',
         }, hooks);
-        planDiscussResult = await synthesizeAgentBusReplies(
+        const synthesized = await synthesizeAgentBusReplies(
           briefText, replies, plannerModel, config, registry,
         );
+        planDiscussResult = synthesized;
         await updateCollabCard(planDiscussCollab, {
           status: 'closed',
           next: 'planner discuss complete',
@@ -602,12 +603,12 @@ export async function executePlannerDiscuss(
           room_kind: 'plan',
           at: new Date().toISOString(),
           reply_count: replies.length,
-          note: planDiscussResult.quality_gate === 'pass'
+          note: synthesized.quality_gate === 'pass'
             ? 'Planner discuss synthesis completed.'
-            : `Planner discuss synthesis completed with ${planDiscussResult.quality_gate}.`,
+            : `Planner discuss synthesis completed with ${synthesized.quality_gate}.`,
         }, hooks);
         await safeClosePlannerDiscussRoom(room.room_id, room.orchestrator_id, {
-          quality_gate: planDiscussResult.quality_gate,
+          quality_gate: synthesized.quality_gate,
           reply_count: replies.length,
         });
         await recordCollabEvent(planDiscussCollab, {
@@ -709,7 +710,12 @@ export async function planGoal(
   }
 
   const plannerContext = buildPlannerContext(cwd);
-  const claudePrompt = `${PLAN_PROMPT_TEMPLATE}${plannerContext}\nUser goal: ${englishGoal}`;
+  let lessonContext = '';
+  try {
+    const { buildLessonContext } = await import('./lesson-extractor.js');
+    lessonContext = buildLessonContext();
+  } catch { /* lessons unavailable — proceed without */ }
+  const claudePrompt = `${PLAN_PROMPT_TEMPLATE}${plannerContext}${lessonContext}\nUser goal: ${englishGoal}`;
 
   let plan: TaskPlan | null = null;
   let plannerRawOutput = '';
