@@ -6,6 +6,8 @@
 import { query } from '@anthropic-ai/claude-code';
 import type { SDKMessage } from '@anthropic-ai/claude-code';
 
+const DEFAULT_WORKER_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
 export interface SafeQueryOptions {
   prompt: string;
   options: {
@@ -16,6 +18,7 @@ export interface SafeQueryOptions {
     resume?: string;
   };
   onMessage?: (message: SDKMessage) => void | Promise<void>;
+  timeoutMs?: number;
 }
 
 export interface SafeQueryResult {
@@ -31,7 +34,11 @@ export async function safeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult
   if (!opts.options.model) {
     throw new Error('safeQuery requires explicit options.model to avoid implicit Claude fallback');
   }
-  return claudeCodeQuery(opts);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`Worker timeout after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+  });
+  return Promise.race([claudeCodeQuery(opts), timeoutPromise]);
 }
 
 // ── Claude Code SDK path (for claude-* models) ──
