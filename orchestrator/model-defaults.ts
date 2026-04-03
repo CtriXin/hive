@@ -19,6 +19,7 @@ export interface StaticModelConfig {
   scores: StaticScoreSet;
   context_window: number;
   cost_per_1k: number;
+  mms_priority?: number;
 }
 
 export interface StaticClaudeTierConfig {

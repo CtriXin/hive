@@ -11,8 +11,10 @@ export { translateToEnglish } from './translator.js';
 export { reportResults } from './reporter.js';
 export { runA2aReview } from './a2a-bridge.js';
 export { triggerDiscussion } from './discuss-bridge.js';
+export { buildPlanningBrief, executePlannerDiscuss, planGoal, synthesizeAgentBusReplies } from './planner-runner.js';
 export { bootstrapRun, createRunSpec, createInitialRunState, resumeRun, inferDefaultDoneConditions, executeRun, runGoal } from './driver.js';
 export { saveRunSpec, loadRunSpec, saveRunState, loadRunState, listRuns, loadRunPlan, loadRunResult } from './run-store.js';
+export { writeLoopProgress, readLoopProgress, type LoopProgress, type LoopPhase } from './loop-progress-store.js';
 export { runVerification, runVerificationSuite, allRequiredChecksPassed } from './verifier.js';
 export {
   buildWorkerAgentId,
@@ -212,10 +214,11 @@ async function main() {
   };
 
   const printScoreHistory = async (cwd: string, runId?: string): Promise<boolean> => {
-    const { listRuns } = await import('./run-store.js');
-    const { loadRunScoreHistory } = await import('./score-history.js');
+    const { resolveHiveShellRunId } = await import('./hiveshell-dashboard.js');
+    const { loadRunScoreHistory, resolveLatestScoredRunId } = await import('./score-history.js');
 
-    const resolvedRunId = runId || listRuns(cwd)[0]?.id;
+    const preferredRunId = resolveHiveShellRunId(cwd, runId);
+    const resolvedRunId = runId || resolveLatestScoredRunId(cwd, preferredRunId || undefined);
     if (!resolvedRunId) {
       console.error('❌ no run with score history found');
       return false;
@@ -228,6 +231,9 @@ async function main() {
     }
 
     console.log(`🟡 Score history: ${resolvedRunId}`);
+    if (!runId && preferredRunId && preferredRunId !== resolvedRunId) {
+      console.log(`ℹ️ latest surface run ${preferredRunId} has no score history yet; showing latest scored run ${resolvedRunId}`);
+    }
     if (history.goal) {
       console.log(`🎯 goal: ${history.goal}`);
     }
@@ -335,6 +341,13 @@ async function main() {
     if (execution.plan) {
       console.log(`📋 plan: ${execution.plan.tasks.length} tasks`);
     }
+    if (execution.plan_discuss_room) {
+      const room = execution.plan_discuss_room;
+      console.log(`🔗 discuss room: ${room.room_id} (${room.reply_count} reply${room.reply_count !== 1 ? 's' : ''}, transport=${room.transport})`);
+      if (room.join_hint) {
+        console.log(`   join: ${room.join_hint}`);
+      }
+    }
     console.log(`✅ done conditions: ${spec.done_conditions.length}`);
     for (const condition of spec.done_conditions) {
       console.log(`   - [${condition.type}] ${condition.label}`);
@@ -377,6 +390,10 @@ async function main() {
     console.log(`➡️ next action: ${rState.next_action?.kind} — ${rState.next_action?.reason || 'n/a'}`);
     if (rState.final_summary) {
       console.log(`🧾 summary: ${rState.final_summary}`);
+    }
+    if (shouldExecute && execution.plan_discuss_room) {
+      const room = execution.plan_discuss_room;
+      console.log(`🔗 discuss room: ${room.room_id} (${room.reply_count} reply${room.reply_count !== 1 ? 's' : ''})`);
     }
     if (shouldExecute) {
       const { loadRunScoreHistory } = await import('./score-history.js');

@@ -628,6 +628,67 @@
       },
       "context_window": 200000,
       "cost_per_1k": 0.002
+    },
+    "gpt-5": {
+      "provider": "openai",
+      "display_name": "GPT-5",
+      "speed_tier": "balanced",
+      "speed_rank": 5,
+      "avg_time_s": 110,
+      "overall_rank": 5,
+      "strengths": [
+        "coding",
+        "reasoning",
+        "planning"
+      ],
+      "avoid_tags": [],
+      "benchmark": {
+        "rounds": 0,
+        "estimated": true,
+        "_note": "Scores estimated from model-defaults.ts GPT-5 standard tier + observed behavior"
+      },
+      "scores": {
+        "general": 0.88,
+        "coding": 0.88,
+        "planning": 0.85,
+        "review": 0.82,
+        "translation": 0.78,
+        "analysis": 0.85,
+        "reasoning": 0.9
+      },
+      "context_window": 128000,
+      "cost_per_1k": 0.01
+    },
+    "gpt-5.4": {
+      "provider": "openai",
+      "display_name": "GPT-5.4",
+      "speed_tier": "balanced",
+      "speed_rank": 4,
+      "avg_time_s": 100,
+      "overall_rank": 2,
+      "strengths": [
+        "coding",
+        "reasoning",
+        "planning",
+        "analysis"
+      ],
+      "avoid_tags": [],
+      "benchmark": {
+        "rounds": 0,
+        "estimated": true,
+        "_note": "Scores estimated from model-defaults.ts GPT-5 pro/max tier, flagship model"
+      },
+      "scores": {
+        "general": 0.93,
+        "coding": 0.93,
+        "planning": 0.93,
+        "review": 0.90,
+        "translation": 0.82,
+        "analysis": 0.9,
+        "reasoning": 0.95
+      },
+      "context_window": 128000,
+      "cost_per_1k": 0.02
     }
   },
   "claude_tiers": {

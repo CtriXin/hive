@@ -5,6 +5,7 @@ import type {
   DoneCondition,
   NextAction,
   OrchestratorResult,
+  PlanDiscussResult,
   PolicyHook,
   PolicyHookResult,
   RoundCostEntry,
@@ -20,6 +21,7 @@ import type {
   TokenBreakdown,
   VerificationResult,
   WorkerResult,
+  PlannerDiscussRoomRef,
 } from './types.js';
 import {
   loadRunPlan,
@@ -39,6 +41,7 @@ import { allRequiredChecksPassed, runVerification, runVerificationSuite } from '
 import { commitAndMergeWorktree } from './worktree-manager.js';
 import { loadProjectVerificationPolicy, loadTaskVerificationRules, type TaskVerificationRule } from './project-policy.js';
 import { getBudgetStatus, loadConfig, recordSpending } from './hive-config.js';
+import { writeLoopProgress, type LoopPhase } from './loop-progress-store.js';
 
 // ── Options & Result ──
 
@@ -59,6 +62,10 @@ export interface RunExecutionResult {
   state: RunState;
   plan: TaskPlan | null;
   result?: OrchestratorResult;
+  planner_model?: string;
+  plan_discuss?: PlanDiscussResult | null;
+  plan_discuss_room?: PlannerDiscussRoomRef | null;
+  planner_diagnostics?: Record<string, unknown> | null;
 }
 
 // ── Helpers ──
@@ -91,6 +98,20 @@ function makeNextAction(
 
 function isTerminalStatus(status: RunState['status']): boolean {
   return status === 'done' || status === 'blocked';
+}
+
+function setLoopPhase(
+  cwd: string,
+  state: RunState,
+  status: RunState['status'],
+  action: NextAction['kind'],
+  reason: string,
+  taskIds: string[] = [],
+): void {
+  state.status = status;
+  state.next_action = makeNextAction(action, reason, taskIds);
+  saveRunState(cwd, state);
+  console.log(`  ⏳ ${status}: ${reason}`);
 }
 
 function dedupe(values: string[]): string[] {
@@ -810,10 +831,24 @@ function runPolicyHooks(
 
 // ── Main execution loop ──
 
+export type ProgressCallback = (stage: string, detail: string) => void;
+
 export async function executeRun(
   spec: RunSpec,
   state?: RunState,
+  onProgress?: ProgressCallback,
 ): Promise<RunExecutionResult> {
+  const progressCb = onProgress || (() => {});
+  const emitProgress = (phase: LoopPhase, reason: string, extra?: {
+    focus_task_id?: string; focus_model?: string; focus_summary?: string;
+  }) => {
+    writeLoopProgress(spec.cwd, spec.id, {
+      run_id: spec.id, round: currentState.round, phase, reason,
+      planner_model: plannerModel,
+      ...extra,
+    });
+    progressCb(phase, reason);
+  };
   const currentState = state || createInitialRunState(spec);
   currentState.review_failed_task_ids ||= [];
   currentState.merged_task_ids ||= [];
@@ -831,6 +866,10 @@ export async function executeRun(
 
   let plan: TaskPlan | null = loadRunPlan(spec.cwd, spec.id) ?? null;
   let latestResult: OrchestratorResult | undefined;
+  let plannerModel: string | undefined;
+  let planDiscuss: PlanDiscussResult | null | undefined;
+  let planDiscussRoom: PlannerDiscussRoomRef | null | undefined;
+  let plannerDiagnostics: Record<string, unknown> | null | undefined;
 
   if (blockIfBudgetExhausted(spec, currentState)) {
     return { spec, state: currentState, plan, result: loadRunResult(spec.cwd, spec.id) ?? undefined };
@@ -851,15 +890,18 @@ export async function executeRun(
     console.log(
       `\n🔁 Round ${currentState.round}/${spec.max_rounds} — action: ${action}`,
     );
+    emitProgress('executing', `Round ${currentState.round}/${spec.max_rounds} — ${action}`);
 
     // ── Phase 1: Planning (first round or replan) ──
     if (action === 'execute' && !plan) {
-      currentState.status = 'planning';
-      currentState.next_action = makeNextAction(
+      setLoopPhase(
+        spec.cwd,
+        currentState,
+        'planning',
         'execute',
         'Generating plan...',
       );
-      saveRunState(spec.cwd, currentState);
+      emitProgress('planning', 'Generating plan via LLM planner...');
 
       const planning = await planGoal(spec.goal, spec.cwd);
       if (!planning.plan) {
@@ -873,11 +915,16 @@ export async function executeRun(
         currentState.final_summary =
           planning.planner_error || 'Planner failed';
         saveRunState(spec.cwd, currentState);
-        return { spec, state: currentState, plan: null };
+        return { spec, state: currentState, plan: null, planner_model: plannerModel, plan_discuss: planDiscuss, plan_discuss_room: planDiscussRoom, planner_diagnostics: plannerDiagnostics };
       }
 
       roundExtraStages = planning.extra_stage_usages;
       plan = planning.plan;
+      plannerModel = planning.planner_model;
+      planDiscuss = planning.plan_discuss;
+      planDiscussRoom = planning.plan_discuss_room;
+      plannerDiagnostics = planning.planner_diagnostics;
+      emitProgress('executing', `Plan ready: ${plan.tasks.length} tasks via ${plannerModel || 'auto'}${planDiscuss ? ` | discuss: ${planDiscuss.quality_gate}` : ''}`);
       seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
       saveRunPlan(spec.cwd, spec.id, plan);
@@ -896,8 +943,13 @@ export async function executeRun(
       }
 
       currentState.replan_count += 1;
-      currentState.status = 'replanning';
-      saveRunState(spec.cwd, currentState);
+      setLoopPhase(
+        spec.cwd,
+        currentState,
+        'replanning',
+        'replan',
+        `Replanning remaining work (attempt ${currentState.replan_count}/${spec.max_replans})...`,
+      );
 
       const failureContext = currentState.verification_results
         .filter((v) => !v.passed)
@@ -953,10 +1005,16 @@ export async function executeRun(
     let reviewResults: ReviewResult[];
 
     if (action === 'repair_task' && latestResult) {
-      currentState.status = 'repairing';
-      saveRunState(spec.cwd, currentState);
-
       const requestedTaskIds = new Set(currentState.next_action?.task_ids || []);
+      emitProgress('repairing', `Repairing ${Math.max(1, requestedTaskIds.size)} failed task(s)...`);
+      setLoopPhase(
+        spec.cwd,
+        currentState,
+        'repairing',
+        'repair_task',
+        `Repairing ${Math.max(1, requestedTaskIds.size)} failed task(s)...`,
+        [...requestedTaskIds],
+      );
       const repairTargets = new Map<string, ReviewResult>();
       for (const review of latestResult.review_results.filter((r) => !r.passed)) {
         repairTargets.set(review.taskId, review);
@@ -1019,16 +1077,29 @@ export async function executeRun(
       }
     } else {
       // Fresh execution
-      currentState.status = 'executing';
-      currentState.next_action = makeNextAction(
+      setLoopPhase(
+        spec.cwd,
+        currentState,
+        'executing',
         'execute',
-        'Dispatching tasks to workers...',
+        `Dispatching ${plan.tasks.length} task(s) to workers...`,
       );
-      saveRunState(spec.cwd, currentState);
 
+      emitProgress('executing', `Dispatching ${plan.tasks.length} task(s): ${plan.tasks.map(t => `${t.id}→${t.assigned_model}`).join(', ')}`);
       const dispatchResult = await dispatchBatch(plan, registry, undefined, { recordBudget: false });
       workerResults = dispatchResult.worker_results;
+      const succeeded = workerResults.filter(w => w.success).length;
+      emitProgress('reviewing', `Workers done: ${succeeded}/${workerResults.length} succeeded`);
 
+      setLoopPhase(
+        spec.cwd,
+        currentState,
+        'executing',
+        'execute',
+        `Reviewing ${workerResults.length} worker result(s)...`,
+        workerResults.map((worker) => worker.taskId),
+      );
+      emitProgress('reviewing', `Reviewing ${workerResults.length} worker result(s)...`);
       reviewResults = await Promise.all(
         workerResults.map((wr) => {
           const task = plan!.tasks.find((t) => t.id === wr.taskId);
@@ -1060,8 +1131,16 @@ export async function executeRun(
     ]);
 
     // ── Phase 3: Verification & Progressive Merge ──
-    currentState.status = 'verifying';
-    saveRunState(spec.cwd, currentState);
+    const reviewPassed = reviewResults.filter(r => r.passed).length;
+    emitProgress('reviewing', `Reviews: ${reviewPassed}/${reviewResults.length} passed`);
+    emitProgress('verifying', 'Running verification (build + tests)...');
+    setLoopPhase(
+      spec.cwd,
+      currentState,
+      'verifying',
+      'finalize',
+      'Running task-scoped verification...',
+    );
 
     // Step 3a: Per-worktree smoke check (build only — not full suite)
     const smokeResults: Record<string, boolean> = {};
@@ -1085,6 +1164,13 @@ export async function executeRun(
     ]);
 
     // Step 3b: Progressive merge — each passed task merges independently
+    setLoopPhase(
+      spec.cwd,
+      currentState,
+      'verifying',
+      'finalize',
+      'Merging passed tasks back to the repo...',
+    );
     const mergedTaskIds = mergePassedTasks(
       spec,
       plan,
@@ -1098,6 +1184,14 @@ export async function executeRun(
     markMergedTasks(currentState, mergedTaskIds);
 
     // Step 3c: Suite-level verification on merged codebase
+    setLoopPhase(
+      spec.cwd,
+      currentState,
+      'verifying',
+      'finalize',
+      'Running merged-code verification...',
+      mergedTaskIds,
+    );
     const suiteResults = runVerificationSuite(
       suiteScopedConditions(spec.done_conditions),
       spec.cwd,
@@ -1237,19 +1331,26 @@ export async function executeRun(
     saveRunState(spec.cwd, currentState);
   }
 
+  const finalPhase: LoopPhase = isTerminalStatus(currentState.status) ? 'done' : 'blocked';
+  emitProgress(finalPhase, currentState.final_summary || currentState.status);
+
   return {
     spec,
     state: currentState,
     plan,
     result: latestResult,
+    planner_model: plannerModel,
+    plan_discuss: planDiscuss,
+    plan_discuss_room: planDiscussRoom,
+    planner_diagnostics: plannerDiagnostics,
   };
 }
 
 // ── Convenience entry ──
 
 export async function runGoal(
-  options: CreateRunOptions,
+  options: CreateRunOptions & { onProgress?: ProgressCallback },
 ): Promise<RunExecutionResult> {
   const { spec, state } = bootstrapRun(options);
-  return executeRun(spec, state);
+  return executeRun(spec, state, options.onProgress);
 }

@@ -40,17 +40,18 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
   env.ANTHROPIC_REASONING_MODEL = canonicalModel;
   env.CLAUDE_CODE_SUBAGENT_MODEL = canonicalModel;
 
-  // GPT/Gemini/O-series need MMS gateway for protocol adaptation.
+  // Non-Claude models need protocol adaptation.
+  // GPT/Gemini/O-series always need MMS gateway.
+  // Domestic models (kimi/qwen/glm/minimax) prefer local model proxy,
+  // but fall back to MMS gateway when proxy is not running.
+  const isNonClaude = !canonicalModel.startsWith('claude-');
   const needsMmsGateway = /^(gpt-|gemini-|o[134]-)/i.test(canonicalModel);
   const mmsBaseUrl = process.env.ANTHROPIC_BASE_URL;
   const mmsToken = process.env.ANTHROPIC_AUTH_TOKEN;
   const inheritedToken = process.env.ANTHROPIC_AUTH_TOKEN || '';
 
-  // Non-Claude domestic models: route through local model proxy.
-  // Claude Code CLI lowercases model names (e.g. "MiniMax-M2.7" → "minimax-m2.7")
-  // which breaks case-sensitive provider APIs. The model proxy restores
-  // correct casing from MMS model-routes.json before forwarding.
-  const needsModelProxy = !canonicalModel.startsWith('claude-')
+  // Local model proxy handles case-restoration + protocol adaptation.
+  const needsModelProxy = isNonClaude
     && !needsMmsGateway
     && isModelProxyRunning();
 
@@ -58,6 +59,11 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${getModelProxyPort()}`;
     env.ANTHROPIC_AUTH_TOKEN = 'proxy-managed';
   } else if (needsMmsGateway && mmsBaseUrl) {
+    env.ANTHROPIC_BASE_URL = mmsBaseUrl;
+    env.ANTHROPIC_AUTH_TOKEN = mmsToken || inheritedToken;
+  } else if (isNonClaude && mmsBaseUrl) {
+    // Domestic models without model proxy: route through MMS gateway
+    // which handles protocol adaptation (bridge mode for kimi, etc.)
     env.ANTHROPIC_BASE_URL = mmsBaseUrl;
     env.ANTHROPIC_AUTH_TOKEN = mmsToken || inheritedToken;
   } else if (baseUrl) {

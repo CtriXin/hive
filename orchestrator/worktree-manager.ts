@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 
 export interface WorktreeInfo {
@@ -20,6 +21,13 @@ export interface WorktreeDiff {
 }
 
 const WORKTREE_DIR = '.claude/worktrees';
+
+function isTransientWorktreePath(filePath: string): boolean {
+  return filePath === '.ai'
+    || filePath === '.claude'
+    || filePath.startsWith('.ai/')
+    || filePath.startsWith('.claude/');
+}
 
 function getProjectRoot(cwd?: string): string {
   return execSync('git rev-parse --show-toplevel', {
@@ -66,6 +74,32 @@ export function listWorktrees(): WorktreeInfo[] {
   return worktrees;
 }
 
+function copyUntrackedFiles(repoRoot: string, worktreePath: string): void {
+  try {
+    const output = execSync(
+      'git ls-files --others --exclude-standard',
+      { cwd: repoRoot, encoding: 'utf-8' },
+    ).trim();
+    if (!output) return;
+
+    for (const relPath of output.split('\n')) {
+      if (!relPath || relPath.startsWith('.claude/') || relPath.startsWith('.ai/')) continue;
+      const src = path.join(repoRoot, relPath);
+      const dst = path.join(worktreePath, relPath);
+      try {
+        const stat = fs.statSync(src);
+        if (!stat.isFile()) continue;
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        fs.copyFileSync(src, dst);
+      } catch {
+        // Skip files that can't be copied (permissions, dirs, etc.)
+      }
+    }
+  } catch {
+    // Non-critical — worker can still function without untracked files
+  }
+}
+
 export function createWorktree(options: WorktreeCreateOptions): WorktreeInfo;
 export function createWorktree(projectRoot: string, name: string): WorktreeInfo;
 export function createWorktree(
@@ -110,6 +144,9 @@ export function createWorktree(
     throw error;
   }
 
+  // Copy untracked files into worktree so workers can see them
+  copyUntrackedFiles(cwd || process.cwd(), worktreePath);
+
   return {
     name: worktreeName,
     path: worktreePath,
@@ -142,7 +179,11 @@ export function parsePorcelainChangedFiles(output: string): string[] {
       const renameParts = rawPath.split(' -> ');
       return (renameParts.at(-1) || '').trim();
     })
-    .filter(Boolean);
+    .filter((filePath) => (
+      Boolean(filePath)
+      && !filePath.endsWith('/')
+      && !isTransientWorktreePath(filePath)
+    ));
 }
 
 export function removeWorktree(name: string, force = false): void {
@@ -204,8 +245,12 @@ export function commitAndMergeWorktree(
     const status = execSync('git status --porcelain', {
       cwd: worktreePath, encoding: 'utf-8',
     }).trim();
-    if (status) {
-      execSync('git add -A', { cwd: worktreePath, encoding: 'utf-8' });
+    const changedFiles = parsePorcelainChangedFiles(status);
+    if (changedFiles.length > 0) {
+      execSync(
+        "git add -A -- . ':(exclude).ai' ':(exclude).claude'",
+        { cwd: worktreePath, encoding: 'utf-8' },
+      );
       execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, {
         cwd: worktreePath, encoding: 'utf-8',
       });

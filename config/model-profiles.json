@@ -107,10 +107,10 @@
     "kimi-k2.5": {
       "scores": {
         "implementation": {
-          "value": 0.8732424000000001,
-          "samples": 4,
-          "effective_samples": 3.7,
-          "last_updated": "2026-04-02T03:11:46.366Z"
+          "value": 0.9977165380794948,
+          "samples": 22,
+          "effective_samples": 21.7,
+          "last_updated": "2026-04-03T02:37:18.481Z"
         },
         "review": {
           "value": 0.85,
@@ -161,10 +161,10 @@
     "glm-5-turbo": {
       "scores": {
         "implementation": {
-          "value": 0.9465208280669853,
-          "samples": 29,
-          "effective_samples": 26.45000000000001,
-          "last_updated": "2026-04-02T07:19:16.062Z"
+          "value": 0.9216483464196443,
+          "samples": 56,
+          "effective_samples": 53.30000000000001,
+          "last_updated": "2026-04-03T03:52:59.852Z"
         },
         "review": {
           "value": 0.5,
@@ -173,16 +173,16 @@
           "last_updated": null
         },
         "repair": {
-          "value": 0.6,
-          "samples": 2,
-          "effective_samples": 2,
-          "last_updated": "2026-03-24"
+          "value": 0.744,
+          "samples": 4,
+          "effective_samples": 4,
+          "last_updated": "2026-04-02T15:59:00.234Z"
         },
         "integration": {
-          "value": 0.871696672,
-          "samples": 7,
-          "effective_samples": 7.299999999999999,
-          "last_updated": "2026-04-02T03:12:47.201Z"
+          "value": 0.9695583599805864,
+          "samples": 23,
+          "effective_samples": 23.299999999999997,
+          "last_updated": "2026-04-03T03:52:59.852Z"
         },
         "spec_adherence": {
           "value": 0.8,
@@ -197,10 +197,10 @@
           "last_updated": "2026-03-24"
         },
         "turnaround_speed": {
-          "value": 0.65,
-          "samples": 2,
-          "effective_samples": 2,
-          "last_updated": "2026-03-24"
+          "value": 0.7165,
+          "samples": 4,
+          "effective_samples": 4,
+          "last_updated": "2026-04-02T15:59:00.234Z"
         }
       },
       "domain_tags": [
@@ -562,9 +562,9 @@
       "scores": {
         "implementation": {
           "value": 1,
-          "samples": 1,
-          "effective_samples": 0.85,
-          "last_updated": "2026-04-02T07:48:24.655Z"
+          "samples": 2,
+          "effective_samples": 1.85,
+          "last_updated": "2026-04-02T11:35:43.059Z"
         },
         "review": {
           "value": 0.5,

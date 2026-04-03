@@ -365,17 +365,17 @@ export async function reviewCascade(
   console.log(`\n📋 Starting review for ${workerResult.taskId}`);
 
   if (workerResult.success && workerResult.changedFiles.length === 0) {
-    console.log('    ⚠️ No-op detected: worker reported success but produced no diff');
+    console.log('    🔴 No-op detected: worker reported success but produced no diff');
     return finalizeReview({
       taskId: workerResult.taskId,
       final_stage: 'cross-review',
       passed: false,
       findings: [{
         id: 1,
-        severity: 'yellow',
+        severity: 'red',
         lens: 'orchestrator',
         file: '(no files changed)',
-        issue: 'Worker reported success but produced no file changes. Treat this as a no-op and require repair or replan.',
+        issue: 'Worker reported success but produced no file changes — zero output is a hard failure.',
         decision: 'flag',
         decision_reason: 'Empty diff is not accepted as a completed task.',
       }],

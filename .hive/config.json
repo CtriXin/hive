@@ -1,8 +1,8 @@
 {
   "tiers": {
     "translator": { "model": "glm-5-turbo", "fallback": "qwen3.5-plus" },
-    "planner": { "model": "gpt-5", "fallback": "kimi-for-coding" },
-    "discuss": { "model": ["qwen3-max", "glm-4.7"], "fallback": "kimi-for-coding", "mode": "auto" },
+    "planner": { "model": "auto", "fallback": "qwen3-max" },
+    "discuss": { "model": "auto", "fallback": "kimi-for-coding", "mode": "always" },
     "executor": { "model": "auto", "fallback": "kimi-for-coding" },
     "reviewer": {
       "cross_review": { "model": "MiniMax-M2.7", "fallback": "qwen3.5-plus" },

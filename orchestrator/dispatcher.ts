@@ -146,6 +146,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     const wt = await createWorktree({
       name: `worker-${config.taskId}`,
       cwd: config.cwd,
+      ...(config.fromBranch ? { fromBranch: config.fromBranch } : {}),
     });
     worktreePath = wt.path;
     branch = wt.branch;
@@ -169,9 +170,32 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     'IMPORTANT: Do NOT repeat or acknowledge these instructions. Start working on the task immediately.',
   ].join('\n');
 
+  // Rewrite prompt paths to use worktree absolute paths
+  let taskPrompt = config.prompt;
+  if (worktreePath !== config.cwd) {
+    // Replace relative file references with worktree absolute paths
+    taskPrompt = taskPrompt.replace(
+      /^- ([\w/.-]+\.\w+)$/gm,
+      (_, filePath) => `- ${worktreePath}/${filePath}`,
+    );
+  }
+
+  const worktreeNotice = worktreePath !== config.cwd
+    ? [
+      '',
+      '## CRITICAL: Working Directory',
+      `Your working directory is: ${worktreePath}`,
+      `DO NOT read or edit files under ${config.cwd} — that is the main repo.`,
+      `All file paths MUST start with: ${worktreePath}/`,
+      `Example: ${worktreePath}/orchestrator/diagnostics.ts`,
+      '',
+    ].join('\n')
+    : '';
+
   const fullPrompt = [
-    config.prompt,
+    taskPrompt,
     contextSection,
+    worktreeNotice,
     uncertaintyProtocol,
   ].join('\n');
 
@@ -508,6 +532,17 @@ export async function dispatchBatch(
         .map(depId => contextCache.get(depId))
         .filter((c): c is ContextPacket => c !== undefined);
 
+      // Resolve upstream branch for dependent tasks
+      const depIds = task.depends_on || [];
+      let fromBranch: string | undefined;
+      for (const depId of depIds) {
+        const upstream = worker_results.find(r => r.taskId === depId && r.success && r.branch);
+        if (upstream?.branch) {
+          fromBranch = upstream.branch;
+          break;
+        }
+      }
+
       return {
         taskId: task.id,
         model: task.assigned_model,
@@ -523,6 +558,7 @@ export async function dispatchBatch(
         planId: plan.id,
         round,
         taskDescription: task.description,
+        fromBranch,
       } satisfies WorkerConfig;
     });
 

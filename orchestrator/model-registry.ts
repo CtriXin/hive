@@ -121,7 +121,14 @@ export class ModelRegistry {
     if (!mmsTable) return;
 
     for (const [modelId, route] of Object.entries(mmsTable.routes)) {
-      if (this.models.has(modelId) || modelId.startsWith('_')) continue;
+      if (modelId.startsWith('_')) continue;
+
+      const existing = this.models.get(modelId);
+      if (existing) {
+        // Inject MMS priority into existing model (from model-capabilities.json)
+        existing.mms_priority = route.priority ?? 0;
+        continue;
+      }
 
       const family = guessProviderFamily(modelId, route.provider_id);
       this.models.set(modelId, {
@@ -131,6 +138,7 @@ export class ModelRegistry {
         context_window: family.context_window,
         cost_per_1k: family.cost_per_1k,
         speed_tier: 'balanced',
+        mms_priority: route.priority ?? 0,
       });
     }
   }
@@ -219,12 +227,12 @@ export class ModelRegistry {
       .map(([modelId, model]) => {
         const profile = this.profiles.profiles[modelId];
         const blocked = getHardFilterFailures(ctx, modelId, model, profile, fingerprint);
-        if (blocked.length > 0) return { model: modelId, score: 0 };
+        if (blocked.length > 0) return { model: modelId, score: 0, priority: model.mms_priority ?? 0 };
         const scored = computeWeightedScore(ctx, modelId, model, profile, fingerprint);
-        return { model: modelId, score: scored.final_score };
+        return { model: modelId, score: scored.final_score, priority: model.mms_priority ?? 0 };
       })
       .filter((r) => r.score > 0)
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => b.score - a.score || b.priority - a.priority);
 
     return ranked[0]?.model;
   }

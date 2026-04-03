@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod';
 import { execSync } from 'child_process';
-import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult, StageTokenUsage, TokenBreakdown } from '../orchestrator/types.js';
+import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult, StageTokenUsage, PlannerDiscussRoomRef } from '../orchestrator/types.js';
 import type { DiscussPlanDiag } from '../orchestrator/discuss-bridge.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from '../orchestrator/planner.js';
 import { translateToEnglish } from '../orchestrator/translator.js';
@@ -16,10 +16,13 @@ import { getBudgetStatus, getBudgetWarning, loadConfig, recordSpending, resolveT
 import { saveRoundScore } from '../orchestrator/score-history.js';
 import { saveRunPlan, saveRunResult, saveRunSpec, saveRunState } from '../orchestrator/run-store.js';
 import { loadCompactPacket, loadLatestCompactRestore, loadWorkspaceCompactPacket } from '../orchestrator/compact-packet.js';
+import { executePlannerDiscuss } from '../orchestrator/planner-runner.js';
 import {
+  extractRunnableTaskPlan,
   LATEST_PLAN_ARTIFACT,
   relPath,
-  resolveLatestPlanArtifact,
+  resolvePreferredLatestPlanArtifact,
+  saveLatestPlanPointer,
   summarizeDispatchCard,
   summarizeExecutionCard,
   summarizePlanCard,
@@ -264,17 +267,54 @@ async function runClaudePlanner(prompt: string, cwd: string, modelId: string): P
   };
 }
 
+// 工具 0: capture_goal — 写长需求到 stable artifact，plan_tasks 可无参读取
+server.tool(
+  'capture_goal',
+  'Save a goal/brief to .ai/mcp/latest-goal.md so plan_tasks can read it without long inline text.',
+  {
+    goal: z.string().describe('Goal text (Chinese or English)'),
+    cwd: z.string().describe('Working directory').optional(),
+  },
+  async ({ goal, cwd }) => {
+    const effectiveCwd = cwd || process.cwd();
+    const goalDir = path.join(effectiveCwd, '.ai', 'mcp');
+    if (!fs.existsSync(goalDir)) fs.mkdirSync(goalDir, { recursive: true });
+    const goalPath = path.join(goalDir, 'latest-goal.md');
+    fs.writeFileSync(goalPath, goal, 'utf-8');
+    return { content: [{ type: 'text', text: `Goal saved to .ai/mcp/latest-goal.md (${goal.length} chars). Run plan_tasks to plan.` }] };
+  },
+);
+
 // 工具 1: plan_tasks - 接受中文或英文输入
 server.tool(
   'plan_tasks',
   'Plan tasks from a goal.',
   {
-    goal: z.string().describe('Goal in Chinese or English'),
+    goal: z.string().describe('Goal in Chinese or English. Omit to read from .ai/mcp/latest-goal.md').optional(),
+    goal_path: z.string().describe('Path to a goal/brief file (alternative to inline goal)').optional(),
     cwd: z.string().describe('Working directory').optional(),
   },
-  async ({ goal, cwd }) => {
+  async ({ goal: goalArg, goal_path, cwd }) => {
     const registry = new ModelRegistry();
     const effectiveCwd = cwd || process.cwd();
+
+    // Resolve goal: explicit arg > goal_path > latest-goal.md
+    let goal: string;
+    if (goalArg) {
+      goal = goalArg;
+    } else if (goal_path) {
+      const absPath = path.isAbsolute(goal_path) ? goal_path : path.join(effectiveCwd, goal_path);
+      if (!fs.existsSync(absPath)) {
+        return { content: [{ type: 'text', text: `Goal file not found: ${goal_path}` }], isError: true };
+      }
+      goal = fs.readFileSync(absPath, 'utf-8').trim();
+    } else {
+      const defaultPath = path.join(effectiveCwd, '.ai', 'mcp', 'latest-goal.md');
+      if (!fs.existsSync(defaultPath)) {
+        return { content: [{ type: 'text', text: 'No goal provided. Pass goal, goal_path, or run capture_goal first.' }], isError: true };
+      }
+      goal = fs.readFileSync(defaultPath, 'utf-8').trim();
+    }
     const config = loadConfig(effectiveCwd);
     const plannerModel = resolveTierModel(
       config.tiers.planner.model,
@@ -336,6 +376,7 @@ server.tool(
     // Plan discuss (when configured)
     let planDiscussResult: PlanDiscussResult | null = null;
     let discussDiag: DiscussPlanDiag | null = null;
+    let planDiscussRoom: PlannerDiscussRoomRef | null = null;
     const discussMode = config.tiers.discuss?.mode || 'auto';
     let discussSkipReason: string | null = null;
     if (!plan) {
@@ -343,16 +384,23 @@ server.tool(
     } else if (discussMode !== 'always') {
       discussSkipReason = `discuss.mode="${discussMode}" (need "always")`;
     } else {
-      const { discussPlan } = await import('../orchestrator/discuss-bridge.js');
-      const dr = await discussPlan(plan, plannerModel, config, registry);
-      planDiscussResult = dr.result;
-      discussDiag = dr.diag;
+      const discussExecution = await executePlannerDiscuss(
+        plan,
+        plannerModel,
+        config as any,
+        registry,
+        effectiveCwd,
+      );
+      planDiscussResult = discussExecution.plan_discuss;
+      discussDiag = discussExecution.discuss_diag;
+      planDiscussRoom = discussExecution.plan_discuss_room;
     }
 
     const budgetWarning = getBudgetWarning(config);
     const artifactPayload = {
       plan,
       plan_discuss: planDiscussResult,
+      plan_discuss_room: planDiscussRoom || undefined,
       discuss_debug: planDiscussResult ? undefined : {
         mode: discussMode,
         skip_reason: discussSkipReason,
@@ -377,6 +425,9 @@ server.tool(
       LATEST_PLAN_ARTIFACT,
       artifactPayload,
     );
+    if (plan) {
+      saveLatestPlanPointer(effectiveCwd, stablePlanPath);
+    }
     const summaryText = plan
       ? summarizePlanCard(plan, {
           artifactPath,
@@ -384,6 +435,7 @@ server.tool(
           stablePlanPath,
           translationModel: translationResult?.translator_model,
           discussQualityGate: planDiscussResult?.quality_gate,
+          discussRoom: planDiscussRoom,
           budgetWarning,
         })
       : [
@@ -415,13 +467,34 @@ server.tool(
     const effectiveCwd = process.cwd();
     let plan: TaskPlan;
     if (plan_json) {
-      plan = JSON.parse(plan_json);
+      const parsed = JSON.parse(plan_json);
+      const runnablePlan = extractRunnableTaskPlan(parsed);
+      if (!runnablePlan) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'execute_plan received plan_json, but it does not contain a runnable plan.',
+          }],
+          isError: true,
+        };
+      }
+      plan = runnablePlan;
     } else if (plan_path) {
       const raw = fs.readFileSync(path.resolve(effectiveCwd, plan_path), 'utf-8');
       const parsed = JSON.parse(raw);
-      plan = parsed.plan ? parsed.plan as TaskPlan : parsed as TaskPlan;
+      const runnablePlan = extractRunnableTaskPlan(parsed);
+      if (!runnablePlan) {
+        return {
+          content: [{
+            type: 'text',
+            text: `execute_plan found ${plan_path}, but it does not contain a runnable plan. Re-run plan_tasks first.`,
+          }],
+          isError: true,
+        };
+      }
+      plan = runnablePlan;
     } else {
-      const latestPlanPath = resolveLatestPlanArtifact(effectiveCwd);
+      const latestPlanPath = resolvePreferredLatestPlanArtifact(effectiveCwd);
       if (!latestPlanPath) {
         return {
           content: [{
@@ -433,7 +506,17 @@ server.tool(
       }
       const raw = fs.readFileSync(latestPlanPath, 'utf-8');
       const parsed = JSON.parse(raw);
-      plan = parsed.plan ? parsed.plan as TaskPlan : parsed as TaskPlan;
+      const runnablePlan = extractRunnableTaskPlan(parsed);
+      if (!runnablePlan) {
+        return {
+          content: [{
+            type: 'text',
+            text: `execute_plan found .ai/mcp/${LATEST_PLAN_ARTIFACT}, but it does not contain a runnable plan. Re-run plan_tasks first.`,
+          }],
+          isError: true,
+        };
+      }
+      plan = runnablePlan;
     }
     const registry = new ModelRegistry();
     const config = loadConfig(plan.cwd);
@@ -1053,8 +1136,11 @@ server.tool(
       const execution = await runGoal({
         goal, cwd: effectiveCwd, mode,
         maxRounds: max_rounds, allowAutoMerge: auto_merge,
+        onProgress: (stage, detail) => {
+          server.sendLoggingMessage({ level: 'info', logger: 'hive', data: `[${stage}] ${detail}` });
+        },
       });
-      const { spec, state, plan } = execution;
+      const { spec, state, plan, planner_model, plan_discuss } = execution;
       const taskSummary = plan
         ? plan.tasks.map(t => `- ${t.id}: ${t.description.slice(0, 80)} [${t.assigned_model}]${t.verification_profile ? ` {rule:${t.verification_profile}}` : ''}`).join('\n')
         : '(no plan)';
@@ -1071,7 +1157,10 @@ server.tool(
       let text = `## Run Complete: ${spec.id}\n\n`;
       text += `**Status**: ${state.status}\n`;
       text += `**Rounds**: ${state.round}/${spec.max_rounds}\n`;
-      text += `**Mode**: ${spec.mode}\n\n`;
+      text += `**Mode**: ${spec.mode}\n`;
+      if (planner_model) text += `**Planner**: ${planner_model}\n`;
+      if (plan_discuss) text += `**Discuss**: ${plan_discuss.quality_gate} — ${plan_discuss.overall_assessment?.slice(0, 150)}\n`;
+      text += '\n';
       text += `### Tasks\n${taskSummary}\n\n`;
       if (verificationSummary) text += `### Verification\n${verificationSummary}\n\n`;
       if (taskVerificationSummary) text += `### Task Verification\n${taskVerificationSummary}\n\n`;
@@ -1150,9 +1239,16 @@ server.tool(
       }
       const plan = loadRunPlan(effectiveCwd, run_id);
       const result = loadRunResult(effectiveCwd, run_id);
+      const { readLoopProgress } = await import('../orchestrator/loop-progress-store.js');
+      const progress = readLoopProgress(effectiveCwd, run_id);
       let text = `## Run: ${run_id}\n\n`;
       text += `**Status**: ${state.status}\n**Goal**: ${spec.goal}\n**Mode**: ${spec.mode}\n`;
       text += `**Rounds**: ${state.round}/${spec.max_rounds}\n`;
+      if (progress) {
+        text += `**Phase**: ${progress.phase} — ${progress.reason}\n`;
+        if (progress.planner_model) text += `**Planner**: ${progress.planner_model}\n`;
+        if (progress.focus_task_id) text += `**Focus**: ${progress.focus_task_id}${progress.focus_model ? ` (${progress.focus_model})` : ''}\n`;
+      }
       text += `**Plan tasks**: ${plan?.tasks.length || 0}\n`;
       text += `**Completed**: ${state.completed_task_ids.join(', ') || 'none'}\n`;
       text += `**Failed**: ${state.failed_task_ids.join(', ') || 'none'}\n`;

@@ -90,6 +90,7 @@ export interface WorkerConfig {
   planId?: string;
   round?: number;
   taskDescription?: string;
+  fromBranch?: string;
 }
 
 export interface WorkerResult {
@@ -537,6 +538,98 @@ export interface ReportOptions {
   callback?: (report: string) => void;
 }
 
+// ── Collaboration Config (Phase 1: planner discuss transport) ──
+
+export type PlanDiscussTransport = 'local' | 'agentbus';
+
+export interface PlanningBriefTask {
+  id: string;
+  complexity: Complexity;
+  category: string;
+  description: string;
+  assigned_model: string;
+  depends_on: string[];
+  estimated_files: string[];
+}
+
+export interface PlanningBrief {
+  type: 'planning-brief';
+  version: 1;
+  created_at: string;
+  goal: string;
+  planner_model: string;
+  cwd_hint: string;
+  task_count: number;
+  tasks: PlanningBriefTask[];
+  execution_order: string[][];
+  context_flow: Record<string, string[]>;
+  review_focus: string;
+  questions: string[];
+}
+
+export interface CollabConfig {
+  plan_discuss_transport: PlanDiscussTransport;
+  plan_discuss_timeout_ms: number;
+  plan_discuss_min_replies: number;
+}
+
+export type CollabRoomKind = 'plan';
+
+export type CollabCardStatus =
+  | 'open'
+  | 'collecting'
+  | 'synthesizing'
+  | 'closed'
+  | 'fallback';
+
+export interface CollabCard {
+  room_id: string;
+  room_kind: CollabRoomKind;
+  status: CollabCardStatus;
+  replies: number;
+  last_reply_at?: string;
+  join_hint?: string;
+  focus_task_id?: string;
+  next: string;
+}
+
+export interface CollabLifecycleEvent {
+  type:
+    | 'room:opened'
+    | 'reply:arrived'
+    | 'synthesis:started'
+    | 'synthesis:done'
+    | 'fallback:local'
+    | 'room:closed';
+  room_id: string;
+  room_kind: CollabRoomKind;
+  at: string;
+  reply_count?: number;
+  focus_task_id?: string;
+  note?: string;
+}
+
+export interface CollabStatusSnapshot {
+  card: CollabCard;
+  recent_events: CollabLifecycleEvent[];
+}
+
+export interface PlannerDiscussReplyMetadata {
+  participant_id: string;
+  response_time_ms: number;
+  content_length: number;
+}
+
+export interface PlannerDiscussRoomRef {
+  room_id: string;
+  transport: 'agentbus';
+  reply_count: number;
+  timeout_ms: number;
+  join_hint?: string;
+  created_at: string;
+  reply_metadata?: PlannerDiscussReplyMetadata[];
+}
+
 // ── Discussion (SDK-based) ──
 
 export interface DiscussionReply {
@@ -620,6 +713,8 @@ export interface HiveConfig {
   providers_path?: string;
   // Per-tier model configuration
   tiers: TiersConfig;
+  // Collaboration config (Phase 1: planner discuss transport)
+  collab?: CollabConfig;
 }
 
 // ── Planning Input & Runtime Hooks (hiveshell) ──

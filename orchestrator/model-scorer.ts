@@ -42,6 +42,8 @@ const ROLE_TO_SCORE_KEY: RoleScoreKeyMap = {
 };
 
 const EXPLORATION_BONUS_SCALE = 0.03;
+const PRIORITY_BONUS_SCALE = 0.03;
+const PRIORITY_NORMALIZE_MAX = 150;
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -127,6 +129,7 @@ export function computeWeightedScore(
   const averageSamples = totalWeight > 0 ? totalSamples / totalWeight : 0;
   const confidence = getConfidenceFactor(averageSamples, ctx.policy);
   const domainBonus = hasDomainOverlap(effectiveProfile.domain_tags, fingerprint.domains) * 0.05;
+  const priorityBonus = clamp((model.mms_priority ?? 0) / PRIORITY_NORMALIZE_MAX, 0, 1) * PRIORITY_BONUS_SCALE;
   const roleSamples = getEffectiveScore(effectiveProfile, roleKey, ctx.policy).samples;
   const totalRoleSamples = getTotalRoleSamples(ctx, roleKey);
   const explorationBonus = computeExplorationBonus(roleSamples, totalRoleSamples);
@@ -135,7 +138,7 @@ export function computeWeightedScore(
   return {
     model: modelId,
     final_score: clamp(
-      (weightedScore + domainBonus) * confidence + explorationBonus * explorationConfidence,
+      (weightedScore + domainBonus + priorityBonus) * confidence + explorationBonus * explorationConfidence,
       0, 1,
     ),
     confidence,
@@ -146,6 +149,7 @@ export function computeWeightedScore(
       `weighted=${weightedScore.toFixed(2)}`,
       `confidence=${confidence.toFixed(2)}`,
       `domain_bonus=${domainBonus.toFixed(2)}`,
+      `priority_bonus=${priorityBonus.toFixed(3)}`,
       `exploration_bonus=${explorationBonus.toFixed(2)}`,
     ],
   };
