@@ -215,6 +215,7 @@ describe('hiveshell-dashboard', () => {
             members: ['kimi-k2.5', 'MiniMax-M2.5'],
             disagreement_flags: ['conclusion_opposite'],
             synthesized_by: 'gpt-5.4',
+            synthesis_strategy: 'model',
           },
         },
       ],

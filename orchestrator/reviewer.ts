@@ -148,7 +148,11 @@ interface SynthesizedAuthorityReview {
   findings: ReviewFinding[];
   synthesisReason: string;
   synthesizedBy?: string;
+  attemptedBy?: string;
+  strategy?: 'model' | 'heuristic';
   tokenUsage?: { input: number; output: number };
+  failedClosed?: boolean;
+  infraFailure?: boolean;
 }
 
 function countFindingsBySeverity(findings: ReviewFinding[]): Record<FindingSeverity, number> {
@@ -253,6 +257,7 @@ function heuristicSynthesizePairReviews(
     verdict: passed ? 'PASS' : 'REJECT',
     findings,
     synthesisReason,
+    strategy: 'heuristic',
   };
 }
 
@@ -291,6 +296,25 @@ function parseSynthesizedAuthorityFindings(
       decision_reason: rationale,
     };
   });
+}
+
+function buildFailClosedSynthesisResult(
+  message: string,
+  attemptedBy: string | undefined,
+  tokenUsage?: { input: number; output: number },
+): SynthesizedAuthorityReview {
+  const findings: ReviewFinding[] = [];
+  findings.push(buildSynthesizedFinding(findings, message, 'flag', 'red'));
+  return {
+    passed: false,
+    verdict: 'BLOCKED',
+    findings,
+    synthesisReason: message,
+    attemptedBy,
+    tokenUsage,
+    failedClosed: true,
+    infraFailure: looksLikeInfrastructureFailure(message),
+  };
 }
 
 async function runAuthoritySynthesis(
@@ -399,6 +423,10 @@ Rules:
         'final_review',
       );
     } catch (fallbackErr: any) {
+      if (policy.synthesis_failure_policy === 'fail_closed') {
+        const message = `Review failed: Authority synthesis failed under fail_closed policy: ${fallbackErr.message?.slice(0, 100) || 'unknown error'}`;
+        return buildFailClosedSynthesisResult(message, synthesisModel);
+      }
       console.warn(`    ⚠️ Authority synthesis fallback to heuristic: ${fallbackErr.message?.slice(0, 100)}`);
       return heuristic;
     }
@@ -429,11 +457,20 @@ Rules:
       findings,
       synthesisReason: rationale,
       synthesizedBy: synthesisModel,
+      strategy: 'model',
       tokenUsage: qr.tokenUsage,
     };
   } catch (err: any) {
+    if (policy.synthesis_failure_policy === 'fail_closed') {
+      const message = `Review failed: Authority synthesis parse failed under fail_closed policy: ${err.message?.slice(0, 100) || 'invalid response'}`;
+      return buildFailClosedSynthesisResult(message, synthesisModel, qr?.tokenUsage);
+    }
     console.warn(`    ⚠️ Authority synthesis parse failed, falling back to heuristic: ${err.message?.slice(0, 100)}`);
-    return heuristic;
+    return {
+      ...heuristic,
+      attemptedBy: synthesisModel,
+      tokenUsage: qr?.tokenUsage,
+    };
   }
 }
 
@@ -961,10 +998,11 @@ async function runAuthorityReview(
         hiveConfig,
       )
     : null;
-  if (synthesis?.tokenUsage && synthesis.synthesizedBy) {
+  const synthesisStageModel = synthesis?.synthesizedBy || synthesis?.attemptedBy;
+  if (synthesis?.tokenUsage && synthesisStageModel) {
     tokenStages.push({
       stage: `authority-synthesis:${workerResult.taskId}`,
-      model: synthesis.synthesizedBy,
+      model: synthesisStageModel,
       input_tokens: synthesis.tokenUsage.input,
       output_tokens: synthesis.tokenUsage.output,
     });
@@ -1003,9 +1041,14 @@ async function runAuthorityReview(
         members: [primaryModel, challengerModel],
         disagreement_flags: disagreement.flags,
         synthesized_by: synthesis?.synthesizedBy,
+        synthesis_strategy: synthesis?.strategy,
       },
     },
     tokenStages,
+    {
+      skipScoreUpdate: synthesis?.failedClosed,
+      infraFailure: synthesis?.infraFailure,
+    },
   );
 }
 

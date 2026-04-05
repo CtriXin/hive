@@ -42,6 +42,7 @@ describe('reporter authority output', () => {
             members: ['kimi-k2.5', 'MiniMax-M2.5'],
             disagreement_flags: ['conclusion_opposite'],
             synthesized_by: 'gpt-5.4',
+            synthesis_strategy: 'model',
           },
         },
       ],
@@ -67,5 +68,52 @@ describe('reporter authority output', () => {
     expect(report).toContain('members=kimi-k2.5+MiniMax-M2.5');
     expect(report).toContain('synth=gpt-5.4');
     expect(report).toContain('disagreement=conclusion_opposite');
+  });
+
+  it('shows heuristic synthesis fallback in summary report', async () => {
+    const result: OrchestratorResult = {
+      plan: {
+        id: 'plan-2',
+        goal: 'demo',
+        tasks: [],
+        execution_order: [],
+      },
+      worker_results: [],
+      review_results: [
+        {
+          taskId: 'task-b',
+          final_stage: 'cross-review',
+          passed: false,
+          findings: [],
+          iterations: 2,
+          duration_ms: 120,
+          verdict: 'REJECT',
+          authority: {
+            source: 'authority-layer',
+            mode: 'pair',
+            members: ['kimi-k2.5', 'MiniMax-M2.5'],
+            disagreement_flags: ['conclusion_opposite'],
+            synthesis_strategy: 'heuristic',
+          },
+        },
+      ],
+      score_updates: [],
+      total_duration_ms: 2000,
+      cost_estimate: {
+        opus_tokens: 0,
+        sonnet_tokens: 0,
+        haiku_tokens: 0,
+        domestic_tokens: 100,
+        estimated_cost_usd: 0.01,
+      },
+    };
+
+    const report = await reportResults(result, 'gpt-5.4', 'openai', {
+      language: 'zh',
+      format: 'summary',
+      target: 'stdout',
+    });
+
+    expect(report).toContain('synth=heuristic');
   });
 });

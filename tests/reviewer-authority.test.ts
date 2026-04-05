@@ -4,20 +4,23 @@ import type { SubTask, TaskPlan, WorkerResult } from '../orchestrator/types.js';
 
 const queryModelTextMock = vi.fn();
 const noopUpdateScore = vi.fn();
+const defaultAuthorityPolicy = {
+  enabled: true,
+  default_mode: 'single',
+  max_models: 2,
+  primary_candidates: ['kimi-k2.5', 'MiniMax-M2.5'],
+  fallback_order: ['kimi-k2.5', 'MiniMax-M2.5'],
+  escalate_on: ['low_confidence', 'failed_review', 'disagreement'],
+  low_confidence_threshold: 0.75,
+  timeout_ms: 30000,
+  partial_result_policy: 'proceed_if_min_met',
+  synthesizer: 'gpt-5.4',
+  synthesis_failure_policy: 'fail_closed',
+} as const;
+let authorityPolicyMock = { ...defaultAuthorityPolicy };
 
 vi.mock('../orchestrator/authority-policy.js', () => ({
-  loadReviewAuthorityPolicy: () => ({
-    enabled: true,
-    default_mode: 'single',
-    max_models: 2,
-    primary_candidates: ['kimi-k2.5', 'MiniMax-M2.5'],
-    fallback_order: ['kimi-k2.5', 'MiniMax-M2.5'],
-    escalate_on: ['low_confidence', 'failed_review', 'disagreement'],
-    low_confidence_threshold: 0.75,
-    timeout_ms: 30000,
-    partial_result_policy: 'proceed_if_min_met',
-    synthesizer: 'gpt-5.4',
-  }),
+  loadReviewAuthorityPolicy: () => authorityPolicyMock,
 }));
 
 vi.mock('../orchestrator/hive-config.js', () => ({
@@ -66,6 +69,7 @@ describe('reviewer authority path', () => {
   beforeEach(() => {
     queryModelTextMock.mockReset();
     noopUpdateScore.mockReset();
+    authorityPolicyMock = { ...defaultAuthorityPolicy };
     vi.spyOn(ModelRegistry.prototype, 'updateScore').mockImplementation(noopUpdateScore);
   });
 
@@ -146,6 +150,7 @@ describe('reviewer authority path', () => {
     expect(result.authority?.mode).toBe('pair');
     expect(result.authority?.members.length).toBe(2);
     expect(result.authority?.synthesized_by).toBe('gpt-5.4');
+    expect(result.authority?.synthesis_strategy).toBe('model');
     expect(result.authority?.disagreement_flags).toContain('conclusion_opposite');
     expect(result.passed).toBe(false);
     expect(result.findings.at(-1)?.issue).toContain('gpt-5.4 synthesis');
@@ -221,6 +226,164 @@ describe('reviewer authority path', () => {
     expect(result.passed).toBe(true);
     expect(result.verdict).toBe('PASS');
     expect(result.authority?.synthesized_by).toBe('gpt-5.4');
+    expect(result.authority?.synthesis_strategy).toBe('model');
     expect(result.findings.at(-1)?.issue).toContain('higher-confidence pass accepted');
+  });
+
+  it('marks heuristic fallback honestly when synthesis model output is unusable', async () => {
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      synthesis_failure_policy: 'heuristic_fallback',
+    };
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: true,
+          confidence: 0.61,
+          flagged_issues: [],
+          summary: 'primary review',
+        }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: false,
+          confidence: 0.8,
+          flagged_issues: [
+            { severity: 'red', file: 'src/app.ts:10', description: 'must fix' },
+          ],
+          summary: 'challenger review',
+        }),
+        tokenUsage: { input: 12, output: 6 },
+      })
+      .mockResolvedValueOnce({
+        text: 'not-json',
+        tokenUsage: { input: 8, output: 4 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-c',
+      description: 'Fallback review',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-c',
+      goal: 'test synthesis fallback',
+      tasks: [task],
+      execution_order: [['task-c']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-c',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/authority-test',
+      branch: 'worker-task-c',
+      sessionId: 'worker-task-c',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.passed).toBe(false);
+    expect(result.authority?.synthesized_by).toBeUndefined();
+    expect(result.authority?.synthesis_strategy).toBe('heuristic');
+    expect(result.findings.at(-1)?.issue).toContain('heuristic synthesis');
+    expect(result.token_stages?.some((stage) =>
+      stage.stage === 'authority-synthesis:task-c'
+      && stage.model === 'gpt-5.4'
+      && stage.input_tokens === 8
+      && stage.output_tokens === 4,
+    )).toBe(true);
+  });
+
+  it('fails closed when synthesis output is unusable under fail_closed policy', async () => {
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: true,
+          confidence: 0.61,
+          flagged_issues: [],
+          summary: 'primary review',
+        }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: false,
+          confidence: 0.8,
+          flagged_issues: [
+            { severity: 'red', file: 'src/app.ts:10', description: 'must fix' },
+          ],
+          summary: 'challenger review',
+        }),
+        tokenUsage: { input: 12, output: 6 },
+      })
+      .mockResolvedValueOnce({
+        text: 'not-json',
+        tokenUsage: { input: 8, output: 4 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-d',
+      description: 'Fail closed review',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-d',
+      goal: 'test synthesis fail closed',
+      tasks: [task],
+      execution_order: [['task-d']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-d',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/authority-test',
+      branch: 'worker-task-d',
+      sessionId: 'worker-task-d',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.passed).toBe(false);
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.authority?.synthesized_by).toBeUndefined();
+    expect(result.authority?.synthesis_strategy).toBeUndefined();
+    expect(result.findings[0]?.issue).toContain('fail_closed policy');
+    expect(result.findings[0]?.severity).toBe('red');
+    expect(result.token_stages?.some((stage) =>
+      stage.stage === 'authority-synthesis:task-d'
+      && stage.model === 'gpt-5.4'
+      && stage.input_tokens === 8
+      && stage.output_tokens === 4,
+    )).toBe(true);
+    expect(noopUpdateScore).not.toHaveBeenCalled();
   });
 });

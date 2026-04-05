@@ -129,7 +129,7 @@ function trimTail(text: string, limit = 4000): string {
   return text.length <= limit ? text : text.slice(-limit);
 }
 
-function summarizeAuthorityReview(review: ReviewResult): string {
+export function summarizeAuthorityReview(review: ReviewResult): string {
   const authority = review.authority;
   if (!authority) {
     return review.passed
@@ -146,6 +146,8 @@ function summarizeAuthorityReview(review: ReviewResult): string {
   }
   if (authority.synthesized_by) {
     parts.push(`synth=${authority.synthesized_by}`);
+  } else if (authority.synthesis_strategy === 'heuristic') {
+    parts.push('synth=heuristic');
   }
   if (authority.disagreement_flags?.length) {
     parts.push(`disagreement=${authority.disagreement_flags.join(',')}`);

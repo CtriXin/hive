@@ -47,6 +47,7 @@ export async function reportResults(
       authority_source: r.authority?.source,
       disagreement_flags: r.authority?.disagreement_flags || [],
       synthesized_by: r.authority?.synthesized_by,
+      synthesis_strategy: r.authority?.synthesis_strategy,
     })),
     cost: result.cost_estimate,
     score_updates: result.score_updates,
@@ -103,6 +104,7 @@ function formatLocalReport(summary: any): string {
       authorityBits.push(`members=${r.authority_members.join('+')}`);
     }
     if (r.synthesized_by) authorityBits.push(`synth=${r.synthesized_by}`);
+    else if (r.synthesis_strategy === 'heuristic') authorityBits.push('synth=heuristic');
     if (Array.isArray(r.disagreement_flags) && r.disagreement_flags.length > 0) {
       authorityBits.push(`disagreement=${r.disagreement_flags.join(',')}`);
     }

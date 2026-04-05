@@ -91,6 +91,7 @@ CR0 needs one authoritative place for:
 - `partial_result_policy`
 - `escalate_on`
 - `synthesizer`
+- `synthesis_failure_policy`
 
 Whether this lives inside `review-policy.json` or a new `authority-policy.json` is an implementation choice, but there must be only one source of truth for authority escalation semantics.
 
@@ -187,6 +188,13 @@ CR0 is done when all of these are true:
 4. the synthesizer model can synthesize the final result when needed
 5. deterministic verification still wins over model opinion
 6. disabling the feature cleanly falls back to the existing review path
+
+Observability rule:
+
+- successful synthesis writes `authority.synthesized_by`
+- synthesis-attempted-but-heuristic-fallback writes `authority.synthesis_strategy=heuristic`
+- CR0 must not label heuristic merge as a completed model synthesis pass
+- default policy is `fail_closed`; heuristic fallback is opt-in
 
 ## Blockers
 
