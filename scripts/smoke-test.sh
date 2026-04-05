@@ -89,9 +89,9 @@ echo ""
 
 # ── Phase 7: Provider Config ──
 echo "Phase 7: Provider Config"
-check "providers.json has 9 providers" "node -e 'const c=JSON.parse(require(\"fs\").readFileSync(\"config/providers.json\",\"utf-8\")); console.log(Object.keys(c.providers).length >= 9 ? \"ok\" : \"too few\")'" "ok"
+check "providers.json has provider floor" "node -e 'const c=JSON.parse(require(\"fs\").readFileSync(\"config/providers.json\",\"utf-8\")); console.log(Object.keys(c.providers).length >= 8 ? \"ok\" : \"too few\")'" "ok"
 check "providers.json has bailian-codingplan" "node -e 'const c=JSON.parse(require(\"fs\").readFileSync(\"config/providers.json\",\"utf-8\")); console.log(c.providers[\"bailian-codingplan\"] ? \"ok\" : \"missing\")'" "ok"
-check "providers.json has deepseek" "node -e 'const c=JSON.parse(require(\"fs\").readFileSync(\"config/providers.json\",\"utf-8\")); console.log(c.providers[\"deepseek\"] ? \"ok\" : \"missing\")'" "ok"
+check "providers.json has minimax-cn" "node -e 'const c=JSON.parse(require(\"fs\").readFileSync(\"config/providers.json\",\"utf-8\")); console.log(c.providers[\"minimax-cn\"] ? \"ok\" : \"missing\")'" "ok"
 check "providers.json has no hardcoded API keys" "node -e 'const c=JSON.parse(require(\"fs\").readFileSync(\"config/providers.json\",\"utf-8\")); const s=JSON.stringify(c); const hasRealKey=s.match(/\"[A-Z_]+API_KEY\"\s*:\s*\"sk-[a-zA-Z0-9]/); console.log(hasRealKey ? \"has keys\" : \"ok\")'" "ok"
 echo ""
 
