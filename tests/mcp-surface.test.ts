@@ -87,6 +87,16 @@ function buildCompactPacket(cwd: string): RunCompactPacketResult {
       round: 1,
       summary: 'task-a active',
       next_action: 'execute: keep going',
+      room_refs: [
+        {
+          room_id: 'room-123',
+          room_kind: 'plan',
+          scope: 'run',
+          status: 'collecting',
+          replies: 1,
+          join_hint: 'agentbus join room-123',
+        },
+      ],
       worker_focus: [{
         task_id: 'task-a',
         agent_id: 'task-a@run-123',

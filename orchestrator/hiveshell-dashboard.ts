@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import type {
+  MindkeeperRoomRef,
   OrchestratorResult,
   RunScoreHistory,
   RunSpec,
@@ -9,6 +10,7 @@ import type {
   WorkerStatusSnapshot,
 } from './types.js';
 import type { LoopProgress } from './loop-progress-store.js';
+import { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 import { loadRunPlan, loadRunResult, loadRunSpec, loadRunState, listRuns } from './run-store.js';
 import { loadRunScoreHistory } from './score-history.js';
 import { readLoopProgress } from './loop-progress-store.js';
@@ -26,6 +28,7 @@ interface MindkeeperCheckpointPayload {
   findings: string[];
   next: string[];
   status: string;
+  room_refs?: MindkeeperRoomRef[];
 }
 
 interface MindkeeperBootstrapArtifact {
@@ -48,6 +51,7 @@ interface MindkeeperCheckpointResult {
   threadId?: string;
   path?: string;
   parent?: string;
+  room_refs?: MindkeeperRoomRef[];
 }
 
 export interface HiveShellDashboardData {
@@ -143,6 +147,12 @@ function renderWorkers(snapshot: WorkerStatusSnapshot | null, limit = 8): string
 
 function renderMindkeeper(data: HiveShellDashboardData): string[] {
   const lines: string[] = [];
+  const roomRefs = collectMindkeeperRoomRefs({
+    loopProgress: data.loopProgress,
+    workerSnapshot: data.workerSnapshot,
+    checkpointInputRoomRefs: data.mindkeeperCheckpointInput?.room_refs,
+    checkpointResultRoomRefs: data.mindkeeperCheckpointResult?.room_refs,
+  });
   const activeThread = data.mindkeeperBootstrap?.activeThread;
   if (activeThread) {
     lines.push(`- thread: ${activeThread.id}`);
@@ -160,6 +170,13 @@ function renderMindkeeper(data: HiveShellDashboardData): string[] {
   if (data.mindkeeperCheckpointInput?.next?.length) {
     for (const next of data.mindkeeperCheckpointInput.next.slice(0, 2)) {
       lines.push(`- carry: ${truncate(next, 96)}`);
+    }
+  }
+
+  if (roomRefs.length > 0) {
+    lines.push(`- linked rooms: ${roomRefs.length}`);
+    for (const ref of roomRefs.slice(0, 4)) {
+      lines.push(`- room link: ${truncate(formatMindkeeperRoomRef(ref), 96)}`);
     }
   }
 
@@ -232,6 +249,7 @@ function renderArtifacts(cwd: string, runId: string): string[] {
     'worker-events.jsonl',
     'score-history.json',
     'mindkeeper-bootstrap.json',
+    'mindkeeper-checkpoint-input.json',
     'mindkeeper-checkpoint-result.json',
   ];
 

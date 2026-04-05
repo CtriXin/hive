@@ -180,6 +180,20 @@ describe('compact-packet', () => {
     writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
     writeJson(path.join(runDir, 'score-history.json'), scoreHistory);
     writeJson(path.join(runDir, 'loop-progress.json'), loopProgress);
+    writeJson(path.join(runDir, 'mindkeeper-checkpoint-input.json'), {
+      next: ['execute: continue worker task-b'],
+      room_refs: [
+        {
+          room_id: 'room-compact',
+          room_kind: 'plan',
+          scope: 'run',
+          status: 'collecting',
+          replies: 1,
+          join_hint: 'agentbus join room-compact',
+          last_reply_at: '2026-04-03T00:00:03.000Z',
+        },
+      ],
+    });
     writeJson(path.join(runDir, 'mindkeeper-checkpoint-result.json'), {
       success: true,
       threadId: 'dst-compact-1',
@@ -190,19 +204,27 @@ describe('compact-packet', () => {
     expect(result!.packet.run_id).toBe(RUN_ID);
     expect(result!.packet.collab?.room_id).toBe('room-compact');
     expect(result!.packet.collab?.status).toBe('collecting');
+    expect(result!.packet.room_refs).toHaveLength(2);
+    expect(result!.packet.room_refs[0].room_id).toBe('room-compact');
+    expect(result!.packet.room_refs[1].room_id).toBe('room-task-b');
     expect(result!.packet.worker_focus[0].agent_id).toBe('task-b@run-compact-123');
     expect(result!.packet.worker_focus[0].collab?.room_id).toBe('room-task-b');
     expect(result!.packet.suggested_commands).toContain('hive workers task-b');
+    expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/mindkeeper-checkpoint-input.json');
     expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/loop-progress.json');
     expect(result!.packet.detail_sources).toContain('.ai/plan/current.md');
     expect(result!.packet.restore_prompt).toContain('You are resuming a Hive run after compact/clear/new.');
     expect(result!.packet.restore_prompt).toContain('Collab room: room-compact | collecting | replies=1');
     expect(result!.packet.restore_prompt).toContain('Primary worker collab: room-task-b | closed | replies=1');
+    expect(result!.packet.restore_prompt).toContain('Mindkeeper linked rooms:');
+    expect(result!.packet.restore_prompt).toContain('room-task-b [task_discuss/closed] replies=1 task=task-b');
     expect(result!.packet.restore_prompt).toContain('Recovery order:');
     expect(result!.markdown).toContain('# Hive Compact Packet');
     expect(result!.markdown).toContain('- collab:');
     expect(result!.markdown).toContain('room-compact | collecting | replies=1');
     expect(result!.markdown).toContain('collab: room-task-b | closed | replies=1');
+    expect(result!.markdown).toContain('- mindkeeper room refs:');
+    expect(result!.markdown).toContain('room-task-b [task_discuss/closed] replies=1 task=task-b');
     expect(result!.markdown).toContain('## Restore Prompt');
     expect(result!.markdown).toContain('dst-compact-1');
     expect(fs.existsSync(path.join(runDir, 'compact-packet.json'))).toBe(true);

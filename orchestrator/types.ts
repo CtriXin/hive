@@ -546,11 +546,13 @@ export interface ReportOptions {
 // Import types used within this file, then re-export all for consumers
 import type {
   CollabConfig as _CollabConfig,
+  MindkeeperRoomRef as _MindkeeperRoomRef,
   CollabStatusSnapshot as _CollabStatusSnapshot,
 } from './collab-types.js';
 
 // Re-export under original names so all consumers keep working
 export type CollabConfig = _CollabConfig;
+export type MindkeeperRoomRef = _MindkeeperRoomRef;
 export type CollabStatusSnapshot = _CollabStatusSnapshot;
 
 export type {

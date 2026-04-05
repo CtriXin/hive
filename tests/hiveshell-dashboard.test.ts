@@ -215,6 +215,17 @@ describe('hiveshell-dashboard', () => {
     });
     writeJson(path.join(runDir, 'mindkeeper-checkpoint-input.json'), {
       next: ['repair_task: repair task-b'],
+      room_refs: [
+        {
+          room_id: 'room-shell',
+          room_kind: 'plan',
+          scope: 'run',
+          status: 'collecting',
+          replies: 1,
+          join_hint: 'agentbus join room-shell',
+          last_reply_at: '2026-04-03T00:00:02.000Z',
+        },
+      ],
     });
     fs.writeFileSync(
       path.join(runDir, 'worker-events.jsonl'),
@@ -240,5 +251,8 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('agentbus join room-shell');
     expect(rendered).toContain('r2');
     expect(rendered).toContain('dst-1');
+    expect(rendered).toContain('linked rooms: 2');
+    expect(rendered).toContain('room link: room-shell [plan/collecting] replies=1');
+    expect(rendered).toContain('room link: room-task-a [task_discuss/closed] replies=1 task=task-a');
   });
 });

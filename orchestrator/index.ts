@@ -27,6 +27,7 @@ export {
 } from './worker-status-store.js';
 export { buildRoundScoreEntry, buildRoundScoreSignals, computeRoundScore, loadRunScoreHistory, saveRoundScore } from './score-history.js';
 export { loadHiveShellDashboard, renderHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashboard.js';
+export { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 export {
   buildCompactPacket,
   buildWorkspaceCompactPacket,

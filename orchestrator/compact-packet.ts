@@ -3,9 +3,10 @@ import fs from 'fs';
 import path from 'path';
 import type { CompactConversationContext } from './claude-session-context.js';
 import { loadConversationContext } from './claude-session-context.js';
-import type { CollabCard } from './types.js';
+import type { CollabCard, MindkeeperRoomRef } from './types.js';
 import type { HiveShellDashboardData } from './hiveshell-dashboard.js';
 import { loadHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashboard.js';
+import { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 import { loadLatestRunLocator, saveLatestRunLocator } from './run-locator.js';
 
 export interface CompactPacketWorker {
@@ -30,6 +31,7 @@ export interface CompactPacket {
   next_action: string;
   score?: number;
   thread_id?: string;
+  room_refs: MindkeeperRoomRef[];
   conversation_context?: CompactConversationContext;
   collab?: CollabCard;
   worker_focus: CompactPacketWorker[];
@@ -242,6 +244,12 @@ function buildDetailSources(data: HiveShellDashboardData): string[] {
   if (data.mindkeeperCheckpointResult?.threadId) {
     sources.push(`mindkeeper thread ${data.mindkeeperCheckpointResult.threadId}`);
   }
+  if (data.mindkeeperCheckpointInput?.room_refs?.length) {
+    sources.push(path.join(runBase, 'mindkeeper-checkpoint-input.json'));
+  }
+  if (data.mindkeeperCheckpointResult?.room_refs?.length) {
+    sources.push(path.join(runBase, 'mindkeeper-checkpoint-result.json'));
+  }
   if (loadConversationContext(data.cwd)) {
     sources.push('.ai/restore/latest-compact-conversation.md');
   }
@@ -310,6 +318,15 @@ function buildRestorePrompt(packet: CompactPacket): string {
     }
   } else {
     lines.push('Collab room: none');
+  }
+
+  if (packet.room_refs.length > 0) {
+    lines.push('Mindkeeper linked rooms:');
+    for (const ref of packet.room_refs.slice(0, 5)) {
+      lines.push(`- ${formatMindkeeperRoomRef(ref)}`);
+    }
+  } else {
+    lines.push('Mindkeeper linked rooms: none');
   }
 
   lines.push(
@@ -433,6 +450,12 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
   const workerFocus = buildWorkerFocus(data);
   const score = data.scoreHistory?.rounds.at(-1)?.score;
   const conversationContext = loadConversationContext(data.cwd);
+  const roomRefs = collectMindkeeperRoomRefs({
+    loopProgress: data.loopProgress,
+    workerSnapshot: data.workerSnapshot,
+    checkpointInputRoomRefs: data.mindkeeperCheckpointInput?.room_refs,
+    checkpointResultRoomRefs: data.mindkeeperCheckpointResult?.room_refs,
+  });
   const packet: CompactPacket = {
     version: 1,
     run_id: data.runId,
@@ -446,6 +469,7 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     next_action: buildNextActionText(data),
     score,
     thread_id: data.mindkeeperCheckpointResult?.threadId || data.mindkeeperBootstrap?.activeThread?.id,
+    room_refs: roomRefs,
     conversation_context: conversationContext || undefined,
     collab: data.loopProgress?.collab?.card,
     worker_focus: workerFocus,
@@ -536,6 +560,15 @@ export function renderCompactPacket(packet: CompactPacket): string {
     }
   } else {
     lines.push('- collab: none');
+  }
+
+  if (packet.room_refs.length > 0) {
+    lines.push('- mindkeeper room refs:');
+    for (const ref of packet.room_refs) {
+      lines.push(`  - ${formatMindkeeperRoomRef(ref)}`);
+    }
+  } else {
+    lines.push('- mindkeeper room refs: none');
   }
 
   lines.push('- recover with:');

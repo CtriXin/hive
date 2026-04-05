@@ -283,6 +283,31 @@ Smoke:
 - Consider model-based synthesis if repeated-fail advisory becomes noisy
 - Repair worker lifecycle status visibility is still coarse compared with first-pass dispatch
 
+## Phase 5: Memory Linkage — MINIMAL SLICE COMPLETE
+
+### Status: MINIMAL SLICE COMPLETE (2026-04-05)
+
+Execution brief: `docs/HIVE_COLLAB_PHASE5_EXECUTION.md`
+
+Delivered:
+- `MindkeeperRoomRef` shared type derived from existing `CollabCard`
+- `orchestrator/memory-linkage.ts` dedupes run/task room refs from `loop-progress.json`, `worker-status.json`, and existing checkpoint artifacts
+- `mindkeeper-checkpoint-input.json` / `mindkeeper-checkpoint-result.json` readers now accept `room_refs`
+- compact packet now persists `room_refs`, and restore prompt includes `Mindkeeper linked rooms`
+- hiveshell dashboard now renders linked room refs in the MindKeeper section
+
+Validation:
+- `npm test -- tests/memory-linkage.test.ts tests/compact-packet.test.ts tests/hiveshell-dashboard.test.ts tests/mcp-surface.test.ts` passed
+- `npm run build` passed
+
+Notes:
+- This phase does **not** make MindKeeper a runtime dependency
+- No new AgentBus runtime behavior was added, so a dedicated smoke is optional
+
+### Follow-up items
+- When runtime checkpoint writing returns, write the same `room_refs` shape into the outbound payload directly
+- Decide later whether room refs should also carry downstream human-bridge thread ids or stay flat until Phase 6
+
 ## Future Stages (Ordered)
 
 1. ~~Phase 1: Planner discuss via AgentBus~~ COMPLETE
@@ -291,7 +316,7 @@ Smoke:
 4. ~~Phase 2.5: task-level collab surface / compact / status wiring~~ IMPLEMENTATION COMPLETE
 5. ~~Phase 3: External review slot (room_kind=review, post-cascade)~~ IMPLEMENTATION COMPLETE
 6. ~~Phase 4: Repeated-fail advisory (room_kind=recovery)~~ IMPLEMENTATION COMPLETE
-7. Phase 5: Memory linkage (MindKeeper checkpoint includes room refs)
+7. ~~Phase 5: Memory linkage (MindKeeper checkpoint includes room refs)~~ MINIMAL SLICE COMPLETE
 8. Phase 6: Human bridge (agent-im maps rooms to Discord threads)
 9. Advisory scoring engine (separate from executor scores, data collection starts Phase 1)
 
@@ -306,5 +331,6 @@ If context is lost, read in this order:
 5. `docs/HIVE_COLLAB_PHASE2_5_EXECUTION.md` — task-level surface brief
 6. `docs/HIVE_COLLAB_PHASE3_EXECUTION.md` — external review slot brief
 7. `docs/HIVE_COLLAB_PHASE4_EXECUTION.md` — repeated-fail advisory brief
-8. `docs/hiveshell/COLLAB_STACK_PROGRESS.md` — this file (live status)
-9. Latest `docs/agent-bridge/*.md` — incremental deltas
+8. `docs/HIVE_COLLAB_PHASE5_EXECUTION.md` — memory linkage brief
+9. `docs/hiveshell/COLLAB_STACK_PROGRESS.md` — this file (live status)
+10. Latest `docs/agent-bridge/*.md` — incremental deltas

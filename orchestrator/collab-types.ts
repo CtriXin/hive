@@ -145,6 +145,17 @@ export interface CollabStatusSnapshot {
   recent_events: CollabLifecycleEvent[];
 }
 
+export interface MindkeeperRoomRef {
+  room_id: string;
+  room_kind: CollabRoomKind;
+  scope: 'run' | 'task';
+  status: CollabCardStatus;
+  replies: number;
+  focus_task_id?: string;
+  join_hint?: string;
+  last_reply_at?: string;
+}
+
 export interface PlannerDiscussReplyMetadata {
   participant_id: string;
   response_time_ms: number;
