@@ -430,7 +430,13 @@ function buildWorkspaceSuggestedCommands(): string[] {
 }
 
 function buildWorkspaceDetailSources(cwd: string): string[] {
-  const sources = ['.ai/plan/current.md', 'CLAUDE.md'];
+  const sources: string[] = [];
+  if (fs.existsSync(path.join(cwd, '.ai', 'plan', 'current.md'))) {
+    sources.push('.ai/plan/current.md');
+  }
+  if (fs.existsSync(path.join(cwd, 'CLAUDE.md'))) {
+    sources.push('CLAUDE.md');
+  }
   if (loadConversationContext(cwd)) {
     sources.push('.ai/restore/latest-compact-conversation.md');
   }

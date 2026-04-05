@@ -387,6 +387,8 @@ describe('compact-packet', () => {
     expect(result.packet.goal).toContain('Keep compact usable even without a Hive run');
     expect(result.packet.summary).toContain('User is editing directly in the repo');
     expect(result.packet.restore_prompt).toContain('there is no active Hive run snapshot');
+    expect(result.packet.detail_sources).toContain('.ai/plan/current.md');
+    expect(result.packet.detail_sources).not.toContain('CLAUDE.md');
     expect(result.markdown).toContain('# Hive Workspace Restore Card');
     expect(fs.existsSync(path.join(TMP_DIR, '.ai', 'restore', 'workspace-compact-packet.json'))).toBe(true);
     expect(fs.existsSync(path.join(TMP_DIR, '.ai', 'restore', 'workspace-compact-restore-prompt.md'))).toBe(true);

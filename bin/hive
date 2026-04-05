@@ -1,2 +1,7 @@
 #!/usr/bin/env node
-import('../dist/orchestrator/index.js');
+import('../dist/orchestrator/index.js')
+  .then(({ main }) => main())
+  .catch((err) => {
+    console.error('❌', err.message);
+    process.exit(1);
+  });

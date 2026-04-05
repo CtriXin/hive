@@ -83,8 +83,18 @@ echo ""
 
 # ── Phase 6: Project Files ──
 echo "Phase 6: Project Files"
-check "CLAUDE.md exists" "test -f CLAUDE.md && echo ok" "ok"
-check ".ai/manifest.json exists" "test -f .ai/manifest.json && echo ok" "ok"
+if test -f CLAUDE.md; then
+  echo -e "  ${GREEN}✓${NC} CLAUDE.md exists"
+  ((PASS++))
+else
+  echo -e "  ${YELLOW}~${NC} CLAUDE.md missing (allowed in worktrees)"
+fi
+if test -f .ai/manifest.json; then
+  echo -e "  ${GREEN}✓${NC} .ai/manifest.json exists"
+  ((PASS++))
+else
+  echo -e "  ${YELLOW}~${NC} .ai/manifest.json missing (allowed before first local run)"
+fi
 echo ""
 
 # ── Phase 7: Provider Config ──

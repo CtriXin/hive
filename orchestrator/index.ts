@@ -1,5 +1,8 @@
 // orchestrator/index.ts — Re-exports + CLI entry
 
+import path from 'path';
+import { fileURLToPath } from 'url';
+
 // ── Re-exports (for MCP server and external consumers) ──
 export { ModelRegistry } from './model-registry.js';
 export { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from './planner.js';
@@ -43,7 +46,7 @@ export {
 export * from './types.js';
 
 // ── CLI entry (only runs when executed directly) ──
-async function main() {
+export async function main() {
   const { maybePrintUpgradeNotice } = await import('./update-check.js');
   await maybePrintUpgradeNotice();
 
@@ -750,7 +753,11 @@ async function main() {
   }
 }
 
-const isMainModule = process.argv[1]?.includes('index');
+const isMainModule = (() => {
+  const invokedPath = process.argv[1];
+  if (!invokedPath) return false;
+  return path.resolve(invokedPath) === fileURLToPath(import.meta.url);
+})();
 if (isMainModule) {
   main().catch(err => {
     console.error('❌', err.message);
