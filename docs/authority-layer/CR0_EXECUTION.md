@@ -193,6 +193,7 @@ Observability rule:
 
 - successful synthesis writes `authority.synthesized_by`
 - synthesis-attempted-but-heuristic-fallback writes `authority.synthesis_strategy=heuristic`
+- synthesis-attempted-but-fail-closed writes `authority.synthesis_attempted_by`
 - CR0 must not label heuristic merge as a completed model synthesis pass
 - default policy is `fail_closed`; heuristic fallback is opt-in
 

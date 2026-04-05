@@ -172,7 +172,7 @@ function renderAuthority(data: HiveShellDashboardData): string[] {
   return reviews.map((review) => {
     const authority = review.authority;
     const parts = [
-      `${review.taskId} ${review.passed ? '[pass]' : '[fail]'}`,
+      `${review.taskId} ${review.verdict === 'BLOCKED' ? '[blocked]' : review.passed ? '[pass]' : '[fail]'}`,
       `stage=${review.final_stage}`,
     ];
     if (authority?.source) parts.push(`authority=${authority.source}`);
@@ -180,6 +180,7 @@ function renderAuthority(data: HiveShellDashboardData): string[] {
     if (authority?.members?.length) parts.push(`members=${authority.members.join('+')}`);
     if (authority?.synthesized_by) parts.push(`synth=${authority.synthesized_by}`);
     else if (authority?.synthesis_strategy === 'heuristic') parts.push('synth=heuristic');
+    else if (authority?.synthesis_attempted_by) parts.push(`synth=blocked(${authority.synthesis_attempted_by})`);
     if (authority?.disagreement_flags?.length) parts.push(`disagreement=${authority.disagreement_flags.join(',')}`);
     return `- ${parts.join(' | ')}`;
   });

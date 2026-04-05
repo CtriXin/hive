@@ -386,6 +386,7 @@ export interface ReviewAuthorityMetadata {
   disagreement_flags?: string[];
   synthesized_by?: string;
   synthesis_strategy?: 'model' | 'heuristic';
+  synthesis_attempted_by?: string;
 }
 
 export interface ReviewResult {

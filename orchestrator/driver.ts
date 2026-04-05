@@ -131,10 +131,13 @@ function trimTail(text: string, limit = 4000): string {
 
 export function summarizeAuthorityReview(review: ReviewResult): string {
   const authority = review.authority;
+  const outcome = review.verdict === 'BLOCKED'
+    ? 'review blocked'
+    : review.passed
+      ? 'review passed'
+      : 'review failed';
   if (!authority) {
-    return review.passed
-      ? `review passed at ${review.final_stage}`
-      : `review failed at ${review.final_stage}`;
+    return `${outcome} at ${review.final_stage}`;
   }
 
   const parts = [
@@ -148,12 +151,14 @@ export function summarizeAuthorityReview(review: ReviewResult): string {
     parts.push(`synth=${authority.synthesized_by}`);
   } else if (authority.synthesis_strategy === 'heuristic') {
     parts.push('synth=heuristic');
+  } else if (authority.synthesis_attempted_by) {
+    parts.push(`synth=blocked(${authority.synthesis_attempted_by})`);
   }
   if (authority.disagreement_flags?.length) {
     parts.push(`disagreement=${authority.disagreement_flags.join(',')}`);
   }
 
-  return `${review.passed ? 'review passed' : 'review failed'} | ${parts.join(' | ')}`;
+  return `${outcome} | ${parts.join(' | ')}`;
 }
 
 export function mergeWorkerTaskSummary(existingSummary: string | undefined, authoritySummary: string): string {

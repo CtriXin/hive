@@ -116,4 +116,52 @@ describe('reporter authority output', () => {
 
     expect(report).toContain('synth=heuristic');
   });
+
+  it('shows blocked synthesis attempt in summary report', async () => {
+    const result: OrchestratorResult = {
+      plan: {
+        id: 'plan-3',
+        goal: 'demo',
+        tasks: [],
+        execution_order: [],
+      },
+      worker_results: [],
+      review_results: [
+        {
+          taskId: 'task-c',
+          final_stage: 'cross-review',
+          passed: false,
+          findings: [],
+          iterations: 2,
+          duration_ms: 120,
+          verdict: 'BLOCKED',
+          authority: {
+            source: 'authority-layer',
+            mode: 'pair',
+            members: ['kimi-k2.5', 'MiniMax-M2.5'],
+            disagreement_flags: ['conclusion_opposite'],
+            synthesis_attempted_by: 'gpt-5.4',
+          },
+        },
+      ],
+      score_updates: [],
+      total_duration_ms: 2000,
+      cost_estimate: {
+        opus_tokens: 0,
+        sonnet_tokens: 0,
+        haiku_tokens: 0,
+        domestic_tokens: 100,
+        estimated_cost_usd: 0.01,
+      },
+    };
+
+    const report = await reportResults(result, 'gpt-5.4', 'openai', {
+      language: 'zh',
+      format: 'summary',
+      target: 'stdout',
+    });
+
+    expect(report).toContain('⛔');
+    expect(report).toContain('synth=blocked(gpt-5.4)');
+  });
 });
