@@ -188,6 +188,12 @@ CR0 is done when all of these are true:
 5. deterministic verification still wins over model opinion
 6. disabling the feature cleanly falls back to the existing review path
 
+Observability rule:
+
+- successful synthesis writes `authority.synthesized_by`
+- synthesis-attempted-but-heuristic-fallback writes `authority.synthesis_strategy=heuristic`
+- CR0 must not label heuristic merge as a completed model synthesis pass
+
 ## Blockers
 
 These must be resolved before coding deep into CR0:

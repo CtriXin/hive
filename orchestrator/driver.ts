@@ -128,7 +128,7 @@ function trimTail(text: string, limit = 4000): string {
   return text.length <= limit ? text : text.slice(-limit);
 }
 
-function summarizeAuthorityReview(review: ReviewResult): string {
+export function summarizeAuthorityReview(review: ReviewResult): string {
   const authority = review.authority;
   if (!authority) {
     return review.passed

@@ -107,6 +107,12 @@ Review committee MVP:
 - manual seed profiles for Kimi / Qwen / GLM / Mimo
 - one synthesis pass as final aggregator
 
+Operational note for CR0:
+
+- when synthesis succeeds, runtime records `synthesized_by=<model>`
+- when synthesis is attempted but falls back to heuristic merge, runtime records
+  `synthesis_strategy=heuristic` instead of pretending a model completed the pass
+
 ### CR1
 
 Planner committee:
