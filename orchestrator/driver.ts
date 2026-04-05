@@ -38,11 +38,14 @@ import { planGoal } from './planner-runner.js';
 import { ModelRegistry } from './model-registry.js';
 import { dispatchBatch, spawnWorker } from './dispatcher.js';
 import { reviewCascade } from './reviewer.js';
+import { maybeRunRecoveryAdvisory } from './recovery-room-handler.js';
+import { maybeRunExternalReviewSlot } from './review-room-handler.js';
 import { allRequiredChecksPassed, runVerification, runVerificationSuite } from './verifier.js';
 import { commitAndMergeWorktree } from './worktree-manager.js';
 import { loadProjectVerificationPolicy, loadTaskVerificationRules, type TaskVerificationRule } from './project-policy.js';
 import { getBudgetStatus, loadConfig, recordSpending } from './hive-config.js';
 import { writeLoopProgress, type LoopPhase } from './loop-progress-store.js';
+import { updateWorkerStatus } from './worker-status-store.js';
 
 // ── Options & Result ──
 
@@ -313,6 +316,11 @@ function markTaskVerificationFailure(
     : 'verification failed';
 }
 
+function summarizeCollabStatus(snapshot: CollabStatusSnapshot): string {
+  const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+  return `${snapshot.card.room_kind} ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`;
+}
+
 // ── Done Conditions ──
 
 export function inferDefaultDoneConditions(cwd: string): DoneCondition[] {
@@ -447,7 +455,14 @@ function buildRepairPrompt(
   );
   const issueList = findings
     .filter((f) => f.decision !== 'dismiss')
-    .map((f) => `- [${f.severity}] ${f.file}${f.line ? `:${f.line}` : ''}: ${f.issue}`)
+    .map((f) => {
+      const advisoryPrefix = f.lens === 'external-review'
+        ? '[External Advisory] '
+        : f.lens === 'recovery-advisory'
+          ? '[Recovery Advisory] '
+          : '';
+      return `- [${f.severity}] ${advisoryPrefix}${f.file}${f.line ? `:${f.line}` : ''}: ${f.issue}`;
+    })
     .join('\n');
 
   return [
@@ -486,6 +501,9 @@ async function runRepairRound(
   failedReviews: ReviewResult[],
   _previousWorkerResults: WorkerResult[],
   registry: ModelRegistry,
+  hooks?: {
+    onRecoverySnapshot?: (taskId: string, snapshot: CollabStatusSnapshot) => void | Promise<void>;
+  },
 ): Promise<{
   workerResults: WorkerResult[];
   reviewResults: ReviewResult[];
@@ -514,7 +532,18 @@ async function runRepairRound(
     }
     state.retry_counts[task.id] = retryCount + 1;
 
-    const repairPrompt = buildRepairPrompt(task, review.findings);
+    const recovery = await maybeRunRecoveryAdvisory({
+      cwd: spec.cwd,
+      task,
+      reviewResult: review,
+      retryCount,
+      maxRetries: spec.max_worker_retries,
+      repairHistory: state.repair_history.filter((entry) => entry.task_id === task.id),
+      onSnapshot: async (snapshot) => {
+        await hooks?.onRecoverySnapshot?.(task.id, snapshot);
+      },
+    });
+    const repairPrompt = buildRepairPrompt(task, recovery.findings);
     const modelCap = registry.get(task.assigned_model);
 
     // Fresh worktree, no sessionId — clean isolation for each repair attempt
@@ -842,12 +871,13 @@ export async function executeRun(
 ): Promise<RunExecutionResult> {
   const progressCb = onProgress || (() => {});
   let planDiscussCollab: CollabStatusSnapshot | null | undefined;
+  let activeCollabSnapshot: CollabStatusSnapshot | null | undefined;
   const emitProgress = (phase: LoopPhase, reason: string, extra?: {
     focus_task_id?: string; focus_model?: string; focus_summary?: string;
     collab?: CollabStatusSnapshot | null;
   }) => {
     const collab = extra?.collab === undefined
-      ? planDiscussCollab
+      ? activeCollabSnapshot
       : extra.collab;
     writeLoopProgress(spec.cwd, spec.id, {
       run_id: spec.id, round: currentState.round, phase, reason,
@@ -916,6 +946,7 @@ export async function executeRun(
       const planning = await planGoal(spec.goal, spec.cwd, {
         onPlannerDiscussSnapshot: (snapshot) => {
           planDiscussCollab = snapshot;
+          activeCollabSnapshot = snapshot;
           const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
           emitProgress(
             'discussing',
@@ -953,6 +984,7 @@ export async function executeRun(
       planDiscuss = planning.plan_discuss;
       planDiscussRoom = planning.plan_discuss_room;
       planDiscussCollab = planning.plan_discuss_collab;
+      activeCollabSnapshot = planning.plan_discuss_collab;
       plannerDiagnostics = planning.planner_diagnostics;
       emitProgress('executing', `Plan ready: ${plan.tasks.length} tasks via ${plannerModel || 'auto'}${planDiscuss ? ` | discuss: ${planDiscuss.quality_gate}` : ''}`);
       seedTaskStatesFromPlan(currentState, plan);
@@ -1005,6 +1037,7 @@ export async function executeRun(
       const planning = await planGoal(replanGoal, spec.cwd, {
         onPlannerDiscussSnapshot: (snapshot) => {
           planDiscussCollab = snapshot;
+          activeCollabSnapshot = snapshot;
           const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
           emitProgress(
             'discussing',
@@ -1029,6 +1062,7 @@ export async function executeRun(
       planDiscuss = planning.plan_discuss;
       planDiscussRoom = planning.plan_discuss_room;
       planDiscussCollab = planning.plan_discuss_collab;
+      activeCollabSnapshot = planning.plan_discuss_collab;
       plannerDiagnostics = planning.planner_diagnostics;
       seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
@@ -1092,6 +1126,29 @@ export async function executeRun(
         failedReviews,
         latestResult.worker_results,
         registry,
+        {
+          onRecoverySnapshot: async (taskId, snapshot) => {
+            activeCollabSnapshot = snapshot;
+            const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+            emitProgress(
+              'repairing',
+              `Recovery advisory ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+              {
+                collab: snapshot,
+                focus_task_id: taskId,
+              },
+            );
+            updateWorkerStatus(spec.cwd, spec.id, {
+              task_id: taskId,
+              status: 'discussing',
+              plan_id: plan!.id,
+              round: currentState.round,
+              task_summary: summarizeCollabStatus(snapshot),
+              last_message: snapshot.card.next,
+              collab: snapshot,
+            });
+          },
+        },
       );
 
       // Merge: keep passed results from previous round, replace repaired ones
@@ -1131,7 +1188,22 @@ export async function executeRun(
       );
 
       emitProgress('executing', `Dispatching ${plan.tasks.length} task(s): ${plan.tasks.map(t => `${t.id}→${t.assigned_model}`).join(', ')}`);
-      const dispatchResult = await dispatchBatch(plan, registry, undefined, { recordBudget: false });
+      const dispatchResult = await dispatchBatch(plan, registry, {
+        runId: spec.id,
+        round: currentState.round,
+        onWorkerDiscussSnapshot: async (snapshot) => {
+          activeCollabSnapshot = snapshot;
+          const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+          emitProgress(
+            'discussing',
+            `Worker discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+            {
+              collab: snapshot,
+              focus_task_id: snapshot.card.focus_task_id,
+            },
+          );
+        },
+      }, { recordBudget: false });
       workerResults = dispatchResult.worker_results;
       const succeeded = workerResults.filter(w => w.success).length;
       emitProgress('reviewing', `Workers done: ${succeeded}/${workerResults.length} succeeded`);
@@ -1155,6 +1227,58 @@ export async function executeRun(
         }),
       );
     }
+
+    reviewResults = await Promise.all(
+      reviewResults.map(async (review) => {
+        const task = plan!.tasks.find((item) => item.id === review.taskId);
+        const worker = workerResults.find((item) => item.taskId === review.taskId);
+        if (!task || !worker) {
+          return review;
+        }
+
+        const reviewed = await maybeRunExternalReviewSlot({
+          cwd: spec.cwd,
+          task,
+          workerResult: worker,
+          reviewResult: review,
+          onSnapshot: async (snapshot) => {
+            activeCollabSnapshot = snapshot;
+            const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+            emitProgress(
+              'reviewing',
+              `External review ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+              {
+                collab: snapshot,
+                focus_task_id: snapshot.card.focus_task_id || review.taskId,
+              },
+            );
+            updateWorkerStatus(spec.cwd, spec.id, {
+              task_id: review.taskId,
+              status: worker.success ? 'completed' : 'failed',
+              plan_id: plan!.id,
+              round: currentState.round,
+              task_summary: summarizeCollabStatus(snapshot),
+              last_message: snapshot.card.next,
+              collab: snapshot,
+            });
+          },
+        });
+
+        if (reviewed.external_review_collab) {
+          updateWorkerStatus(spec.cwd, spec.id, {
+            task_id: review.taskId,
+            status: worker.success ? 'completed' : 'failed',
+            plan_id: plan!.id,
+            round: currentState.round,
+            task_summary: summarizeCollabStatus(reviewed.external_review_collab),
+            last_message: reviewed.external_review_collab.card.next,
+            collab: reviewed.external_review_collab,
+          });
+        }
+
+        return reviewed;
+      }),
+    );
 
     // Update completed/failed tracking
     updateTaskStatesFromWorkers(currentState, workerResults);

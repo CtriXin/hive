@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod';
 import { execSync } from 'child_process';
-import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult, StageTokenUsage, PlannerDiscussRoomRef } from '../orchestrator/types.js';
+import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult, StageTokenUsage, PlannerDiscussRoomRef, CollabStatusSnapshot } from '../orchestrator/types.js';
 import type { DiscussPlanDiag } from '../orchestrator/discuss-bridge.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from '../orchestrator/planner.js';
 import { translateToEnglish } from '../orchestrator/translator.js';
@@ -377,6 +377,7 @@ server.tool(
     let planDiscussResult: PlanDiscussResult | null = null;
     let discussDiag: DiscussPlanDiag | null = null;
     let planDiscussRoom: PlannerDiscussRoomRef | null = null;
+    let planDiscussCollab: CollabStatusSnapshot | null = null;
     const discussMode = config.tiers.discuss?.mode || 'auto';
     let discussSkipReason: string | null = null;
     if (!plan) {
@@ -394,6 +395,7 @@ server.tool(
       planDiscussResult = discussExecution.plan_discuss;
       discussDiag = discussExecution.discuss_diag;
       planDiscussRoom = discussExecution.plan_discuss_room;
+      planDiscussCollab = discussExecution.plan_discuss_collab;
     }
 
     const budgetWarning = getBudgetWarning(config);
@@ -401,6 +403,7 @@ server.tool(
       plan,
       plan_discuss: planDiscussResult,
       plan_discuss_room: planDiscussRoom || undefined,
+      plan_discuss_collab: planDiscussCollab || undefined,
       discuss_debug: planDiscussResult ? undefined : {
         mode: discussMode,
         skip_reason: discussSkipReason,
@@ -436,6 +439,7 @@ server.tool(
           translationModel: translationResult?.translator_model,
           discussQualityGate: planDiscussResult?.quality_gate,
           discussRoom: planDiscussRoom,
+          collabCard: planDiscussCollab?.card,
           budgetWarning,
         })
       : [
@@ -1140,7 +1144,7 @@ server.tool(
           server.sendLoggingMessage({ level: 'info', logger: 'hive', data: `[${stage}] ${detail}` });
         },
       });
-      const { spec, state, plan, planner_model, plan_discuss } = execution;
+      const { spec, state, plan, planner_model, plan_discuss, plan_discuss_collab } = execution;
       const taskSummary = plan
         ? plan.tasks.map(t => `- ${t.id}: ${t.description.slice(0, 80)} [${t.assigned_model}]${t.verification_profile ? ` {rule:${t.verification_profile}}` : ''}`).join('\n')
         : '(no plan)';
@@ -1160,6 +1164,10 @@ server.tool(
       text += `**Mode**: ${spec.mode}\n`;
       if (planner_model) text += `**Planner**: ${planner_model}\n`;
       if (plan_discuss) text += `**Discuss**: ${plan_discuss.quality_gate} — ${plan_discuss.overall_assessment?.slice(0, 150)}\n`;
+      if (plan_discuss_collab?.card) {
+        text += `**Collab**: ${plan_discuss_collab.card.room_id} [${plan_discuss_collab.card.status}] replies=${plan_discuss_collab.card.replies}\n`;
+        text += `**Collab Next**: ${plan_discuss_collab.card.next}\n`;
+      }
       text += '\n';
       text += `### Tasks\n${taskSummary}\n\n`;
       if (verificationSummary) text += `### Verification\n${verificationSummary}\n\n`;
@@ -1248,6 +1256,16 @@ server.tool(
         text += `**Phase**: ${progress.phase} — ${progress.reason}\n`;
         if (progress.planner_model) text += `**Planner**: ${progress.planner_model}\n`;
         if (progress.focus_task_id) text += `**Focus**: ${progress.focus_task_id}${progress.focus_model ? ` (${progress.focus_model})` : ''}\n`;
+        if (progress.collab?.card) {
+          text += `**Collab**: ${progress.collab.card.room_id} [${progress.collab.card.status}] replies=${progress.collab.card.replies}\n`;
+          text += `**Collab Next**: ${progress.collab.card.next}\n`;
+          if (progress.collab.card.last_reply_at) {
+            text += `**Collab Last Reply**: ${progress.collab.card.last_reply_at}\n`;
+          }
+          if (progress.collab.card.join_hint) {
+            text += `**Collab Join**: ${progress.collab.card.join_hint}\n`;
+          }
+        }
       }
       text += `**Plan tasks**: ${plan?.tasks.length || 0}\n`;
       text += `**Completed**: ${state.completed_task_ids.join(', ') || 'none'}\n`;

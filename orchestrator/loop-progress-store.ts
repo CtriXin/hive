@@ -3,6 +3,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import type { CollabStatusSnapshot } from './types.js';
 
 export type LoopPhase =
   | 'planning'
@@ -26,6 +27,7 @@ export interface LoopProgress {
   focus_model?: string;
   transcript_path?: string;
   planner_model?: string;
+  collab?: CollabStatusSnapshot;
   updated_at: string;
 }
 

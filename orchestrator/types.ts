@@ -91,6 +91,7 @@ export interface WorkerConfig {
   round?: number;
   taskDescription?: string;
   fromBranch?: string;
+  onWorkerDiscussSnapshot?: (snapshot: CollabStatusSnapshot) => void | Promise<void>;
 }
 
 export interface WorkerResult {
@@ -106,6 +107,7 @@ export interface WorkerResult {
   token_usage: { input: number; output: number };
   discuss_triggered: boolean;
   discuss_results: DiscussResult[];
+  worker_discuss_collab?: CollabStatusSnapshot;
 }
 
 export interface WorkerMessage {
@@ -145,6 +147,7 @@ export interface WorkerStatusEntry {
   success?: boolean;
   error?: string;
   transcript_path?: string;
+  collab?: CollabStatusSnapshot;
 }
 
 export interface WorkerStatusSnapshot {
@@ -385,6 +388,7 @@ export interface ReviewResult {
   iterations: number;
   duration_ms: number;
   token_stages?: StageTokenUsage[];
+  external_review_collab?: CollabStatusSnapshot;
 }
 
 export interface ReviewFinding {
@@ -538,120 +542,35 @@ export interface ReportOptions {
   callback?: (report: string) => void;
 }
 
-// ── Collaboration Config (Phase 1: planner discuss transport) ──
+// ── Collaboration & Discussion types (extracted to collab-types.ts) ──
+// Import types used within this file, then re-export all for consumers
+import type {
+  CollabConfig as _CollabConfig,
+  CollabStatusSnapshot as _CollabStatusSnapshot,
+} from './collab-types.js';
 
-export type PlanDiscussTransport = 'local' | 'agentbus';
+// Re-export under original names so all consumers keep working
+export type CollabConfig = _CollabConfig;
+export type CollabStatusSnapshot = _CollabStatusSnapshot;
 
-export interface PlanningBriefTask {
-  id: string;
-  complexity: Complexity;
-  category: string;
-  description: string;
-  assigned_model: string;
-  depends_on: string[];
-  estimated_files: string[];
-}
-
-export interface PlanningBrief {
-  type: 'planning-brief';
-  version: 1;
-  created_at: string;
-  goal: string;
-  planner_model: string;
-  cwd_hint: string;
-  task_count: number;
-  tasks: PlanningBriefTask[];
-  execution_order: string[][];
-  context_flow: Record<string, string[]>;
-  review_focus: string;
-  questions: string[];
-}
-
-export interface CollabConfig {
-  plan_discuss_transport: PlanDiscussTransport;
-  plan_discuss_timeout_ms: number;
-  plan_discuss_min_replies: number;
-}
-
-export type CollabRoomKind = 'plan';
-
-export type CollabCardStatus =
-  | 'open'
-  | 'collecting'
-  | 'synthesizing'
-  | 'closed'
-  | 'fallback';
-
-export interface CollabCard {
-  room_id: string;
-  room_kind: CollabRoomKind;
-  status: CollabCardStatus;
-  replies: number;
-  last_reply_at?: string;
-  join_hint?: string;
-  focus_task_id?: string;
-  next: string;
-}
-
-export interface CollabLifecycleEvent {
-  type:
-    | 'room:opened'
-    | 'reply:arrived'
-    | 'synthesis:started'
-    | 'synthesis:done'
-    | 'fallback:local'
-    | 'room:closed';
-  room_id: string;
-  room_kind: CollabRoomKind;
-  at: string;
-  reply_count?: number;
-  focus_task_id?: string;
-  note?: string;
-}
-
-export interface CollabStatusSnapshot {
-  card: CollabCard;
-  recent_events: CollabLifecycleEvent[];
-}
-
-export interface PlannerDiscussReplyMetadata {
-  participant_id: string;
-  response_time_ms: number;
-  content_length: number;
-}
-
-export interface PlannerDiscussRoomRef {
-  room_id: string;
-  transport: 'agentbus';
-  reply_count: number;
-  timeout_ms: number;
-  join_hint?: string;
-  created_at: string;
-  reply_metadata?: PlannerDiscussReplyMetadata[];
-}
-
-// ── Discussion (SDK-based) ──
-
-export interface DiscussionReply {
-  agreement: string;
-  pushback: string;
-  risks: string[];
-  better_options: string[];
-  recommended_next_step: string;
-  questions_back: string[];
-  one_paragraph_synthesis: string;
-  quality_gate: 'pass' | 'warn' | 'fail';
-}
-
-export interface PlanDiscussResult {
-  partner_models: string[];
-  task_gaps: string[];
-  task_redundancies: string[];
-  model_suggestions: string[];
-  execution_order_issues: string[];
-  overall_assessment: string;
-  quality_gate: 'pass' | 'warn' | 'fail';
-}
+export type {
+  PlanDiscussTransport,
+  PlanningBriefTask,
+  PlanningBrief,
+  WorkerDiscussBrief,
+  ReviewBriefFinding,
+  ReviewBrief,
+  RecoveryBriefAttempt,
+  RecoveryBrief,
+  CollabRoomKind,
+  CollabCardStatus,
+  CollabCard,
+  CollabLifecycleEvent,
+  PlannerDiscussReplyMetadata,
+  PlannerDiscussRoomRef,
+  DiscussionReply,
+  PlanDiscussResult,
+} from './collab-types.js';
 
 // ── Protocol Adapter ──
 

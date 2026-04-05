@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import type { CompactConversationContext } from './claude-session-context.js';
 import { loadConversationContext } from './claude-session-context.js';
+import type { CollabCard } from './types.js';
 import type { HiveShellDashboardData } from './hiveshell-dashboard.js';
 import { loadHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashboard.js';
 import { loadLatestRunLocator, saveLatestRunLocator } from './run-locator.js';
@@ -13,6 +14,7 @@ export interface CompactPacketWorker {
   status: string;
   task_summary: string;
   transcript_path?: string;
+  collab?: CollabCard;
 }
 
 export interface CompactPacket {
@@ -29,6 +31,7 @@ export interface CompactPacket {
   score?: number;
   thread_id?: string;
   conversation_context?: CompactConversationContext;
+  collab?: CollabCard;
   worker_focus: CompactPacketWorker[];
   suggested_commands: string[];
   detail_sources: string[];
@@ -213,6 +216,7 @@ function buildWorkerFocus(data: HiveShellDashboardData): CompactPacketWorker[] {
     status: worker.status,
     task_summary: truncate(worker.task_summary || worker.last_message || worker.task_description, 120),
     transcript_path: worker.transcript_path,
+    collab: worker.collab?.card,
   }));
 }
 
@@ -240,6 +244,9 @@ function buildDetailSources(data: HiveShellDashboardData): string[] {
   }
   if (loadConversationContext(data.cwd)) {
     sources.push('.ai/restore/latest-compact-conversation.md');
+  }
+  if (data.loopProgress?.collab?.card) {
+    sources.push(path.join(runBase, 'loop-progress.json'));
   }
   sources.push('.ai/plan/current.md');
 
@@ -280,8 +287,29 @@ function buildRestorePrompt(packet: CompactPacket): string {
       `Primary worker summary: ${worker.task_summary}`,
       `Primary transcript: ${worker.transcript_path || '-'}`,
     );
+    if (worker.collab) {
+      lines.push(
+        `Primary worker collab: ${worker.collab.room_id} | ${worker.collab.status} | replies=${worker.collab.replies}`,
+        `Primary worker collab next: ${worker.collab.next}`,
+      );
+    }
   } else {
     lines.push('Primary worker: none');
+  }
+
+  if (packet.collab) {
+    lines.push(
+      `Collab room: ${packet.collab.room_id} | ${packet.collab.status} | replies=${packet.collab.replies}`,
+      `Collab next: ${packet.collab.next}`,
+    );
+    if (packet.collab.last_reply_at) {
+      lines.push(`Collab last reply: ${packet.collab.last_reply_at}`);
+    }
+    if (packet.collab.join_hint) {
+      lines.push(`Collab join: ${packet.collab.join_hint}`);
+    }
+  } else {
+    lines.push('Collab room: none');
   }
 
   lines.push(
@@ -419,6 +447,7 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     score,
     thread_id: data.mindkeeperCheckpointResult?.threadId || data.mindkeeperBootstrap?.activeThread?.id,
     conversation_context: conversationContext || undefined,
+    collab: data.loopProgress?.collab?.card,
     worker_focus: workerFocus,
     suggested_commands: [],
     detail_sources: [],
@@ -486,9 +515,27 @@ export function renderCompactPacket(packet: CompactPacket): string {
       if (worker.transcript_path) {
         lines.push(`    transcript: ${worker.transcript_path}`);
       }
+      if (worker.collab) {
+        lines.push(`    collab: ${worker.collab.room_id} | ${worker.collab.status} | replies=${worker.collab.replies}`);
+        lines.push(`    collab next: ${worker.collab.next}`);
+      }
     }
   } else {
     lines.push('- worker focus: none');
+  }
+
+  if (packet.collab) {
+    lines.push('- collab:');
+    lines.push(`  - ${packet.collab.room_id} | ${packet.collab.status} | replies=${packet.collab.replies}`);
+    lines.push(`  - next: ${packet.collab.next}`);
+    if (packet.collab.last_reply_at) {
+      lines.push(`  - last reply: ${packet.collab.last_reply_at}`);
+    }
+    if (packet.collab.join_hint) {
+      lines.push(`  - join: ${packet.collab.join_hint}`);
+    }
+  } else {
+    lines.push('- collab: none');
   }
 
   lines.push('- recover with:');

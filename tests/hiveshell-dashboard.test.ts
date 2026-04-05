@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import type { RunScoreHistory, RunSpec, RunState, TaskPlan, WorkerStatusSnapshot } from '../orchestrator/types.js';
 import { loadHiveShellDashboard, renderHiveShellDashboard, resolveHiveShellRunId } from '../orchestrator/hiveshell-dashboard.js';
+import type { LoopProgress } from '../orchestrator/loop-progress-store.js';
 
 const TMP_DIR = '/tmp/hive-hiveshell-dashboard-test';
 const RUN_ID = 'run-shell-123';
@@ -89,6 +90,27 @@ describe('hiveshell-dashboard', () => {
           changed_files_count: 2,
           success: true,
           last_message: 'completed successfully',
+          collab: {
+            card: {
+              room_id: 'room-task-a',
+              room_kind: 'task_discuss',
+              status: 'closed',
+              replies: 1,
+              join_hint: 'agentbus join room-task-a',
+              focus_task_id: 'task-a',
+              next: 'worker discuss complete',
+            },
+            recent_events: [
+              {
+                type: 'room:closed',
+                room_id: 'room-task-a',
+                room_kind: 'task_discuss',
+                at: '2026-04-03T00:00:04.000Z',
+                reply_count: 1,
+                focus_task_id: 'task-a',
+              },
+            ],
+          },
         },
       ],
     };
@@ -148,10 +170,39 @@ describe('hiveshell-dashboard', () => {
         },
       ],
     };
+    const loopProgress: LoopProgress = {
+      run_id: RUN_ID,
+      round: 2,
+      phase: 'discussing',
+      reason: 'Planner discuss collecting replies',
+      collab: {
+        card: {
+          room_id: 'room-shell',
+          room_kind: 'plan',
+          status: 'collecting',
+          replies: 1,
+          last_reply_at: '2026-04-03T00:00:02.000Z',
+          join_hint: 'agentbus join room-shell',
+          next: 'wait for more replies or timeout',
+        },
+        recent_events: [
+          {
+            type: 'reply:arrived',
+            room_id: 'room-shell',
+            room_kind: 'plan',
+            at: '2026-04-03T00:00:02.000Z',
+            reply_count: 1,
+            note: 'Reply from reviewer-a',
+          },
+        ],
+      },
+      updated_at: new Date().toISOString(),
+    };
 
     writeJson(path.join(runDir, 'spec.json'), spec);
     writeJson(path.join(runDir, 'state.json'), state);
     writeJson(path.join(runDir, 'plan.json'), plan);
+    writeJson(path.join(runDir, 'loop-progress.json'), loopProgress);
     writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
     writeJson(path.join(runDir, 'score-history.json'), scoreHistory);
     writeJson(path.join(runDir, 'mindkeeper-bootstrap.json'), {
@@ -178,11 +229,15 @@ describe('hiveshell-dashboard', () => {
     const rendered = renderHiveShellDashboard(dashboard!);
     expect(rendered).toContain('== HiveShell ==');
     expect(rendered).toContain('== Run Overview ==');
+    expect(rendered).toContain('== Collab ==');
     expect(rendered).toContain('== Score Trend ==');
     expect(rendered).toContain('== Workers ==');
     expect(rendered).toContain('== Mindkeeper ==');
     expect(rendered).toContain('Ship hiveshell UI');
     expect(rendered).toContain('task-a [completed]');
+    expect(rendered).toContain('room-shell [collecting]');
+    expect(rendered).toContain('task-a -> room-task-a [closed] replies=1');
+    expect(rendered).toContain('agentbus join room-shell');
     expect(rendered).toContain('r2');
     expect(rendered).toContain('dst-1');
   });

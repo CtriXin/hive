@@ -174,4 +174,48 @@ describe('worker-status-store', () => {
     expect(transcriptByTask[0].agent_id).toBe(worker!.agent_id);
     expect(transcriptByTask[0].content).toContain('transcript surface');
   });
+
+  it('persists worker collab snapshots across status updates', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-c',
+      status: 'discussing',
+      plan_id: 'plan-c',
+      task_description: 'Resolve cache structure choice',
+      collab: {
+        card: {
+          room_id: 'room-task-c',
+          room_kind: 'task_discuss',
+          status: 'closed',
+          replies: 1,
+          join_hint: 'agentbus join room-task-c',
+          focus_task_id: 'task-c',
+          next: 'worker discuss complete',
+        },
+        recent_events: [
+          {
+            type: 'room:opened',
+            room_id: 'room-task-c',
+            room_kind: 'task_discuss',
+            at: '2026-04-03T00:00:00.000Z',
+            reply_count: 0,
+            focus_task_id: 'task-c',
+          },
+        ],
+      },
+    });
+
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-c',
+      status: 'completed',
+      plan_id: 'plan-c',
+      success: true,
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-c');
+    expect(worker?.collab?.card.room_id).toBe('room-task-c');
+    expect(worker?.collab?.card.room_kind).toBe('task_discuss');
+    expect(worker?.collab?.card.next).toBe('worker discuss complete');
+    expect(worker?.status).toBe('completed');
+  });
 });

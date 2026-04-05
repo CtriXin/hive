@@ -5,10 +5,14 @@
 // Failure is explicit and easy to debug.
 
 import type {
+  DiscussResult,
   PlanDiscussResult,
   PlannerDiscussRoomRef,
   PlannerDiscussReplyMetadata,
   PlanningBrief,
+  RecoveryBrief,
+  ReviewBrief,
+  WorkerDiscussBrief,
 } from './types.js';
 
 // ── Exported types ──
@@ -40,6 +44,39 @@ export interface CollectRepliesInput {
   on_reply?: (reply: AgentBusReply) => void | Promise<void>;
 }
 
+export interface WorkerDiscussRoom {
+  room_id: string;
+  join_hint?: string;
+  orchestrator_id: string;
+}
+
+export interface OpenWorkerRoomInput {
+  cwd: string;
+  brief: WorkerDiscussBrief;
+}
+
+export interface ReviewRoom {
+  room_id: string;
+  join_hint?: string;
+  orchestrator_id: string;
+}
+
+export interface OpenReviewRoomInput {
+  cwd: string;
+  brief: ReviewBrief;
+}
+
+export interface RecoveryRoom {
+  room_id: string;
+  join_hint?: string;
+  orchestrator_id: string;
+}
+
+export interface OpenRecoveryRoomInput {
+  cwd: string;
+  brief: RecoveryBrief;
+}
+
 // ── Internal helpers ──
 
 const AGENTBUS_DATA_DIR = () =>
@@ -47,12 +84,42 @@ const AGENTBUS_DATA_DIR = () =>
   || `${process.env.HOME || ''}/.agentbus`;
 const NON_BLOCKING_REPLY_GRACE_MS = 2500;
 
-function makeOrchestratorId(): string {
+function makePlannerOrchestratorId(): string {
   return `hive-planner-${Date.now().toString(36)}`;
+}
+
+function makeWorkerOrchestratorId(taskId: string): string {
+  return `hive-worker-${taskId}-${Date.now().toString(36)}`;
+}
+
+function makeReviewOrchestratorId(taskId: string): string {
+  return `hive-review-${taskId}-${Date.now().toString(36)}`;
+}
+
+function makeRecoveryOrchestratorId(taskId: string): string {
+  return `hive-recovery-${taskId}-${Date.now().toString(36)}`;
 }
 
 function makeRoomId(): string {
   return `room-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+async function openBroadcastRoom(
+  roomId: string,
+  orchestratorId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const dataDir = AGENTBUS_DATA_DIR();
+  const { createRoom, appendMessage } = await import('../src/agentbus/backend-fs.js');
+  await createRoom(dataDir, roomId, orchestratorId);
+  await appendMessage(
+    dataDir,
+    roomId,
+    'broadcast',
+    orchestratorId,
+    '*',
+    payload,
+  );
 }
 
 // ── Public API ──
@@ -60,24 +127,9 @@ function makeRoomId(): string {
 export async function openPlannerDiscussRoom(
   input: OpenRoomInput,
 ): Promise<PlannerDiscussRoom> {
-  const dataDir = AGENTBUS_DATA_DIR();
   const roomId = makeRoomId();
-  const orchestratorId = makeOrchestratorId();
-
-  const { createRoom } = await import('../src/agentbus/backend-fs.js');
-  await createRoom(dataDir, roomId, orchestratorId);
-
-  // The opening broadcast is the entire planning brief so another session
-  // can join late and still review without any extra Hive context.
-  const { appendMessage } = await import('../src/agentbus/backend-fs.js');
-  await appendMessage(
-    dataDir,
-    roomId,
-    'broadcast',
-    orchestratorId,
-    '*',
-    input.brief as unknown as Record<string, unknown>,
-  );
+  const orchestratorId = makePlannerOrchestratorId();
+  await openBroadcastRoom(roomId, orchestratorId, input.brief as unknown as Record<string, unknown>);
 
   return {
     room_id: roomId,
@@ -86,7 +138,7 @@ export async function openPlannerDiscussRoom(
   };
 }
 
-export async function collectPlannerDiscussReplies(
+export async function collectDiscussReplies(
   input: CollectRepliesInput,
 ): Promise<AgentBusReply[]> {
   const dataDir = AGENTBUS_DATA_DIR();
@@ -153,10 +205,11 @@ export async function collectPlannerDiscussReplies(
 export interface CloseRoomInput {
   room_id: string;
   orchestrator_id: string;
+  room_kind?: 'plan' | 'task_discuss' | 'review' | 'recovery';
   summary?: Record<string, unknown>;
 }
 
-export async function closePlannerDiscussRoom(
+export async function closeDiscussRoom(
   input: CloseRoomInput,
 ): Promise<void> {
   const dataDir = AGENTBUS_DATA_DIR();
@@ -170,7 +223,13 @@ export async function closePlannerDiscussRoom(
       input.orchestrator_id,
       '*',
       {
-        type: 'planner-discuss-summary',
+        type: input.room_kind === 'task_discuss'
+          ? 'worker-discuss-summary'
+          : input.room_kind === 'review'
+            ? 'external-review-summary'
+            : input.room_kind === 'recovery'
+              ? 'recovery-summary'
+            : 'planner-discuss-summary',
         ...input.summary,
       },
     );
@@ -201,6 +260,57 @@ export function buildRoomRef(
   };
 }
 
+// ── Backward-compat aliases ──
+
+/** @deprecated Use collectDiscussReplies instead */
+export const collectPlannerDiscussReplies = collectDiscussReplies;
+/** @deprecated Use closeDiscussRoom instead */
+export const closePlannerDiscussRoom = closeDiscussRoom;
+
+// ── Worker discuss room ──
+
+export async function openWorkerDiscussRoom(
+  input: OpenWorkerRoomInput,
+): Promise<WorkerDiscussRoom> {
+  const roomId = makeRoomId();
+  const orchestratorId = makeWorkerOrchestratorId(input.brief.task_id);
+  await openBroadcastRoom(roomId, orchestratorId, input.brief as unknown as Record<string, unknown>);
+
+  return {
+    room_id: roomId,
+    join_hint: `agentbus join ${roomId}`,
+    orchestrator_id: orchestratorId,
+  };
+}
+
+export async function openReviewRoom(
+  input: OpenReviewRoomInput,
+): Promise<ReviewRoom> {
+  const roomId = makeRoomId();
+  const orchestratorId = makeReviewOrchestratorId(input.brief.task_id);
+  await openBroadcastRoom(roomId, orchestratorId, input.brief as unknown as Record<string, unknown>);
+
+  return {
+    room_id: roomId,
+    join_hint: `agentbus join ${roomId}`,
+    orchestrator_id: orchestratorId,
+  };
+}
+
+export async function openRecoveryRoom(
+  input: OpenRecoveryRoomInput,
+): Promise<RecoveryRoom> {
+  const roomId = makeRoomId();
+  const orchestratorId = makeRecoveryOrchestratorId(input.brief.task_id);
+  await openBroadcastRoom(roomId, orchestratorId, input.brief as unknown as Record<string, unknown>);
+
+  return {
+    room_id: roomId,
+    join_hint: `agentbus join ${roomId}`,
+    orchestrator_id: orchestratorId,
+  };
+}
+
 // ── Reply synthesis ──
 // Lightweight merge of AgentBus replies into a PlanDiscussResult.
 // For the cheap summarization pass, call synthesizeAgentBusRepliesWithModel() instead.
@@ -218,5 +328,35 @@ export function mergeAgentBusReplies(
       `[${r.participant_id}] ${r.content.slice(0, 200)}`,
     ).join('\n'),
     quality_gate: 'warn' as const,
+  };
+}
+
+// ── Worker discuss reply synthesis ──
+// Merges AgentBus replies into a DiscussResult for worker consumption.
+
+export function synthesizeWorkerDiscussReplies(
+  replies: AgentBusReply[],
+  trigger: { leaning: string; task_id: string },
+): DiscussResult {
+  if (replies.length === 0) {
+    return {
+      decision: trigger.leaning,
+      reasoning: 'No AgentBus replies collected; using original leaning.',
+      escalated: false,
+      thread_id: `agentbus-${trigger.task_id}-${Date.now()}`,
+      quality_gate: 'warn',
+    };
+  }
+
+  const synthParts = replies.map(r =>
+    `[${r.participant_id}] ${r.content.slice(0, 300)}`,
+  );
+
+  return {
+    decision: replies[0]!.content.slice(0, 200),
+    reasoning: synthParts.join('\n'),
+    escalated: false,
+    thread_id: `agentbus-${trigger.task_id}-${Date.now()}`,
+    quality_gate: replies.length >= 2 ? 'pass' : 'warn',
   };
 }

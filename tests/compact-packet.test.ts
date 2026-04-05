@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import type { RunScoreHistory, RunSpec, RunState, TaskPlan, WorkerStatusSnapshot } from '../orchestrator/types.js';
+import type { LoopProgress } from '../orchestrator/loop-progress-store.js';
 import { loadCompactPacket, loadLatestCompactRestore, loadWorkspaceCompactPacket } from '../orchestrator/compact-packet.js';
 
 const TMP_DIR = '/tmp/hive-compact-packet-test';
@@ -89,6 +90,27 @@ describe('compact-packet', () => {
           updated_at: new Date().toISOString(),
           task_summary: 'Building compact packet view',
           transcript_path: '.ai/runs/run-compact-123/workers/task-b.transcript.jsonl',
+          collab: {
+            card: {
+              room_id: 'room-task-b',
+              room_kind: 'task_discuss',
+              status: 'closed',
+              replies: 1,
+              join_hint: 'agentbus join room-task-b',
+              focus_task_id: 'task-b',
+              next: 'worker discuss complete',
+            },
+            recent_events: [
+              {
+                type: 'room:closed',
+                room_id: 'room-task-b',
+                room_kind: 'task_discuss',
+                at: '2026-04-03T00:00:04.000Z',
+                reply_count: 1,
+                focus_task_id: 'task-b',
+              },
+            ],
+          },
         },
       ],
     };
@@ -124,12 +146,40 @@ describe('compact-packet', () => {
         },
       ],
     };
+    const loopProgress: LoopProgress = {
+      run_id: RUN_ID,
+      round: 2,
+      phase: 'discussing',
+      reason: 'Planner discuss collecting replies',
+      collab: {
+        card: {
+          room_id: 'room-compact',
+          room_kind: 'plan',
+          status: 'collecting',
+          replies: 1,
+          last_reply_at: '2026-04-03T00:00:03.000Z',
+          join_hint: 'agentbus join room-compact',
+          next: 'waiting for one more reply or timeout',
+        },
+        recent_events: [
+          {
+            type: 'room:opened',
+            room_id: 'room-compact',
+            room_kind: 'plan',
+            at: '2026-04-03T00:00:00.000Z',
+            reply_count: 0,
+          },
+        ],
+      },
+      updated_at: new Date().toISOString(),
+    };
 
     writeJson(path.join(runDir, 'spec.json'), spec);
     writeJson(path.join(runDir, 'state.json'), state);
     writeJson(path.join(runDir, 'plan.json'), plan);
     writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
     writeJson(path.join(runDir, 'score-history.json'), scoreHistory);
+    writeJson(path.join(runDir, 'loop-progress.json'), loopProgress);
     writeJson(path.join(runDir, 'mindkeeper-checkpoint-result.json'), {
       success: true,
       threadId: 'dst-compact-1',
@@ -138,12 +188,21 @@ describe('compact-packet', () => {
     const result = loadCompactPacket(TMP_DIR);
     expect(result).not.toBeNull();
     expect(result!.packet.run_id).toBe(RUN_ID);
+    expect(result!.packet.collab?.room_id).toBe('room-compact');
+    expect(result!.packet.collab?.status).toBe('collecting');
     expect(result!.packet.worker_focus[0].agent_id).toBe('task-b@run-compact-123');
+    expect(result!.packet.worker_focus[0].collab?.room_id).toBe('room-task-b');
     expect(result!.packet.suggested_commands).toContain('hive workers task-b');
+    expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/loop-progress.json');
     expect(result!.packet.detail_sources).toContain('.ai/plan/current.md');
     expect(result!.packet.restore_prompt).toContain('You are resuming a Hive run after compact/clear/new.');
+    expect(result!.packet.restore_prompt).toContain('Collab room: room-compact | collecting | replies=1');
+    expect(result!.packet.restore_prompt).toContain('Primary worker collab: room-task-b | closed | replies=1');
     expect(result!.packet.restore_prompt).toContain('Recovery order:');
     expect(result!.markdown).toContain('# Hive Compact Packet');
+    expect(result!.markdown).toContain('- collab:');
+    expect(result!.markdown).toContain('room-compact | collecting | replies=1');
+    expect(result!.markdown).toContain('collab: room-task-b | closed | replies=1');
     expect(result!.markdown).toContain('## Restore Prompt');
     expect(result!.markdown).toContain('dst-compact-1');
     expect(fs.existsSync(path.join(runDir, 'compact-packet.json'))).toBe(true);

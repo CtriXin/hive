@@ -1,4 +1,5 @@
 // orchestrator/dispatcher.ts — Worker dispatcher: spawn, stream, discuss, collect
+import path from 'path';
 import {
   type TaskPlan,
   type SubTask,
@@ -7,7 +8,7 @@ import {
   type WorkerMessage,
   type ContextPacket,
   type DiscussResult,
-  type DiscussTrigger,
+  type CollabStatusSnapshot,
 } from './types.js';
 import { resolveProvider, quickPing } from './provider-resolver.js';
 import { triggerDiscussion } from './discuss-bridge.js';
@@ -22,6 +23,8 @@ import type { SDKMessage } from '@anthropic-ai/claude-code';
 import { safeQuery } from './sdk-query-safe.js';
 import { getModelFallbackRoutes } from './mms-routes-loader.js';
 import { appendWorkerTranscriptEntry, updateWorkerStatus } from './worker-status-store.js';
+import { buildRoomRef } from './agentbus-adapter.js';
+import { handleDiscussTrigger } from './worker-discuss-handler.js';
 
 // ── DispatchResult (ERRATA §2) ──
 
@@ -35,6 +38,7 @@ export interface DispatchRuntimeOptions {
   round?: number;
   goal?: string;
   recordBudget?: boolean;
+  onWorkerDiscussSnapshot?: (snapshot: CollabStatusSnapshot) => void | Promise<void>;
 }
 
 // ── Helpers ──
@@ -203,6 +207,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   const messages: WorkerMessage[] = [];
   let discussTriggered = false;
   const discussResults: DiscussResult[] = [];
+  let workerDiscussCollab: CollabStatusSnapshot | undefined;
   let tokenUsage = { input: 0, output: 0 };
   reportStatus('starting', {
     started_at: new Date(startTime).toISOString(),
@@ -342,9 +347,13 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
         event_message: 'Worker requested discuss assistance',
       });
       appendTranscript('system', 'Worker requested discuss assistance');
-      const discussResult = await handleDiscussTrigger(
-        config, worktreePath, baseUrl, apiKey,
+      const discussHandlerResult = await handleDiscussTrigger(
+        config, worktreePath,
       );
+      const discussResult = discussHandlerResult.result;
+      if (discussHandlerResult.collab) {
+        workerDiscussCollab = discussHandlerResult.collab;
+      }
       discussResults.push(discussResult);
       reportStatus('running', {
         discuss_triggered: true,
@@ -424,47 +433,8 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     token_usage: tokenUsage,
     discuss_triggered: discussTriggered,
     discuss_results: discussResults,
+    worker_discuss_collab: workerDiscussCollab,
   };
-}
-
-// ── Discuss handler (fix #1: match Plan's 3-arg signature) ──
-
-async function handleDiscussTrigger(
-  workerConfig: WorkerConfig,
-  workDir: string,
-  baseUrl: string,
-  apiKey: string,
-): Promise<DiscussResult> {
-  try {
-    const fs = await import('fs');
-    const path = await import('path');
-    const triggerFile = path.join(workDir, '.ai', 'discuss-trigger.json');
-
-    if (!fs.existsSync(triggerFile)) {
-      return {
-        decision: 'continue',
-        reasoning: 'No discuss-trigger.json found, skipping discussion',
-        escalated: false,
-        thread_id: `auto-${workerConfig.taskId}`,
-        quality_gate: 'warn',
-      };
-    }
-
-    const trigger: DiscussTrigger = JSON.parse(fs.readFileSync(triggerFile, 'utf-8'));
-
-    // Fix #1: match Plan signature — triggerDiscussion(trigger, workerConfig, workDir)
-    const result = await triggerDiscussion(trigger, workerConfig, workDir);
-
-    return result;
-  } catch (err: any) {
-    return {
-      decision: 'continue',
-      reasoning: `Discuss trigger failed: ${err.message}`,
-      escalated: false,
-      thread_id: `error-${workerConfig.taskId}`,
-      quality_gate: 'warn',
-    };
-  }
 }
 
 // ── dispatchBatch ──
@@ -559,6 +529,7 @@ export async function dispatchBatch(
         round,
         taskDescription: task.description,
         fromBranch,
+        onWorkerDiscussSnapshot: runtime.onWorkerDiscussSnapshot,
       } satisfies WorkerConfig;
     });
 

@@ -4,9 +4,13 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { OrchestratorResult, TaskPlan } from '../orchestrator/types.js';
 import {
+  extractRunnableTaskPlan,
   LATEST_PLAN_ARTIFACT,
+  loadLatestPlanPointer,
   relPath,
+  resolvePreferredLatestPlanArtifact,
   resolveLatestPlanArtifact,
+  saveLatestPlanPointer,
   summarizeDispatchCard,
   summarizeExecutionCard,
   summarizePlanCard,
@@ -15,6 +19,8 @@ import {
 import type { RunCompactPacketResult } from '../orchestrator/compact-packet.js';
 
 const tempDirs: string[] = [];
+const LATEST_PLAN_POINTER_PATH = path.join(os.homedir(), '.hive', 'latest-plan-pointer.json');
+let latestPlanPointerBackup: string | null = null;
 
 function makeTempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mcp-surface-'));
@@ -87,6 +93,15 @@ function buildCompactPacket(cwd: string): RunCompactPacketResult {
         status: 'running',
         task_summary: 'Shrinking host-visible tool output',
         transcript_path: '.ai/runs/run-123/workers/task-a.transcript.jsonl',
+        collab: {
+          room_id: 'room-task-a',
+          room_kind: 'task_discuss',
+          status: 'closed',
+          replies: 1,
+          join_hint: 'agentbus join room-task-a',
+          focus_task_id: 'task-a',
+          next: 'worker discuss complete',
+        },
       }],
       suggested_commands: ['hive workers task-a', 'hive status'],
       detail_sources: ['.ai/runs/run-123/state.json'],
@@ -162,6 +177,13 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+  if (latestPlanPointerBackup === null) {
+    fs.rmSync(LATEST_PLAN_POINTER_PATH, { force: true });
+  } else {
+    fs.mkdirSync(path.dirname(LATEST_PLAN_POINTER_PATH), { recursive: true });
+    fs.writeFileSync(LATEST_PLAN_POINTER_PATH, latestPlanPointerBackup, 'utf-8');
+    latestPlanPointerBackup = null;
+  }
 });
 
 describe('mcp-surface', () => {
@@ -186,6 +208,22 @@ describe('mcp-surface', () => {
       stablePlanPath: path.join(cwd, '.ai', 'mcp', LATEST_PLAN_ARTIFACT),
       translationModel: 'qwen-translate',
       discussQualityGate: 'pass',
+      discussRoom: {
+        room_id: 'room-123',
+        transport: 'agentbus',
+        reply_count: 1,
+        timeout_ms: 30000,
+        join_hint: 'agentbus join room-123',
+        created_at: '2026-04-03T00:00:00.000Z',
+      },
+      collabCard: {
+        room_id: 'room-123',
+        room_kind: 'plan',
+        status: 'closed',
+        replies: 1,
+        join_hint: 'agentbus join room-123',
+        next: 'planner discuss complete',
+      },
       budgetWarning: '$1.25 / $5.00 budget used',
     });
 
@@ -194,11 +232,40 @@ describe('mcp-surface', () => {
     expect(summary).toContain('- translated: qwen-translate');
     expect(summary).toContain('- discuss: pass');
     expect(summary).toContain('- budget: $1.25 / $5.00 budget used');
+    expect(summary).toContain('- room: room-123 (1 reply(s), join: agentbus join room-123)');
+    expect(summary).toContain('- collab: room-123 [closed] replies=1, join: agentbus join room-123');
+    expect(summary).toContain('- collab next: planner discuss complete');
     expect(summary).toContain('- focus: task-a | claude-sonnet |');
     expect(summary).toContain('+1 more');
     expect(summary).toContain('- next: execute_plan');
     expect(summary).toContain('- plan: .ai/mcp/latest-plan.json');
     expect(summary).toContain('- artifact: .ai/mcp/plan-tasks-1.json');
+  });
+
+  it('extracts only runnable plans from raw or wrapped payloads', () => {
+    const cwd = makeTempDir();
+    const plan = buildPlan(cwd);
+
+    expect(extractRunnableTaskPlan(plan)).toEqual(plan);
+    expect(extractRunnableTaskPlan({ plan, planner_error: null })).toEqual(plan);
+    expect(extractRunnableTaskPlan({ plan: null, planner_error: 'bad output' })).toBeNull();
+    expect(extractRunnableTaskPlan({ nope: true })).toBeNull();
+  });
+
+  it('prefers the saved latest-plan pointer when resolving the next execute_plan target', () => {
+    const cwd = makeTempDir();
+    const other = makeTempDir();
+    latestPlanPointerBackup = fs.existsSync(LATEST_PLAN_POINTER_PATH)
+      ? fs.readFileSync(LATEST_PLAN_POINTER_PATH, 'utf-8')
+      : null;
+    const localPlanPath = writeStableMcpJsonArtifact(cwd, LATEST_PLAN_ARTIFACT, { plan: buildPlan(cwd) });
+    const pointedPlanPath = writeStableMcpJsonArtifact(other, LATEST_PLAN_ARTIFACT, { plan: buildPlan(other) });
+
+    saveLatestPlanPointer(other, pointedPlanPath);
+
+    expect(loadLatestPlanPointer()?.plan_path).toBe(pointedPlanPath);
+    expect(resolveLatestPlanArtifact(cwd)).toBe(localPlanPath);
+    expect(resolvePreferredLatestPlanArtifact(cwd)).toBe(pointedPlanPath);
   });
 
   it('builds a short execution card with one focus worker and next commands', () => {
@@ -218,6 +285,8 @@ describe('mcp-surface', () => {
     expect(summary).toContain('- focus: task-a@run-123 | running | Shrinking host-visible tool output');
     expect(summary).toContain('- agent: task-a@run-123');
     expect(summary).toContain('- transcript: .ai/runs/run-123/workers/task-a.transcript.jsonl');
+    expect(summary).toContain('- collab: task-a -> room-task-a [closed] replies=1, join: agentbus join room-task-a');
+    expect(summary).toContain('- collab next: worker discuss complete');
     expect(summary).toContain('- note: 1 task(s) stayed in worktree for inspection');
     expect(summary).toContain('- next: hive workers task-a | hive status | hive compact');
     expect(summary).toContain('- restore: .ai/restore/latest-compact-restore-prompt.md');
@@ -243,6 +312,7 @@ describe('mcp-surface', () => {
     expect(summary).toContain('- focus: task-a@run-123 | running | Shrinking host-visible tool output');
     expect(summary).toContain('- agent: task-a@run-123');
     expect(summary).toContain('- transcript: .ai/runs/run-123/workers/task-a.transcript.jsonl');
+    expect(summary).toContain('- collab: task-a -> room-task-a [closed] replies=1, join: agentbus join room-task-a');
     expect(summary).toContain('- next: hive workers task-a | hive compact');
     expect(summary).toContain('- restore: .ai/restore/latest-compact-restore-prompt.md');
     expect(summary).toContain('- artifact: .ai/mcp/dispatch-task-a-1.json');

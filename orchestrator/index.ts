@@ -96,7 +96,10 @@ async function main() {
         : '',
     ].filter(Boolean);
     const summary = worker.task_summary || worker.last_message;
-    return `- ${worker.task_id} [${worker.status}] ${modelText}${details.length ? ` (${details.join(', ')})` : ''}${summary ? ` | ${summary}` : ''}`;
+    const collab = worker.collab?.card
+      ? ` | collab ${worker.collab.card.room_id} [${worker.collab.card.status}] replies=${worker.collab.card.replies}`
+      : '';
+    return `- ${worker.task_id} [${worker.status}] ${modelText}${details.length ? ` (${details.join(', ')})` : ''}${summary ? ` | ${summary}` : ''}${collab}`;
   };
 
   const resolveWorkerRunId = async (cwd: string, runId?: string): Promise<string | null> => {
@@ -133,6 +136,20 @@ async function main() {
     console.log(`📝 summary: ${worker.task_summary || worker.last_message || '-'}`);
     if (worker.transcript_path) {
       console.log(`🧵 transcript: ${worker.transcript_path}`);
+    }
+    if (worker.collab?.card) {
+      const card = worker.collab.card;
+      console.log(`🤝 collab: ${card.room_id} [${card.status}] replies=${card.replies}`);
+      console.log(`   next: ${card.next}`);
+      if (card.last_reply_at) {
+        console.log(`   last reply: ${card.last_reply_at}`);
+      }
+      if (card.join_hint) {
+        console.log(`   join: ${card.join_hint}`);
+      }
+      for (const event of worker.collab.recent_events.slice(-4)) {
+        console.log(`   event: ${event.at} ${event.type}${typeof event.reply_count === 'number' ? ` (#${event.reply_count})` : ''}${event.note ? ` | ${event.note}` : ''}`);
+      }
     }
     if (worker.session_id) {
       console.log(`🆔 session: ${worker.session_id}`);
@@ -348,6 +365,14 @@ async function main() {
         console.log(`   join: ${room.join_hint}`);
       }
     }
+    if (execution.plan_discuss_collab?.card) {
+      const card = execution.plan_discuss_collab.card;
+      console.log(`🤝 collab: ${card.room_id} [${card.status}] replies=${card.replies}`);
+      console.log(`   next: ${card.next}`);
+      if (card.last_reply_at) {
+        console.log(`   last reply: ${card.last_reply_at}`);
+      }
+    }
     console.log(`✅ done conditions: ${spec.done_conditions.length}`);
     for (const condition of spec.done_conditions) {
       console.log(`   - [${condition.type}] ${condition.label}`);
@@ -395,6 +420,11 @@ async function main() {
       const room = execution.plan_discuss_room;
       console.log(`🔗 discuss room: ${room.room_id} (${room.reply_count} reply${room.reply_count !== 1 ? 's' : ''})`);
     }
+    if (shouldExecute && execution.plan_discuss_collab?.card) {
+      const card = execution.plan_discuss_collab.card;
+      console.log(`🤝 collab: ${card.room_id} [${card.status}] replies=${card.replies}`);
+      console.log(`   next: ${card.next}`);
+    }
     if (shouldExecute) {
       const { loadRunScoreHistory } = await import('./score-history.js');
       const latestScore = loadRunScoreHistory(cwd, runId)?.rounds.at(-1);
@@ -423,6 +453,8 @@ async function main() {
       const sState = loadRunState(cwd, runId);
       const plan = loadRunPlan(cwd, runId);
       const result = loadRunResult(cwd, runId);
+      const { readLoopProgress } = await import('./loop-progress-store.js');
+      const progress = readLoopProgress(cwd, runId);
       const { loadWorkerStatusSnapshot, summarizeWorkerSnapshot } = await import('./worker-status-store.js');
       const workerSnapshot = loadWorkerStatusSnapshot(cwd, runId);
       const { loadRunScoreHistory } = await import('./score-history.js');
@@ -458,6 +490,9 @@ async function main() {
       console.log(`🟡 Run: ${runId}`);
       console.log(`📊 status: ${sState.status}`);
       console.log(`🔁 round: ${sState.round}`);
+      if (progress) {
+        console.log(`🧭 phase: ${progress.phase} — ${progress.reason}`);
+      }
       console.log(`📋 plan tasks: ${plan?.tasks.length || 0}`);
       console.log(`🧪 verification checks: ${sState.verification_results.length}`);
       console.log(`🧾 summary: ${sState.final_summary || 'n/a'}`);
@@ -467,6 +502,25 @@ async function main() {
         console.log(`👷 workers: ${counts.total} total / ${counts.active} active / ${counts.completed} completed / ${counts.failed} failed / ${counts.queued} queued`);
         const firstWorker = workerSnapshot.workers[0]?.task_id;
         console.log(`💡 inspect workers: ${firstWorker ? `hive workers ${firstWorker}` : 'hive workers'}`);
+        const workerCollabs = workerSnapshot.workers
+          .filter((worker) => worker.collab?.card)
+          .filter((worker) => worker.collab!.card.room_id !== progress?.collab?.card.room_id)
+          .slice(0, 2);
+        for (const worker of workerCollabs) {
+          const card = worker.collab!.card;
+          console.log(`🤝 task collab: ${worker.task_id} -> ${card.room_id} [${card.status}] replies=${card.replies}`);
+        }
+      }
+      if (progress?.collab?.card) {
+        const card = progress.collab.card;
+        console.log(`🤝 collab: ${card.room_id} [${card.status}] replies=${card.replies}`);
+        console.log(`   next: ${card.next}`);
+        if (card.last_reply_at) {
+          console.log(`   last reply: ${card.last_reply_at}`);
+        }
+        if (card.join_hint) {
+          console.log(`   join: ${card.join_hint}`);
+        }
       }
       if (latestScore) {
         console.log(`📈 latest score: ${latestScore.score} (delta ${formatScoreDelta(latestScore.delta_from_previous)})`);

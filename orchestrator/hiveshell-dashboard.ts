@@ -1,9 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import type {
-  MindkeeperCheckpointPayload,
-} from './mindkeeper-adapter.js';
-import type {
   OrchestratorResult,
   RunScoreHistory,
   RunSpec,
@@ -11,9 +8,25 @@ import type {
   TaskPlan,
   WorkerStatusSnapshot,
 } from './types.js';
+import type { LoopProgress } from './loop-progress-store.js';
 import { loadRunPlan, loadRunResult, loadRunSpec, loadRunState, listRuns } from './run-store.js';
 import { loadRunScoreHistory } from './score-history.js';
+import { readLoopProgress } from './loop-progress-store.js';
 import { listWorkerStatusSnapshots, loadWorkerStatusSnapshot, summarizeWorkerSnapshot } from './worker-status-store.js';
+
+interface MindkeeperCheckpointPayload {
+  repo: string;
+  task: string;
+  branch?: string;
+  parent?: string;
+  cli: string;
+  model: string;
+  decisions: string[];
+  changes: string[];
+  findings: string[];
+  next: string[];
+  status: string;
+}
 
 interface MindkeeperBootstrapArtifact {
   activeThread?: {
@@ -42,6 +55,7 @@ export interface HiveShellDashboardData {
   cwd: string;
   spec: RunSpec | null;
   state: RunState | null;
+  loopProgress: LoopProgress | null;
   plan: TaskPlan | null;
   result: OrchestratorResult | null;
   workerSnapshot: WorkerStatusSnapshot | null;
@@ -155,6 +169,7 @@ function renderMindkeeper(data: HiveShellDashboardData): string[] {
 function renderOverview(data: HiveShellDashboardData): string[] {
   const spec = data.spec;
   const state = data.state;
+  const progress = data.loopProgress;
   const score = data.scoreHistory?.rounds.at(-1);
   const workers = data.workerSnapshot ? summarizeWorkerSnapshot(data.workerSnapshot) : null;
 
@@ -163,11 +178,51 @@ function renderOverview(data: HiveShellDashboardData): string[] {
     `- goal: ${truncate(spec?.goal, 110)}`,
     `- status: ${state?.status || 'unknown'}`,
     `- round: ${state?.round ?? 0}${spec ? ` / ${spec.max_rounds}` : ''}`,
+    `- phase: ${progress ? `${progress.phase} | ${truncate(progress.reason, 96)}` : 'n/a'}`,
     `- next: ${state?.next_action ? `${state.next_action.kind} - ${truncate(state.next_action.reason, 90)}` : '-'}`,
     `- summary: ${truncate(state?.final_summary, 110)}`,
     `- score: ${score ? `${score.score} (best ${data.scoreHistory?.best_score ?? score.score})` : 'n/a'}`,
     `- workers: ${workers ? `${workers.total} total / ${workers.active} active / ${workers.completed} completed / ${workers.failed} failed` : 'n/a'}`,
   ];
+}
+
+function renderCollab(data: HiveShellDashboardData): string[] {
+  const card = data.loopProgress?.collab?.card;
+  const events = data.loopProgress?.collab?.recent_events || [];
+  const workerCards = (data.workerSnapshot?.workers || [])
+    .filter((worker) => worker.collab?.card)
+    .filter((worker) => worker.collab!.card.room_id !== card?.room_id)
+    .slice(0, 3);
+  if (!card && workerCards.length === 0) {
+    return ['- no collaboration snapshot yet'];
+  }
+
+  const lines: string[] = [];
+
+  if (card) {
+    lines.push(
+      `- room: ${card.room_id} [${card.status}]`,
+      `- replies: ${card.replies}`,
+      `- next: ${truncate(card.next, 96)}`,
+    );
+  }
+
+  if (card?.last_reply_at) {
+    lines.push(`- last reply: ${card.last_reply_at}`);
+  }
+  if (card?.join_hint) {
+    lines.push(`- join: ${truncate(card.join_hint, 96)}`);
+  }
+  for (const event of events.slice(-4)) {
+    lines.push(`- event: ${event.at} ${event.type}${typeof event.reply_count === 'number' ? ` (#${event.reply_count})` : ''}${event.note ? ` | ${truncate(event.note, 72)}` : ''}`);
+  }
+  for (const worker of workerCards) {
+    const workerCard = worker.collab!.card;
+    lines.push(`- task collab: ${worker.task_id} -> ${workerCard.room_id} [${workerCard.status}] replies=${workerCard.replies}`);
+    lines.push(`- task next: ${truncate(workerCard.next, 96)}`);
+  }
+
+  return lines;
 }
 
 function renderArtifacts(cwd: string, runId: string): string[] {
@@ -225,6 +280,7 @@ export function loadHiveShellDashboard(
     cwd,
     spec: loadRunSpec(cwd, resolvedRunId),
     state: loadRunState(cwd, resolvedRunId),
+    loopProgress: readLoopProgress(cwd, resolvedRunId),
     plan: loadRunPlan(cwd, resolvedRunId),
     result: loadRunResult(cwd, resolvedRunId),
     workerSnapshot: loadWorkerStatusSnapshot(cwd, resolvedRunId),
@@ -244,6 +300,7 @@ export function renderHiveShellDashboard(
       `updated: ${new Date().toISOString()}`,
     ]),
     section('Run Overview', renderOverview(data)),
+    section('Collab', renderCollab(data)),
     section('Score Trend', renderScoreTrend(data.scoreHistory)),
     section('Workers', renderWorkers(data.workerSnapshot)),
     section('Mindkeeper', renderMindkeeper(data)),

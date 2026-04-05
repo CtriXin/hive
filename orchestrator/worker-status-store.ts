@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import type {
+  CollabStatusSnapshot,
   WorkerTranscriptEntry,
   WorkerStatusEntry,
   WorkerStatusEvent,
@@ -34,6 +35,7 @@ export interface WorkerStatusUpdate {
   success?: boolean;
   error?: string;
   event_message?: string;
+  collab?: CollabStatusSnapshot;
 }
 
 function runsDir(cwd: string): string {
@@ -91,6 +93,16 @@ function trimTranscriptContent(text: string): string {
   if (!normalized) return '';
   if (normalized.length <= MAX_TRANSCRIPT_CONTENT) return normalized;
   return `${normalized.slice(0, MAX_TRANSCRIPT_CONTENT - 3)}...`;
+}
+
+function cloneCollabSnapshot(
+  snapshot: CollabStatusSnapshot | undefined,
+): CollabStatusSnapshot | undefined {
+  if (!snapshot) return undefined;
+  return {
+    card: { ...snapshot.card },
+    recent_events: snapshot.recent_events.map((event) => ({ ...event })),
+  };
 }
 
 export function buildWorkerAgentId(runId: string, taskId: string): string {
@@ -287,6 +299,7 @@ export function updateWorkerStatus(
     success: update.success ?? previous?.success,
     error: update.error || previous?.error,
     transcript_path: previous?.transcript_path || buildWorkerTranscriptPath(runId, update.task_id),
+    collab: cloneCollabSnapshot(update.collab) || cloneCollabSnapshot(previous?.collab),
   };
 
   if (index >= 0) {

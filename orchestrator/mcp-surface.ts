@@ -1,6 +1,7 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
-import type { OrchestratorResult, TaskPlan, SubTask } from './types.js';
+import type { CollabCard, OrchestratorResult, TaskPlan, SubTask, PlannerDiscussRoomRef } from './types.js';
 import type { CompactPacketWorker, RunCompactPacketResult } from './compact-packet.js';
 
 const MCP_DIR_SEGMENTS = ['.ai', 'mcp'];
@@ -8,8 +9,19 @@ const MAX_FOCUS_DESCRIPTION = 96;
 
 export const LATEST_PLAN_ARTIFACT = 'latest-plan.json';
 
+interface LatestPlanPointer {
+  version: 1;
+  cwd: string;
+  plan_path: string;
+  updated_at: string;
+}
+
 function getMcpDir(cwd: string): string {
   return path.join(cwd, ...MCP_DIR_SEGMENTS);
+}
+
+function latestPlanPointerPath(): string {
+  return path.join(os.homedir(), '.hive', 'latest-plan-pointer.json');
 }
 
 export function ensureDir(dir: string): void {
@@ -59,6 +71,62 @@ export function resolveLatestPlanArtifact(cwd: string): string | null {
   return fs.existsSync(filePath) ? filePath : null;
 }
 
+export function saveLatestPlanPointer(cwd: string, planPath: string): string {
+  const filePath = latestPlanPointerPath();
+  ensureDir(path.dirname(filePath));
+  const payload: LatestPlanPointer = {
+    version: 1,
+    cwd,
+    plan_path: planPath,
+    updated_at: new Date().toISOString(),
+  };
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+  return filePath;
+}
+
+export function loadLatestPlanPointer(): LatestPlanPointer | null {
+  try {
+    const filePath = latestPlanPointerPath();
+    if (!fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as LatestPlanPointer;
+  } catch {
+    return null;
+  }
+}
+
+export function resolvePreferredLatestPlanArtifact(cwd: string): string | null {
+  const pointer = loadLatestPlanPointer();
+  if (pointer?.plan_path && fs.existsSync(pointer.plan_path)) {
+    return pointer.plan_path;
+  }
+  return resolveLatestPlanArtifact(cwd);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isTaskPlanLike(value: unknown): value is TaskPlan {
+  if (!isRecord(value)) return false;
+  return typeof value.id === 'string'
+    && typeof value.goal === 'string'
+    && typeof value.cwd === 'string'
+    && Array.isArray(value.tasks)
+    && Array.isArray(value.execution_order)
+    && isRecord(value.context_flow)
+    && typeof value.created_at === 'string';
+}
+
+export function extractRunnableTaskPlan(payload: unknown): TaskPlan | null {
+  if (isTaskPlanLike(payload)) {
+    return payload;
+  }
+  if (!isRecord(payload)) {
+    return null;
+  }
+  return isTaskPlanLike(payload.plan) ? payload.plan : null;
+}
+
 export function relPath(cwd: string, target: string): string {
   const rel = target.startsWith(cwd)
     ? target.slice(cwd.length).replace(/^\/+/, '')
@@ -84,6 +152,8 @@ interface PlanCardOptions {
   stablePlanPath: string;
   translationModel?: string;
   discussQualityGate?: string | null;
+  discussRoom?: PlannerDiscussRoomRef | null;
+  collabCard?: CollabCard | null;
   budgetWarning?: string | null;
 }
 
@@ -99,6 +169,9 @@ export function summarizePlanCard(
     `- result: ${plan.tasks.length} task(s) via ${options.plannerModel}`,
     options.translationModel ? `- translated: ${options.translationModel}` : '',
     options.discussQualityGate ? `- discuss: ${options.discussQualityGate}` : '',
+    options.discussRoom ? `- room: ${options.discussRoom.room_id} (${options.discussRoom.reply_count} reply(s)${options.discussRoom.join_hint ? `, join: ${options.discussRoom.join_hint}` : ''})` : '',
+    options.collabCard ? `- collab: ${options.collabCard.room_id} [${options.collabCard.status}] replies=${options.collabCard.replies}${options.collabCard.join_hint ? `, join: ${options.collabCard.join_hint}` : ''}` : '',
+    options.collabCard ? `- collab next: ${options.collabCard.next}` : '',
     options.budgetWarning ? `- budget: ${options.budgetWarning}` : '',
     focusTask
       ? `- focus: ${formatFocusTask(focusTask)}${extraCount > 0 ? ` +${extraCount} more` : ''}`
@@ -119,6 +192,14 @@ function buildAgentLines(cwd: string, worker?: CompactPacketWorker): string[] {
     `- agent: ${worker.agent_id}`,
     worker.transcript_path ? `- transcript: ${relPath(cwd, worker.transcript_path)}` : '',
   ].filter(Boolean);
+}
+
+function buildWorkerCollabLines(worker?: CompactPacketWorker): string[] {
+  if (!worker?.collab) return [];
+  return [
+    `- collab: ${worker.task_id} -> ${worker.collab.room_id} [${worker.collab.status}] replies=${worker.collab.replies}${worker.collab.join_hint ? `, join: ${worker.collab.join_hint}` : ''}`,
+    `- collab next: ${worker.collab.next}`,
+  ];
 }
 
 function buildInspectLine(commands: string[]): string {
@@ -154,6 +235,7 @@ export function summarizeExecutionCard(
     `- result: ${blockedCount > 0 ? 'partial' : 'ok'} | workers ${passedWorkers}/${totalWorkers} | reviews ${passedReviews}/${totalReviews}`,
     focusWorker ? `- focus: ${formatFocusWorker(focusWorker)}` : '',
     ...buildAgentLines(plan.cwd, focusWorker),
+    ...buildWorkerCollabLines(focusWorker),
     blockedCount > 0 ? `- note: ${blockedCount} task(s) stayed in worktree for inspection` : '',
     buildInspectLine(inspectCommands),
     restorePath ? `- restore: ${restorePath}` : '',
@@ -195,6 +277,7 @@ export function summarizeDispatchCard(
     `- result: ${resultParts.join(' | ')}`,
     focusWorker ? `- focus: ${formatFocusWorker(focusWorker)}` : '',
     ...buildAgentLines(options.cwd, focusWorker),
+    ...buildWorkerCollabLines(focusWorker),
     buildInspectLine([`hive workers ${output.taskId}`, 'hive compact']),
     restorePath ? `- restore: ${restorePath}` : '',
     `- artifact: ${options.artifactPath}`,
