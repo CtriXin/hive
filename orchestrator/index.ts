@@ -28,6 +28,7 @@ export {
 export { buildRoundScoreEntry, buildRoundScoreSignals, computeRoundScore, loadRunScoreHistory, saveRoundScore } from './score-history.js';
 export { loadHiveShellDashboard, renderHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashboard.js';
 export { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
+export { collectHumanBridgeRefs, formatHumanBridgeRef } from './human-bridge-linkage.js';
 export {
   buildCompactPacket,
   buildWorkspaceCompactPacket,

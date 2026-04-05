@@ -97,6 +97,8 @@ function buildCompactPacket(cwd: string): RunCompactPacketResult {
           join_hint: 'agentbus join room-123',
         },
       ],
+      bridge_refs: [],
+      advisory_focus: [],
       worker_focus: [{
         task_id: 'task-a',
         agent_id: 'task-a@run-123',

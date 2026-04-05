@@ -1,6 +1,6 @@
 # Collaboration Stack Progress
 
-Last updated: 2026-04-04
+Last updated: 2026-04-05
 Status: active
 Owners: codex-planner, claude-planner
 
@@ -317,8 +317,61 @@ Notes:
 5. ~~Phase 3: External review slot (room_kind=review, post-cascade)~~ IMPLEMENTATION COMPLETE
 6. ~~Phase 4: Repeated-fail advisory (room_kind=recovery)~~ IMPLEMENTATION COMPLETE
 7. ~~Phase 5: Memory linkage (MindKeeper checkpoint includes room refs)~~ MINIMAL SLICE COMPLETE
-8. Phase 6: Human bridge (agent-im maps rooms to Discord threads)
-9. Advisory scoring engine (separate from executor scores, data collection starts Phase 1)
+8. ~~Phase 6: Human bridge (agent-im maps rooms to Discord threads)~~ MINIMAL SLICE COMPLETE
+9. ~~Phase 7: Advisory scoring engine (separate from executor scores)~~ MINIMAL SLICE COMPLETE
+
+## Phase 6: Human Bridge — MINIMAL SLICE COMPLETE
+
+### Status: MINIMAL SLICE COMPLETE (2026-04-05)
+
+Execution brief: `docs/HIVE_COLLAB_PHASE6_EXECUTION.md`
+
+Delivered:
+- `HumanBridgeRef` shared type for room -> thread linkage
+- `orchestrator/human-bridge-linkage.ts` dedupes bridge refs from `human-bridge-state.json` plus checkpoint artifacts
+- `human-bridge-state.json`, `mindkeeper-checkpoint-input.json`, and `mindkeeper-checkpoint-result.json` readers now accept `bridge_refs`
+- compact packet now persists `bridge_refs`, and restore prompt includes `Human bridge threads`
+- hiveshell dashboard now renders a dedicated `Human Bridge` section
+
+Validation:
+- `npm test -- tests/human-bridge-linkage.test.ts tests/compact-packet.test.ts tests/hiveshell-dashboard.test.ts tests/mcp-surface.test.ts` passed
+- `npm run build` passed
+
+Notes:
+- This phase does **not** post to Discord or require `agent-im` at runtime
+- The slice is artifact + surface wiring only; a dedicated smoke is optional
+
+### Follow-up items
+- When `agent-im` runtime wiring exists, emit the same `bridge_refs` shape directly
+- Decide later whether one room can project to multiple human threads or stays single-primary
+- Keep authority routing and approval policy outside this phase
+
+## Phase 7: Advisory Scoring — MINIMAL SLICE COMPLETE
+
+### Status: MINIMAL SLICE COMPLETE (2026-04-05)
+
+Execution brief: `docs/HIVE_COLLAB_PHASE7_EXECUTION.md`
+
+Delivered:
+- `orchestrator/advisory-score.ts` adds run-local scoring, aggregation, and persistence for collaboration replies
+- `advisory-score-history.json` now records per-reply advisory signals plus participant summaries
+- planner discuss signals persist from run-time room metadata when the planner discuss room is part of a Hive run
+- worker discuss / external review / recovery advisory now append advisory score signals during successful AgentBus reply collection
+- compact packet / restore prompt now surface `advisory_focus`
+- hiveshell dashboard now renders an `Advisory` section and artifacts list includes `advisory-score-history.json`
+
+Validation:
+- `npm test -- tests/advisory-score.test.ts tests/hiveshell-dashboard.test.ts tests/compact-packet.test.ts tests/mcp-surface.test.ts tests/review-room-handler.test.ts tests/recovery-room-handler.test.ts tests/planner-runner-transport.test.ts tests/worker-discuss-transport.test.ts` passed
+- `npm run build` passed
+
+Notes:
+- Advisory scores remain run-local and separate from executor score history
+- No routing, merge, or repair decision currently depends on advisory score outputs
+
+### Follow-up items
+- Improve planner discuss scoring with richer reply-text adoption instead of metadata-only fallbacks
+- Decide later whether advisory scores should remain run-local or gain an opt-in cross-run rollup
+- If authority-layer wants these signals later, feed them through a dedicated adapter rather than mutating executor scores
 
 ## Recovery Order
 
@@ -332,5 +385,7 @@ If context is lost, read in this order:
 6. `docs/HIVE_COLLAB_PHASE3_EXECUTION.md` — external review slot brief
 7. `docs/HIVE_COLLAB_PHASE4_EXECUTION.md` — repeated-fail advisory brief
 8. `docs/HIVE_COLLAB_PHASE5_EXECUTION.md` — memory linkage brief
-9. `docs/hiveshell/COLLAB_STACK_PROGRESS.md` — this file (live status)
-10. Latest `docs/agent-bridge/*.md` — incremental deltas
+9. `docs/HIVE_COLLAB_PHASE6_EXECUTION.md` — human bridge brief
+10. `docs/HIVE_COLLAB_PHASE7_EXECUTION.md` — advisory scoring brief
+11. `docs/hiveshell/COLLAB_STACK_PROGRESS.md` — this file (live status)
+12. Latest `docs/agent-bridge/*.md` — incremental deltas

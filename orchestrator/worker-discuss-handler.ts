@@ -9,6 +9,7 @@ import type {
   WorkerConfig,
   WorkerDiscussBrief,
 } from './types.js';
+import { saveAdvisoryScoreSignals } from './advisory-score.js';
 import { loadConfig } from './hive-config.js';
 import { triggerDiscussion } from './discuss-bridge.js';
 import { updateWorkerStatus } from './worker-status-store.js';
@@ -178,6 +179,19 @@ async function handleViaAgentBus(
     await pushEvent({ type: 'synthesis:started', room_id: room.room_id, room_kind: 'task_discuss', at: new Date().toISOString(), reply_count: replies.length, focus_task_id: trigger.task_id, note: 'Worker discuss synthesis started.' });
 
     const synthesized = synthesizeWorkerDiscussReplies(replies, { leaning: trigger.leaning, task_id: trigger.task_id });
+    if (workerConfig.runId) {
+      saveAdvisoryScoreSignals({
+        cwd: workDir,
+        runId: workerConfig.runId,
+        roomId: room.room_id,
+        roomKind: 'task_discuss',
+        taskId: trigger.task_id,
+        timeoutMs,
+        qualityGate: synthesized.quality_gate,
+        replies,
+        adoptedParticipantIds: replies.map((reply) => reply.participant_id),
+      });
+    }
 
     await updateCard({ status: 'closed', next: 'worker discuss complete' });
     await pushEvent({ type: 'synthesis:done', room_id: room.room_id, room_kind: 'task_discuss', at: new Date().toISOString(), reply_count: replies.length, focus_task_id: trigger.task_id, note: `Worker discuss synthesis: ${synthesized.quality_gate}.` });

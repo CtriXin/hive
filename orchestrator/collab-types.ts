@@ -156,6 +156,24 @@ export interface MindkeeperRoomRef {
   last_reply_at?: string;
 }
 
+export type HumanBridgeKind = 'agent-im';
+export type HumanBridgeThreadKind = 'discord' | 'session';
+export type HumanBridgeStatus = 'linked' | 'active' | 'closed';
+
+export interface HumanBridgeRef {
+  room_id: string;
+  room_kind: CollabRoomKind;
+  scope: 'run' | 'task';
+  bridge_kind: HumanBridgeKind;
+  thread_kind: HumanBridgeThreadKind;
+  thread_id: string;
+  status: HumanBridgeStatus;
+  focus_task_id?: string;
+  thread_title?: string;
+  last_human_reply_at?: string;
+  updated_at?: string;
+}
+
 export interface PlannerDiscussReplyMetadata {
   participant_id: string;
   response_time_ms: number;

@@ -7,6 +7,7 @@ import {
   collectDiscussReplies,
   openReviewRoom,
 } from './agentbus-adapter.js';
+import { saveAdvisoryScoreSignals } from './advisory-score.js';
 import { loadConfig } from './hive-config.js';
 import type {
   CollabLifecycleEvent,
@@ -24,6 +25,7 @@ const MAX_CHANGED_FILES = 12;
 
 export interface ExternalReviewOptions {
   cwd: string;
+  runId?: string;
   task: SubTask;
   workerResult: WorkerResult;
   reviewResult: ReviewResult;
@@ -104,7 +106,14 @@ function buildExternalReviewFindings(
 export async function maybeRunExternalReviewSlot(
   options: ExternalReviewOptions,
 ): Promise<ReviewResult> {
-  const { cwd, task, workerResult, reviewResult, onSnapshot } = options;
+  const {
+    cwd,
+    runId,
+    task,
+    workerResult,
+    reviewResult,
+    onSnapshot,
+  } = options;
   if (reviewResult.passed) {
     return reviewResult;
   }
@@ -267,6 +276,19 @@ export async function maybeRunExternalReviewSlot(
     });
 
     const externalFindings = buildExternalReviewFindings(replies, reviewResult.findings.length + 1);
+    if (runId) {
+      saveAdvisoryScoreSignals({
+        cwd,
+        runId,
+        roomId: room.room_id,
+        roomKind: 'review',
+        taskId: task.id,
+        timeoutMs,
+        qualityGate: 'pass',
+        replies,
+        adoptedParticipantIds: replies.map((reply) => reply.participant_id),
+      });
+    }
 
     await updateCard({
       status: 'closed',

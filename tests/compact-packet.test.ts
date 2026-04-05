@@ -179,6 +179,39 @@ describe('compact-packet', () => {
     writeJson(path.join(runDir, 'plan.json'), plan);
     writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
     writeJson(path.join(runDir, 'score-history.json'), scoreHistory);
+    writeJson(path.join(runDir, 'advisory-score-history.json'), {
+      run_id: RUN_ID,
+      updated_at: new Date().toISOString(),
+      summary: {
+        participant_count: 2,
+        reply_count: 2,
+        adopted_reply_count: 2,
+        avg_score: 88,
+      },
+      participants: [
+        {
+          participant_id: 'reviewer-a',
+          reply_count: 1,
+          adopted_replies: 1,
+          avg_score: 91,
+          top_score: 91,
+          latest_reply_at: '2026-04-03T00:00:03.000Z',
+          room_kinds: ['plan'],
+          task_ids: [],
+        },
+        {
+          participant_id: 'reviewer-b',
+          reply_count: 1,
+          adopted_replies: 1,
+          avg_score: 85,
+          top_score: 85,
+          latest_reply_at: '2026-04-03T00:00:04.000Z',
+          room_kinds: ['task_discuss'],
+          task_ids: ['task-b'],
+        },
+      ],
+      replies: [],
+    });
     writeJson(path.join(runDir, 'loop-progress.json'), loopProgress);
     writeJson(path.join(runDir, 'mindkeeper-checkpoint-input.json'), {
       next: ['execute: continue worker task-b'],
@@ -193,6 +226,33 @@ describe('compact-packet', () => {
           last_reply_at: '2026-04-03T00:00:03.000Z',
         },
       ],
+      bridge_refs: [
+        {
+          room_id: 'room-compact',
+          room_kind: 'plan',
+          scope: 'run',
+          bridge_kind: 'agent-im',
+          thread_kind: 'discord',
+          thread_id: 'discord-compact-1',
+          status: 'active',
+          thread_title: 'Plan Thread',
+        },
+      ],
+    });
+    writeJson(path.join(runDir, 'human-bridge-state.json'), {
+      bridge_refs: [
+        {
+          room_id: 'room-task-b',
+          room_kind: 'task_discuss',
+          scope: 'task',
+          bridge_kind: 'agent-im',
+          thread_kind: 'session',
+          thread_id: 'session-task-b',
+          status: 'linked',
+          focus_task_id: 'task-b',
+          thread_title: 'Task B Discuss',
+        },
+      ],
     });
     writeJson(path.join(runDir, 'mindkeeper-checkpoint-result.json'), {
       success: true,
@@ -205,11 +265,18 @@ describe('compact-packet', () => {
     expect(result!.packet.collab?.room_id).toBe('room-compact');
     expect(result!.packet.collab?.status).toBe('collecting');
     expect(result!.packet.room_refs).toHaveLength(2);
+    expect(result!.packet.bridge_refs).toHaveLength(2);
     expect(result!.packet.room_refs[0].room_id).toBe('room-compact');
     expect(result!.packet.room_refs[1].room_id).toBe('room-task-b');
+    expect(result!.packet.bridge_refs[0].thread_id).toBe('discord-compact-1');
+    expect(result!.packet.bridge_refs[1].thread_id).toBe('session-task-b');
     expect(result!.packet.worker_focus[0].agent_id).toBe('task-b@run-compact-123');
     expect(result!.packet.worker_focus[0].collab?.room_id).toBe('room-task-b');
+    expect(result!.packet.advisory_focus).toHaveLength(2);
+    expect(result!.packet.advisory_focus[0].participant_id).toBe('reviewer-a');
     expect(result!.packet.suggested_commands).toContain('hive workers task-b');
+    expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/advisory-score-history.json');
+    expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/human-bridge-state.json');
     expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/mindkeeper-checkpoint-input.json');
     expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/loop-progress.json');
     expect(result!.packet.detail_sources).toContain('.ai/plan/current.md');
@@ -218,6 +285,10 @@ describe('compact-packet', () => {
     expect(result!.packet.restore_prompt).toContain('Primary worker collab: room-task-b | closed | replies=1');
     expect(result!.packet.restore_prompt).toContain('Mindkeeper linked rooms:');
     expect(result!.packet.restore_prompt).toContain('room-task-b [task_discuss/closed] replies=1 task=task-b');
+    expect(result!.packet.restore_prompt).toContain('Human bridge threads:');
+    expect(result!.packet.restore_prompt).toContain('room-task-b -> session:session-task-b [linked] task=task-b title=Task B Discuss');
+    expect(result!.packet.restore_prompt).toContain('Advisory scoring:');
+    expect(result!.packet.restore_prompt).toContain('reviewer-a avg=91 replies=1 adopted=1/1 kinds=plan');
     expect(result!.packet.restore_prompt).toContain('Recovery order:');
     expect(result!.markdown).toContain('# Hive Compact Packet');
     expect(result!.markdown).toContain('- collab:');
@@ -225,6 +296,10 @@ describe('compact-packet', () => {
     expect(result!.markdown).toContain('collab: room-task-b | closed | replies=1');
     expect(result!.markdown).toContain('- mindkeeper room refs:');
     expect(result!.markdown).toContain('room-task-b [task_discuss/closed] replies=1 task=task-b');
+    expect(result!.markdown).toContain('- human bridge refs:');
+    expect(result!.markdown).toContain('room-compact -> discord:discord-compact-1 [active] title=Plan Thread');
+    expect(result!.markdown).toContain('- advisory focus:');
+    expect(result!.markdown).toContain('reviewer-a avg=91 replies=1 adopted=1/1 kinds=plan');
     expect(result!.markdown).toContain('## Restore Prompt');
     expect(result!.markdown).toContain('dst-compact-1');
     expect(fs.existsSync(path.join(runDir, 'compact-packet.json'))).toBe(true);

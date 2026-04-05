@@ -3,9 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import type { CompactConversationContext } from './claude-session-context.js';
 import { loadConversationContext } from './claude-session-context.js';
-import type { CollabCard, MindkeeperRoomRef } from './types.js';
+import type { CollabCard, HumanBridgeRef, MindkeeperRoomRef } from './types.js';
+import type { AdvisoryParticipantScore } from './advisory-score.js';
+import { formatAdvisoryParticipant, topAdvisoryParticipants } from './advisory-score.js';
 import type { HiveShellDashboardData } from './hiveshell-dashboard.js';
 import { loadHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashboard.js';
+import { collectHumanBridgeRefs, formatHumanBridgeRef } from './human-bridge-linkage.js';
 import { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 import { loadLatestRunLocator, saveLatestRunLocator } from './run-locator.js';
 
@@ -16,6 +19,15 @@ export interface CompactPacketWorker {
   task_summary: string;
   transcript_path?: string;
   collab?: CollabCard;
+}
+
+export interface CompactPacketAdvisory {
+  participant_id: string;
+  avg_score: number;
+  reply_count: number;
+  adopted_replies: number;
+  room_kinds: string[];
+  task_ids: string[];
 }
 
 export interface CompactPacket {
@@ -32,6 +44,8 @@ export interface CompactPacket {
   score?: number;
   thread_id?: string;
   room_refs: MindkeeperRoomRef[];
+  bridge_refs: HumanBridgeRef[];
+  advisory_focus: CompactPacketAdvisory[];
   conversation_context?: CompactConversationContext;
   collab?: CollabCard;
   worker_focus: CompactPacketWorker[];
@@ -244,10 +258,22 @@ function buildDetailSources(data: HiveShellDashboardData): string[] {
   if (data.mindkeeperCheckpointResult?.threadId) {
     sources.push(`mindkeeper thread ${data.mindkeeperCheckpointResult.threadId}`);
   }
+  if (data.humanBridgeState?.bridge_refs?.length) {
+    sources.push(path.join(runBase, 'human-bridge-state.json'));
+  }
+  if (data.advisoryScoreHistory?.summary.reply_count) {
+    sources.push(path.join(runBase, 'advisory-score-history.json'));
+  }
   if (data.mindkeeperCheckpointInput?.room_refs?.length) {
     sources.push(path.join(runBase, 'mindkeeper-checkpoint-input.json'));
   }
   if (data.mindkeeperCheckpointResult?.room_refs?.length) {
+    sources.push(path.join(runBase, 'mindkeeper-checkpoint-result.json'));
+  }
+  if (data.mindkeeperCheckpointInput?.bridge_refs?.length) {
+    sources.push(path.join(runBase, 'mindkeeper-checkpoint-input.json'));
+  }
+  if (data.mindkeeperCheckpointResult?.bridge_refs?.length) {
     sources.push(path.join(runBase, 'mindkeeper-checkpoint-result.json'));
   }
   if (loadConversationContext(data.cwd)) {
@@ -327,6 +353,24 @@ function buildRestorePrompt(packet: CompactPacket): string {
     }
   } else {
     lines.push('Mindkeeper linked rooms: none');
+  }
+
+  if (packet.bridge_refs.length > 0) {
+    lines.push('Human bridge threads:');
+    for (const ref of packet.bridge_refs.slice(0, 5)) {
+      lines.push(`- ${formatHumanBridgeRef(ref)}`);
+    }
+  } else {
+    lines.push('Human bridge threads: none');
+  }
+
+  if (packet.advisory_focus.length > 0) {
+    lines.push('Advisory scoring:');
+    for (const advisor of packet.advisory_focus) {
+      lines.push(`- ${advisor.participant_id} avg=${advisor.avg_score} replies=${advisor.reply_count} adopted=${advisor.adopted_replies}/${advisor.reply_count} kinds=${advisor.room_kinds.join('+') || '-'}`);
+    }
+  } else {
+    lines.push('Advisory scoring: none');
   }
 
   lines.push(
@@ -456,6 +500,19 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     checkpointInputRoomRefs: data.mindkeeperCheckpointInput?.room_refs,
     checkpointResultRoomRefs: data.mindkeeperCheckpointResult?.room_refs,
   });
+  const bridgeRefs = collectHumanBridgeRefs({
+    bridgeStateRefs: data.humanBridgeState?.bridge_refs,
+    checkpointInputBridgeRefs: data.mindkeeperCheckpointInput?.bridge_refs,
+    checkpointResultBridgeRefs: data.mindkeeperCheckpointResult?.bridge_refs,
+  });
+  const advisoryFocus = topAdvisoryParticipants(data.advisoryScoreHistory, 3).map((participant) => ({
+    participant_id: participant.participant_id,
+    avg_score: participant.avg_score,
+    reply_count: participant.reply_count,
+    adopted_replies: participant.adopted_replies,
+    room_kinds: [...participant.room_kinds],
+    task_ids: [...participant.task_ids],
+  }));
   const packet: CompactPacket = {
     version: 1,
     run_id: data.runId,
@@ -470,6 +527,8 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     score,
     thread_id: data.mindkeeperCheckpointResult?.threadId || data.mindkeeperBootstrap?.activeThread?.id,
     room_refs: roomRefs,
+    bridge_refs: bridgeRefs,
+    advisory_focus: advisoryFocus,
     conversation_context: conversationContext || undefined,
     collab: data.loopProgress?.collab?.card,
     worker_focus: workerFocus,
@@ -569,6 +628,24 @@ export function renderCompactPacket(packet: CompactPacket): string {
     }
   } else {
     lines.push('- mindkeeper room refs: none');
+  }
+
+  if (packet.bridge_refs.length > 0) {
+    lines.push('- human bridge refs:');
+    for (const ref of packet.bridge_refs) {
+      lines.push(`  - ${formatHumanBridgeRef(ref)}`);
+    }
+  } else {
+    lines.push('- human bridge refs: none');
+  }
+
+  if (packet.advisory_focus.length > 0) {
+    lines.push('- advisory focus:');
+    for (const advisor of packet.advisory_focus) {
+      lines.push(`  - ${truncate(formatAdvisoryParticipant(advisor as AdvisoryParticipantScore), 120)}`);
+    }
+  } else {
+    lines.push('- advisory focus: none');
   }
 
   lines.push('- recover with:');

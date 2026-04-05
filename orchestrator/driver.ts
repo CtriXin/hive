@@ -37,6 +37,7 @@ import {
 import { planGoal } from './planner-runner.js';
 import { ModelRegistry } from './model-registry.js';
 import { dispatchBatch, spawnWorker } from './dispatcher.js';
+import { saveAdvisoryScoreSignals } from './advisory-score.js';
 import { reviewCascade } from './reviewer.js';
 import { maybeRunRecoveryAdvisory } from './recovery-room-handler.js';
 import { maybeRunExternalReviewSlot } from './review-room-handler.js';
@@ -321,6 +322,32 @@ function summarizeCollabStatus(snapshot: CollabStatusSnapshot): string {
   return `${snapshot.card.room_kind} ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`;
 }
 
+function persistPlannerAdvisoryScores(
+  cwd: string,
+  runId: string,
+  room: PlannerDiscussRoomRef | null | undefined,
+  discuss: PlanDiscussResult | null | undefined,
+): void {
+  if (!room?.reply_metadata?.length) {
+    return;
+  }
+  saveAdvisoryScoreSignals({
+    cwd,
+    runId,
+    roomId: room.room_id,
+    roomKind: 'plan',
+    timeoutMs: room.timeout_ms,
+    qualityGate: discuss?.quality_gate || 'warn',
+    replies: room.reply_metadata.map((reply) => ({
+      participant_id: reply.participant_id,
+      response_time_ms: reply.response_time_ms,
+      content_length: reply.content_length,
+      received_at: room.created_at,
+    })),
+    adoptedParticipantIds: discuss?.partner_models || [],
+  });
+}
+
 // ── Done Conditions ──
 
 export function inferDefaultDoneConditions(cwd: string): DoneCondition[] {
@@ -534,6 +561,7 @@ async function runRepairRound(
 
     const recovery = await maybeRunRecoveryAdvisory({
       cwd: spec.cwd,
+      runId: spec.id,
       task,
       reviewResult: review,
       retryCount,
@@ -986,6 +1014,7 @@ export async function executeRun(
       planDiscussCollab = planning.plan_discuss_collab;
       activeCollabSnapshot = planning.plan_discuss_collab;
       plannerDiagnostics = planning.planner_diagnostics;
+      persistPlannerAdvisoryScores(spec.cwd, spec.id, planDiscussRoom, planDiscuss);
       emitProgress('executing', `Plan ready: ${plan.tasks.length} tasks via ${plannerModel || 'auto'}${planDiscuss ? ` | discuss: ${planDiscuss.quality_gate}` : ''}`);
       seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
@@ -1064,6 +1093,7 @@ export async function executeRun(
       planDiscussCollab = planning.plan_discuss_collab;
       activeCollabSnapshot = planning.plan_discuss_collab;
       plannerDiagnostics = planning.planner_diagnostics;
+      persistPlannerAdvisoryScores(spec.cwd, spec.id, planDiscussRoom, planDiscuss);
       seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
       saveRunPlan(spec.cwd, spec.id, plan);
@@ -1238,6 +1268,7 @@ export async function executeRun(
 
         const reviewed = await maybeRunExternalReviewSlot({
           cwd: spec.cwd,
+          runId: spec.id,
           task,
           workerResult: worker,
           reviewResult: review,

@@ -5,6 +5,7 @@ import {
   collectDiscussReplies,
   openRecoveryRoom,
 } from './agentbus-adapter.js';
+import { saveAdvisoryScoreSignals } from './advisory-score.js';
 import { loadConfig } from './hive-config.js';
 import type {
   CollabLifecycleEvent,
@@ -22,6 +23,7 @@ const MAX_RECENT_ATTEMPTS = 4;
 
 export interface RecoveryAdvisoryOptions {
   cwd: string;
+  runId?: string;
   task: SubTask;
   reviewResult: ReviewResult;
   retryCount: number;
@@ -117,6 +119,7 @@ export async function maybeRunRecoveryAdvisory(
 ): Promise<RecoveryAdvisoryResult> {
   const {
     cwd,
+    runId,
     task,
     reviewResult,
     retryCount,
@@ -293,6 +296,19 @@ export async function maybeRunRecoveryAdvisory(
       replies,
       reviewResult.findings.length + 1,
     );
+    if (runId) {
+      saveAdvisoryScoreSignals({
+        cwd,
+        runId,
+        roomId: room.room_id,
+        roomKind: 'recovery',
+        taskId: task.id,
+        timeoutMs,
+        qualityGate: 'pass',
+        replies,
+        adoptedParticipantIds: replies.map((reply) => reply.participant_id),
+      });
+    }
 
     await updateCard({
       status: 'closed',

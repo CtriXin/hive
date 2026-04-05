@@ -205,6 +205,44 @@ describe('hiveshell-dashboard', () => {
     writeJson(path.join(runDir, 'loop-progress.json'), loopProgress);
     writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
     writeJson(path.join(runDir, 'score-history.json'), scoreHistory);
+    writeJson(path.join(runDir, 'advisory-score-history.json'), {
+      run_id: RUN_ID,
+      updated_at: new Date().toISOString(),
+      summary: {
+        participant_count: 1,
+        reply_count: 1,
+        adopted_reply_count: 1,
+        avg_score: 92,
+      },
+      participants: [
+        {
+          participant_id: 'reviewer-a',
+          reply_count: 1,
+          adopted_replies: 1,
+          avg_score: 92,
+          top_score: 92,
+          latest_reply_at: '2026-04-03T00:00:02.000Z',
+          room_kinds: ['plan'],
+          task_ids: [],
+        },
+      ],
+      replies: [
+        {
+          participant_id: 'reviewer-a',
+          room_id: 'room-shell',
+          room_kind: 'plan',
+          run_id: RUN_ID,
+          received_at: '2026-04-03T00:00:02.000Z',
+          response_time_ms: 120,
+          content_length: 88,
+          quality_gate: 'pass',
+          timeliness: 1,
+          substance: 0.68,
+          adoption: 1,
+          score: 92,
+        },
+      ],
+    });
     writeJson(path.join(runDir, 'mindkeeper-bootstrap.json'), {
       activeThread: {
         id: 'dst-1',
@@ -226,6 +264,33 @@ describe('hiveshell-dashboard', () => {
           last_reply_at: '2026-04-03T00:00:02.000Z',
         },
       ],
+      bridge_refs: [
+        {
+          room_id: 'room-shell',
+          room_kind: 'plan',
+          scope: 'run',
+          bridge_kind: 'agent-im',
+          thread_kind: 'discord',
+          thread_id: 'discord-shell',
+          status: 'active',
+          thread_title: 'Plan Shell',
+        },
+      ],
+    });
+    writeJson(path.join(runDir, 'human-bridge-state.json'), {
+      bridge_refs: [
+        {
+          room_id: 'room-task-a',
+          room_kind: 'task_discuss',
+          scope: 'task',
+          bridge_kind: 'agent-im',
+          thread_kind: 'session',
+          thread_id: 'session-task-a',
+          status: 'linked',
+          focus_task_id: 'task-a',
+          thread_title: 'Task A Review',
+        },
+      ],
     });
     fs.writeFileSync(
       path.join(runDir, 'worker-events.jsonl'),
@@ -241,16 +306,23 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('== HiveShell ==');
     expect(rendered).toContain('== Run Overview ==');
     expect(rendered).toContain('== Collab ==');
+    expect(rendered).toContain('== Advisory ==');
     expect(rendered).toContain('== Score Trend ==');
     expect(rendered).toContain('== Workers ==');
+    expect(rendered).toContain('== Human Bridge ==');
     expect(rendered).toContain('== Mindkeeper ==');
     expect(rendered).toContain('Ship hiveshell UI');
     expect(rendered).toContain('task-a [completed]');
     expect(rendered).toContain('room-shell [collecting]');
+    expect(rendered).toContain('avg advisory score: 92');
+    expect(rendered).toContain('reviewer-a avg=92 replies=1 adopted=1/1 kinds=plan');
     expect(rendered).toContain('task-a -> room-task-a [closed] replies=1');
     expect(rendered).toContain('agentbus join room-shell');
     expect(rendered).toContain('r2');
     expect(rendered).toContain('dst-1');
+    expect(rendered).toContain('linked threads: 2');
+    expect(rendered).toContain('thread link: room-shell -> discord:discord-shell [active] title=Plan Shell');
+    expect(rendered).toContain('thread link: room-task-a -> session:session-task-a [linked] task=task-a title=Task A Review');
     expect(rendered).toContain('linked rooms: 2');
     expect(rendered).toContain('room link: room-shell [plan/collecting] replies=1');
     expect(rendered).toContain('room link: room-task-a [task_discuss/closed] replies=1 task=task-a');

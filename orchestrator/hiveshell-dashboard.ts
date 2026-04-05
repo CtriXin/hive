@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import type {
+  HumanBridgeRef,
   MindkeeperRoomRef,
   OrchestratorResult,
   RunScoreHistory,
@@ -9,7 +10,14 @@ import type {
   TaskPlan,
   WorkerStatusSnapshot,
 } from './types.js';
+import type { AdvisoryScoreHistory } from './advisory-score.js';
 import type { LoopProgress } from './loop-progress-store.js';
+import {
+  formatAdvisoryParticipant,
+  loadAdvisoryScoreHistory,
+  topAdvisoryParticipants,
+} from './advisory-score.js';
+import { collectHumanBridgeRefs, formatHumanBridgeRef } from './human-bridge-linkage.js';
 import { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 import { loadRunPlan, loadRunResult, loadRunSpec, loadRunState, listRuns } from './run-store.js';
 import { loadRunScoreHistory } from './score-history.js';
@@ -29,6 +37,7 @@ interface MindkeeperCheckpointPayload {
   next: string[];
   status: string;
   room_refs?: MindkeeperRoomRef[];
+  bridge_refs?: HumanBridgeRef[];
 }
 
 interface MindkeeperBootstrapArtifact {
@@ -52,6 +61,12 @@ interface MindkeeperCheckpointResult {
   path?: string;
   parent?: string;
   room_refs?: MindkeeperRoomRef[];
+  bridge_refs?: HumanBridgeRef[];
+}
+
+interface HumanBridgeStateArtifact {
+  bridge_refs?: HumanBridgeRef[];
+  updated_at?: string;
 }
 
 export interface HiveShellDashboardData {
@@ -64,9 +79,11 @@ export interface HiveShellDashboardData {
   result: OrchestratorResult | null;
   workerSnapshot: WorkerStatusSnapshot | null;
   scoreHistory: RunScoreHistory | null;
+  advisoryScoreHistory: AdvisoryScoreHistory | null;
   mindkeeperBootstrap: MindkeeperBootstrapArtifact | null;
   mindkeeperCheckpointInput: MindkeeperCheckpointPayload | null;
   mindkeeperCheckpointResult: MindkeeperCheckpointResult | null;
+  humanBridgeState: HumanBridgeStateArtifact | null;
 }
 
 function runDir(cwd: string, runId: string): string {
@@ -145,6 +162,24 @@ function renderWorkers(snapshot: WorkerStatusSnapshot | null, limit = 8): string
   });
 }
 
+function renderAdvisory(data: HiveShellDashboardData): string[] {
+  const history = data.advisoryScoreHistory;
+  if (!history || history.summary.reply_count === 0) {
+    return ['- advisory scoring artifacts not found'];
+  }
+
+  const lines = [
+    `- participants: ${history.summary.participant_count}`,
+    `- replies: ${history.summary.reply_count}`,
+    `- adopted replies: ${history.summary.adopted_reply_count}`,
+    `- avg advisory score: ${history.summary.avg_score}`,
+  ];
+  for (const participant of topAdvisoryParticipants(history, 4)) {
+    lines.push(`- advisor: ${truncate(formatAdvisoryParticipant(participant), 96)}`);
+  }
+  return lines;
+}
+
 function renderMindkeeper(data: HiveShellDashboardData): string[] {
   const lines: string[] = [];
   const roomRefs = collectMindkeeperRoomRefs({
@@ -181,6 +216,24 @@ function renderMindkeeper(data: HiveShellDashboardData): string[] {
   }
 
   return lines.length > 0 ? lines : ['- mindkeeper artifacts not found'];
+}
+
+function renderHumanBridge(data: HiveShellDashboardData): string[] {
+  const bridgeRefs = collectHumanBridgeRefs({
+    bridgeStateRefs: data.humanBridgeState?.bridge_refs,
+    checkpointInputBridgeRefs: data.mindkeeperCheckpointInput?.bridge_refs,
+    checkpointResultBridgeRefs: data.mindkeeperCheckpointResult?.bridge_refs,
+  });
+
+  if (bridgeRefs.length === 0) {
+    return ['- human bridge artifacts not found'];
+  }
+
+  const lines = [`- linked threads: ${bridgeRefs.length}`];
+  for (const ref of bridgeRefs.slice(0, 4)) {
+    lines.push(`- thread link: ${truncate(formatHumanBridgeRef(ref), 96)}`);
+  }
+  return lines;
 }
 
 function renderOverview(data: HiveShellDashboardData): string[] {
@@ -248,6 +301,8 @@ function renderArtifacts(cwd: string, runId: string): string[] {
     'worker-status.json',
     'worker-events.jsonl',
     'score-history.json',
+    'advisory-score-history.json',
+    'human-bridge-state.json',
     'mindkeeper-bootstrap.json',
     'mindkeeper-checkpoint-input.json',
     'mindkeeper-checkpoint-result.json',
@@ -303,9 +358,11 @@ export function loadHiveShellDashboard(
     result: loadRunResult(cwd, resolvedRunId),
     workerSnapshot: loadWorkerStatusSnapshot(cwd, resolvedRunId),
     scoreHistory: loadRunScoreHistory(cwd, resolvedRunId),
+    advisoryScoreHistory: loadAdvisoryScoreHistory(cwd, resolvedRunId),
     mindkeeperBootstrap: readJson<MindkeeperBootstrapArtifact>(path.join(dir, 'mindkeeper-bootstrap.json')),
     mindkeeperCheckpointInput: readJson<MindkeeperCheckpointPayload>(path.join(dir, 'mindkeeper-checkpoint-input.json')),
     mindkeeperCheckpointResult: readJson<MindkeeperCheckpointResult>(path.join(dir, 'mindkeeper-checkpoint-result.json')),
+    humanBridgeState: readJson<HumanBridgeStateArtifact>(path.join(dir, 'human-bridge-state.json')),
   };
 }
 
@@ -319,8 +376,10 @@ export function renderHiveShellDashboard(
     ]),
     section('Run Overview', renderOverview(data)),
     section('Collab', renderCollab(data)),
+    section('Advisory', renderAdvisory(data)),
     section('Score Trend', renderScoreTrend(data.scoreHistory)),
     section('Workers', renderWorkers(data.workerSnapshot)),
+    section('Human Bridge', renderHumanBridge(data)),
     section('Mindkeeper', renderMindkeeper(data)),
     section('Recent Events', renderRecentEvents(data.cwd, data.runId)),
     section('Artifacts', renderArtifacts(data.cwd, data.runId)),
