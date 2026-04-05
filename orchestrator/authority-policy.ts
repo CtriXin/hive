@@ -3,6 +3,7 @@ import { resolveProjectPath } from './project-paths.js';
 
 export type AuthorityMode = 'single' | 'pair';
 export type PartialResultPolicy = 'proceed_if_min_met' | 'fail_fast';
+export type SynthesisFailurePolicy = 'heuristic_fallback' | 'fail_closed';
 export type EscalationTrigger =
   | 'high_complexity'
   | 'low_confidence'
@@ -20,6 +21,7 @@ export interface ReviewAuthorityPolicy {
   timeout_ms: number;
   partial_result_policy: PartialResultPolicy;
   synthesizer: string;
+  synthesis_failure_policy: SynthesisFailurePolicy;
 }
 
 interface AuthorityPolicyFile {
@@ -37,6 +39,7 @@ const DEFAULT_REVIEW_AUTHORITY_POLICY: ReviewAuthorityPolicy = {
   timeout_ms: 30000,
   partial_result_policy: 'proceed_if_min_met',
   synthesizer: 'gpt-5.4',
+  synthesis_failure_policy: 'fail_closed',
 };
 
 let authorityPolicyCache:
@@ -67,6 +70,9 @@ export function normalizeReviewAuthorityPolicy(
   const partialResultPolicy = raw.partial_result_policy === 'fail_fast'
     ? 'fail_fast'
     : DEFAULT_REVIEW_AUTHORITY_POLICY.partial_result_policy;
+  const synthesisFailurePolicy = raw.synthesis_failure_policy === 'heuristic_fallback'
+    ? 'heuristic_fallback'
+    : DEFAULT_REVIEW_AUTHORITY_POLICY.synthesis_failure_policy;
   const maxModels = Math.max(1, Math.min(2, Math.floor(raw.max_models ?? DEFAULT_REVIEW_AUTHORITY_POLICY.max_models)));
 
   return {
@@ -91,6 +97,7 @@ export function normalizeReviewAuthorityPolicy(
     synthesizer: typeof raw.synthesizer === 'string' && raw.synthesizer.length > 0
       ? raw.synthesizer
       : DEFAULT_REVIEW_AUTHORITY_POLICY.synthesizer,
+    synthesis_failure_policy: synthesisFailurePolicy,
   };
 }
 

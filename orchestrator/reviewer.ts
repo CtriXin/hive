@@ -149,8 +149,10 @@ interface SynthesizedAuthorityReview {
   synthesisReason: string;
   synthesizedBy?: string;
   attemptedBy?: string;
-  strategy: 'model' | 'heuristic';
+  strategy?: 'model' | 'heuristic';
   tokenUsage?: { input: number; output: number };
+  failedClosed?: boolean;
+  infraFailure?: boolean;
 }
 
 function countFindingsBySeverity(findings: ReviewFinding[]): Record<FindingSeverity, number> {
@@ -296,6 +298,25 @@ function parseSynthesizedAuthorityFindings(
   });
 }
 
+function buildFailClosedSynthesisResult(
+  message: string,
+  attemptedBy: string | undefined,
+  tokenUsage?: { input: number; output: number },
+): SynthesizedAuthorityReview {
+  const findings: ReviewFinding[] = [];
+  findings.push(buildSynthesizedFinding(findings, message, 'flag', 'red'));
+  return {
+    passed: false,
+    verdict: 'BLOCKED',
+    findings,
+    synthesisReason: message,
+    attemptedBy,
+    tokenUsage,
+    failedClosed: true,
+    infraFailure: looksLikeInfrastructureFailure(message),
+  };
+}
+
 async function runAuthoritySynthesis(
   workerResult: WorkerResult,
   task: SubTask,
@@ -402,6 +423,10 @@ Rules:
         'final_review',
       );
     } catch (fallbackErr: any) {
+      if (policy.synthesis_failure_policy === 'fail_closed') {
+        const message = `Review failed: Authority synthesis failed under fail_closed policy: ${fallbackErr.message?.slice(0, 100) || 'unknown error'}`;
+        return buildFailClosedSynthesisResult(message, synthesisModel);
+      }
       console.warn(`    ⚠️ Authority synthesis fallback to heuristic: ${fallbackErr.message?.slice(0, 100)}`);
       return heuristic;
     }
@@ -436,6 +461,10 @@ Rules:
       tokenUsage: qr.tokenUsage,
     };
   } catch (err: any) {
+    if (policy.synthesis_failure_policy === 'fail_closed') {
+      const message = `Review failed: Authority synthesis parse failed under fail_closed policy: ${err.message?.slice(0, 100) || 'invalid response'}`;
+      return buildFailClosedSynthesisResult(message, synthesisModel, qr?.tokenUsage);
+    }
     console.warn(`    ⚠️ Authority synthesis parse failed, falling back to heuristic: ${err.message?.slice(0, 100)}`);
     return {
       ...heuristic,
@@ -1016,6 +1045,10 @@ async function runAuthorityReview(
       },
     },
     tokenStages,
+    {
+      skipScoreUpdate: synthesis?.failedClosed,
+      infraFailure: synthesis?.infraFailure,
+    },
   );
 }
 
