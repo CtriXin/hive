@@ -570,15 +570,19 @@ async function runRepairRound(
   failedReviews: ReviewResult[],
   _previousWorkerResults: WorkerResult[],
   registry: ModelRegistry,
+  inheritedSmokeResults: Record<string, boolean>,
+  taskRules: Record<string, TaskVerificationRule>,
   hooks?: {
     onRecoverySnapshot?: (taskId: string, snapshot: CollabStatusSnapshot) => void | Promise<void>;
   },
 ): Promise<{
   workerResults: WorkerResult[];
   reviewResults: ReviewResult[];
+  repairSmokeResults: Record<string, boolean>;
 }> {
   const repairWorkerResults: WorkerResult[] = [];
   const repairReviewResults: ReviewResult[] = [];
+  const repairSmokeResults: Record<string, boolean> = {};
 
   for (const review of failedReviews) {
     const task = plan.tasks.find((t) => t.id === review.taskId);
@@ -632,11 +636,22 @@ async function runRepairRound(
     repairWorkerResults.push(workerResult);
 
     if (workerResult.success) {
+      // Re-run real smoke verification on the repair worktree
+      const taskConditions = getTaskVerificationConditions(spec.done_conditions, task, taskRules);
+      const smokeCheckResults = smokeVerifyWorktree(taskConditions, workerResult);
+      recordTaskVerificationResults(state, workerResult.taskId, smokeCheckResults);
+      markTaskVerificationFailure(state, workerResult.taskId, smokeCheckResults);
+      const reSmokePassed = smokeCheckResults.length === 0
+        || allRequiredChecksPassed(smokeCheckResults);
+      repairSmokeResults[task.id] = reSmokePassed;
+
+      // Pass original smoke failure for review escalation, not re-smoke result
       const reviewResult = await runReview(
         workerResult,
         task,
         plan,
         registry,
+        inheritedSmokeResults[task.id],
       );
       repairReviewResults.push(reviewResult);
       state.repair_history.push({
@@ -668,6 +683,7 @@ async function runRepairRound(
   return {
     workerResults: repairWorkerResults,
     reviewResults: repairReviewResults,
+    repairSmokeResults,
   };
 }
 
@@ -698,7 +714,7 @@ function smokeVerifyWorktree(
  * Merge individual tasks that passed review (and optionally smoke verification).
  * Does not wait for all tasks to pass — partial progress lands on main.
  */
-function mergePassedTasks(
+export function mergePassedTasks(
   spec: RunSpec,
   plan: TaskPlan,
   workerResults: WorkerResult[],
@@ -1191,6 +1207,8 @@ export async function executeRun(
         });
       }
       const failedReviews = [...repairTargets.values()];
+      // Carry forward original smoke results for review escalation
+      const inheritedSmokeResults = (currentState as any)._smokeResults as Record<string, boolean> ?? {};
       const repair = await runRepairRound(
         spec,
         currentState,
@@ -1198,6 +1216,8 @@ export async function executeRun(
         failedReviews,
         latestResult.worker_results,
         registry,
+        inheritedSmokeResults,
+        taskRules,
         {
           onRecoverySnapshot: async (taskId, snapshot) => {
             activeCollabSnapshot = snapshot;
@@ -1237,6 +1257,29 @@ export async function executeRun(
         ),
         ...repair.reviewResults,
       ];
+
+      // Refresh smoke state with actual re-smoke results from repair worktrees.
+      // This replaces the old approach of using review.passed as a proxy for smoke.passed.
+      // Only tasks that were actually re-smoked get updated; others keep their original state.
+      const currentSmokeResults = (currentState as any)._smokeResults as Record<string, boolean> ?? {};
+      for (const [taskId, passed] of Object.entries(repair.repairSmokeResults)) {
+        currentSmokeResults[taskId] = passed;
+      }
+      (currentState as any)._smokeResults = currentSmokeResults;
+
+      // Merge repaired tasks that pass both review and re-smoke.
+      // Same gating as fresh execution: review.passed && smoke !== false.
+      const repairMergedIds = mergePassedTasks(
+        spec,
+        plan!,
+        workerResults,
+        reviewResults,
+        currentSmokeResults,
+        preMergeHooks,
+        currentState.policy_hook_results,
+        currentState.round,
+      );
+      markMergedTasks(currentState, repairMergedIds);
 
       // If no repairs were attempted (all exhausted), escalate
       if (repair.workerResults.length === 0) {
@@ -1280,6 +1323,31 @@ export async function executeRun(
       const succeeded = workerResults.filter(w => w.success).length;
       emitProgress('reviewing', `Workers done: ${succeeded}/${workerResults.length} succeeded`);
 
+      // Step 2a: Per-worktree smoke check (build only) — run BEFORE review for authority-layer
+      // This allows authority review to receive deterministic verification signals
+      const smokeResults: Record<string, boolean> = {};
+      for (const wr of workerResults) {
+        if (!wr.success || !wr.worktreePath) continue;
+        const task = plan!.tasks.find((t) => t.id === wr.taskId);
+        const taskConditions = getTaskVerificationConditions(spec.done_conditions, task, taskRules);
+        const results = smokeVerifyWorktree(taskConditions, wr);
+        recordTaskVerificationResults(currentState, wr.taskId, results);
+        markTaskVerificationFailure(currentState, wr.taskId, results);
+        // No build checks = pass by default (no smoke to fail)
+        smokeResults[wr.taskId] = results.length === 0
+          || allRequiredChecksPassed(results);
+      }
+      const smokeFailedTaskIds = Object.entries(smokeResults)
+        .filter(([, passed]) => passed === false)
+        .map(([taskId]) => taskId);
+      currentState.failed_task_ids = dedupe([
+        ...currentState.failed_task_ids,
+        ...smokeFailedTaskIds,
+      ]);
+
+      // Persist smoke results for repair path to carry forward deterministic signal
+      (currentState as any)._smokeResults = smokeResults;
+
       setLoopPhase(
         spec.cwd,
         currentState,
@@ -1295,9 +1363,22 @@ export async function executeRun(
           if (!task) {
             throw new Error(`Task not found: ${wr.taskId}`);
           }
-          return runReview(wr, task, plan!, registry);
+          return runReview(wr, task, plan!, registry, smokeResults[wr.taskId]);
         }),
       );
+
+      // Step 2c: Progressive merge — each passed task merges independently
+      const mergedTaskIds = mergePassedTasks(
+        spec,
+        plan!,
+        workerResults,
+        reviewResults,
+        smokeResults,
+        preMergeHooks,
+        currentState.policy_hook_results,
+        currentState.round,
+      );
+      markMergedTasks(currentState, mergedTaskIds);
     }
 
     reviewResults = await Promise.all(
@@ -1388,6 +1469,7 @@ export async function executeRun(
       .map((r) => r.taskId);
     currentState.review_failed_task_ids = reviewFailedTaskIds;
     currentState.failed_task_ids = dedupe([
+      ...currentState.failed_task_ids,  // already includes smokeFailedTaskIds from Step 2a
       ...workerFailedTaskIds,
       ...reviewFailedTaskIds,
     ]);
@@ -1395,64 +1477,23 @@ export async function executeRun(
     // ── Phase 3: Verification & Progressive Merge ──
     const reviewPassed = reviewResults.filter(r => r.passed).length;
     emitProgress('reviewing', `Reviews: ${reviewPassed}/${reviewResults.length} passed`);
-    emitProgress('verifying', 'Running verification (build + tests)...');
+    emitProgress('verifying', 'Running verification (tests only — build already checked)...');
     setLoopPhase(
       spec.cwd,
       currentState,
       'verifying',
       'finalize',
-      'Running task-scoped verification...',
+      'Running suite-level verification (tests, lint)...',
     );
 
-    // Step 3a: Per-worktree smoke check (build only — not full suite)
-    const smokeResults: Record<string, boolean> = {};
-    for (const wr of workerResults) {
-      if (!wr.success || !wr.worktreePath) continue;
-      const task = plan.tasks.find((item) => item.id === wr.taskId);
-      const taskConditions = getTaskVerificationConditions(spec.done_conditions, task, taskRules);
-      const results = smokeVerifyWorktree(taskConditions, wr);
-      recordTaskVerificationResults(currentState, wr.taskId, results);
-      markTaskVerificationFailure(currentState, wr.taskId, results);
-      // No build checks = pass by default (no smoke to fail)
-      smokeResults[wr.taskId] = results.length === 0
-        || allRequiredChecksPassed(results);
-    }
-    const smokeFailedTaskIds = Object.entries(smokeResults)
-      .filter(([, passed]) => passed === false)
-      .map(([taskId]) => taskId);
-    currentState.failed_task_ids = dedupe([
-      ...currentState.failed_task_ids,
-      ...smokeFailedTaskIds,
-    ]);
-
-    // Step 3b: Progressive merge — each passed task merges independently
-    setLoopPhase(
-      spec.cwd,
-      currentState,
-      'verifying',
-      'finalize',
-      'Merging passed tasks back to the repo...',
-    );
-    const mergedTaskIds = mergePassedTasks(
-      spec,
-      plan,
-      workerResults,
-      reviewResults,
-      smokeResults,
-      preMergeHooks,
-      currentState.policy_hook_results,
-      currentState.round,
-    );
-    markMergedTasks(currentState, mergedTaskIds);
-
-    // Step 3c: Suite-level verification on merged codebase
+    // Step 3a: Suite-level verification on merged codebase (build already ran in Step 2a)
     setLoopPhase(
       spec.cwd,
       currentState,
       'verifying',
       'finalize',
       'Running merged-code verification...',
-      mergedTaskIds,
+      currentState.merged_task_ids,
     );
     const suiteResults = runVerificationSuite(
       suiteScopedConditions(spec.done_conditions),
@@ -1513,14 +1554,18 @@ export async function executeRun(
 
     // ── Phase 4: Decide next action ──
     const allReviewsPassed = reviewResults.every((r) => r.passed);
+    const smokeResultsMap = (currentState as any)._smokeResults as Record<string, boolean> ?? {};
+    const smokeFailedTaskIds = Object.entries(smokeResultsMap)
+      .filter(([, passed]) => passed === false)
+      .map(([taskId]) => taskId);
     const allSmokeChecksPassed = smokeFailedTaskIds.length === 0;
 
     if (allReviewsPassed && allSmokeChecksPassed && suiteVerificationPassed) {
       currentState.status = 'done';
       currentState.next_action = makeNextAction(
         'finalize',
-        mergedTaskIds.length > 0
-          ? `All gates passed. Merged: ${mergedTaskIds.join(', ')}.`
+        currentState.merged_task_ids.length > 0
+          ? `All gates passed. Merged: ${currentState.merged_task_ids.join(', ')}.`
           : 'All review and verification gates passed.',
       );
     } else if (budgetStatus?.blocked) {
@@ -1534,8 +1579,8 @@ export async function executeRun(
       currentState.next_action = makeNextAction(
         'repair_task',
         `${smokeFailedTaskIds.length} task(s) failed task-scoped verification. Attempting repair.`
-          + (mergedTaskIds.length > 0
-            ? ` (${mergedTaskIds.length} passed task(s) already merged)`
+          + (currentState.merged_task_ids.length > 0
+            ? ` (${currentState.merged_task_ids.length} passed task(s) already merged)`
             : ''),
         smokeFailedTaskIds,
       );
@@ -1551,8 +1596,8 @@ export async function executeRun(
           + (noOpFailedTaskIds.length > 0
             ? ` (${noOpFailedTaskIds.length} no-op task(s) detected)`
             : '')
-          + (mergedTaskIds.length > 0
-            ? ` (${mergedTaskIds.length} passed task(s) already merged)`
+          + (currentState.merged_task_ids.length > 0
+            ? ` (${currentState.merged_task_ids.length} passed task(s) already merged)`
             : ''),
         failedTaskIds,
       );
@@ -1562,8 +1607,8 @@ export async function executeRun(
       currentState.next_action = makeNextAction(
         'replan',
         'Reviews passed but suite verification failed. Replanning with failure context.'
-          + (mergedTaskIds.length > 0
-            ? ` (${mergedTaskIds.length} task(s) already merged)`
+          + (currentState.merged_task_ids.length > 0
+            ? ` (${currentState.merged_task_ids.length} task(s) already merged)`
             : ''),
       );
     }
@@ -1571,7 +1616,7 @@ export async function executeRun(
     currentState.final_summary = summarizeOutcome(
       orchestratorResult,
       suiteVerificationPassed,
-      mergedTaskIds,
+      currentState.merged_task_ids,
     );
     saveRunState(spec.cwd, currentState);
 

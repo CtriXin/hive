@@ -66,5 +66,26 @@ describe('model-defaults', () => {
       const result = guessProviderFamily('custom-unknown', 'custom');
       expect(result.scores.coding).toBe(0.5);
     });
+
+    it('detects mimo-v2-pro with strong coding scores (not generic)', () => {
+      const result = guessProviderFamily('mimo-v2-pro', 'minimax');
+      expect(result.scores.coding).toBe(0.84);
+      expect(result.scores.general).toBe(0.86);
+      expect(result.strengths).toContain('coding');
+    });
+
+    it('detects mimo-v2-omni with multimodal strength (not generic)', () => {
+      const result = guessProviderFamily('mimo-v2-omni', 'minimax');
+      expect(result.scores.coding).toBe(0.80);
+      expect(result.strengths).toContain('multimodal');
+    });
+
+    it('detects mimo-v2-tts with avoid_tags for coding/review/planning', () => {
+      const result = guessProviderFamily('mimo-v2-tts', 'minimax');
+      expect(result.avoid_tags).toContain('coding');
+      expect(result.avoid_tags).toContain('review');
+      expect(result.avoid_tags).toContain('planning');
+      expect(result.scores.coding).toBe(0.50);
+    });
   });
 });

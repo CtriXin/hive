@@ -709,6 +709,7 @@ async function main() {
     const reviewResults = await Promise.all(
       workerResults.map(r => {
         const task = plan.tasks.find((t: any) => t.id === r.taskId);
+        // N/A: legacy CLI path has no smoke verification; smokePassed intentionally omitted
         return runReview(r, task!, plan, registry);
       }),
     );

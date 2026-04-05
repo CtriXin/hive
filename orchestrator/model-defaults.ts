@@ -82,6 +82,7 @@ export function inferMaxComplexity(model: StaticModelConfig): Complexity {
 
 interface GuessResult {
   strengths: string[];
+  avoid_tags?: string[];
   scores: StaticScoreSet;
   context_window: number;
   cost_per_1k: number;
@@ -210,6 +211,32 @@ const FAMILY_PATTERNS: Array<{ test: (id: string) => boolean; result: GuessResul
       strengths: ['general', 'coding', 'operational'],
       scores: { general: 0.84, coding: 0.79, planning: 0.76, review: 0.74, translation: 0.72 },
       context_window: 200000, cost_per_1k: 0.002,
+    },
+  },
+  // ── MiniMax mimov2 family (v2 variants not covered by minimax pattern) ──
+  {
+    test: (id) => /mimo.*v2.*pro/i.test(id) || /mimov2.*pro/i.test(id),
+    result: {
+      strengths: ['general', 'coding', 'reasoning', 'operational'],
+      scores: { general: 0.86, coding: 0.84, planning: 0.80, review: 0.78, translation: 0.75 },
+      context_window: 200000, cost_per_1k: 0.003,
+    },
+  },
+  {
+    test: (id) => /mimo.*v2.*omni/i.test(id) || /mimov2.*omni/i.test(id),
+    result: {
+      strengths: ['general', 'coding', 'multimodal'],
+      scores: { general: 0.82, coding: 0.80, planning: 0.78, review: 0.76, translation: 0.74 },
+      context_window: 200000, cost_per_1k: 0.002,
+    },
+  },
+  {
+    test: (id) => /mimo.*v2.*tts/i.test(id) || /mimov2.*tts/i.test(id),
+    result: {
+      strengths: ['audio', 'tts'],
+      avoid_tags: ['coding', 'review', 'planning'],
+      scores: { general: 0.65, coding: 0.50, planning: 0.55, review: 0.55, translation: 0.70 },
+      context_window: 128000, cost_per_1k: 0.002,
     },
   },
 ];

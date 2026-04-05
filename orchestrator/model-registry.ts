@@ -134,6 +134,7 @@ export class ModelRegistry {
       this.models.set(modelId, {
         provider: route.provider_id,
         strengths: family.strengths,
+        avoid_tags: family.avoid_tags,
         scores: family.scores,
         context_window: family.context_window,
         cost_per_1k: family.cost_per_1k,

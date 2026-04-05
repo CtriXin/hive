@@ -75,8 +75,13 @@ function shouldEscalateCommittee(
   task: SubTask,
   policy: ReviewAuthorityPolicy,
   primaryReview: CommitteeMemberReview,
+  smokePassed?: boolean,
 ): boolean {
   if (policy.default_mode === 'pair') {
+    return true;
+  }
+  // Smoke failure always escalates to pair — deterministic layer overrides
+  if (smokePassed === false) {
     return true;
   }
   if (policy.escalate_on.includes('failed_review') && !primaryReview.passed) {
@@ -545,14 +550,19 @@ Review the code above. Output EXACTLY this JSON:
 {
   "passed": true|false,
   "confidence": 0.0-1.0,
+  "summary": "1-2 sentence overall assessment",
   "flagged_issues": [
     {"severity": "red|yellow|green", "file": "path:line", "description": "brief issue description"}
-  ],
-  "summary": "1-2 sentence overall assessment"
+  ]
 }
 
 Rules:
 - passed=true if no red issues and confidence >= 0.85
+- severity levels:
+  - red: blocking issues (security, correctness, breaking changes)
+  - yellow: improvements (performance, readability, minor concerns)
+  - green: positive notes (optional suggestions)
+- file format: "path/to/file.ts:lineNumber" or just "path/to/file.ts"
 - Be critical but fair — this will be reviewed again if issues found
 - Output ONLY the JSON, no other text`;
 
@@ -836,6 +846,7 @@ async function runAuthorityReview(
   task: SubTask,
   plan: TaskPlan,
   registry: ModelRegistry,
+  smokePassed?: boolean,
 ): Promise<ReviewResult> {
   const startTime = Date.now();
   const tokenStages: StageTokenUsage[] = [];
@@ -931,7 +942,7 @@ async function runAuthorityReview(
     output_tokens: primaryResult.tokenUsage.output,
   });
 
-  if (!shouldEscalateCommittee(task, authorityPolicy, primaryReview) || reviewers.length < 2) {
+  if (!shouldEscalateCommittee(task, authorityPolicy, primaryReview, smokePassed) || reviewers.length < 2) {
     return finalizeReviewResult(
       workerResult,
       task,
@@ -982,7 +993,9 @@ async function runAuthorityReview(
     output_tokens: challengerResult.tokenUsage.output,
   });
 
-  const disagreement = detectReviewDisagreement([primaryReview, challengerReview]);
+  const disagreement = detectReviewDisagreement([primaryReview, challengerReview], {
+    deterministic_failed: smokePassed === false,
+  });
   const needsSynthesis = disagreement.has_disagreement
     || primaryResult.confidence < authorityPolicy.low_confidence_threshold
     || challengerResult.confidence < authorityPolicy.low_confidence_threshold;
@@ -1061,13 +1074,14 @@ export async function runReview(
   task: SubTask,
   plan: TaskPlan,
   registry: ModelRegistry,
+  smokePassed?: boolean,  // true = smoke 通过，false = smoke 失败，undefined = 未运行/不适用
 ): Promise<ReviewResult> {
   const authorityPolicy = loadReviewAuthorityPolicy();
   if (!authorityPolicy.enabled) {
     return reviewCascade(workerResult, task, plan, registry);
   }
   try {
-    return await runAuthorityReview(workerResult, task, plan, registry);
+    return await runAuthorityReview(workerResult, task, plan, registry, smokePassed);
   } catch (err: any) {
     console.warn(`    ⚠️ Authority review failed, falling back to legacy cascade: ${err?.message || err}`);
     return reviewCascade(workerResult, task, plan, registry);

@@ -65,4 +65,72 @@ describe('disagreement-detector', () => {
     expect(result.has_disagreement).toBe(false);
     expect(result.flags).toEqual([]);
   });
+
+  it('detects fix_conflict when decision_reasons differ significantly', () => {
+    const result = detectReviewDisagreement([
+      {
+        model: 'kimi-k2.5',
+        passed: false,
+        confidence: 0.8,
+        findings: [makeFinding({
+          file: 'src/app.ts:10',
+          issue: 'Missing error handling',
+          decision_reason: 'Add try-catch block around API call',
+        })],
+      },
+      {
+        model: 'MiniMax-M2.5',
+        passed: false,
+        confidence: 0.85,
+        findings: [makeFinding({
+          file: 'src/app.ts:10',
+          issue: 'Missing error handling',
+          decision_reason: 'Use Result type pattern instead of throwing',
+        })],
+      },
+    ]);
+
+    expect(result.has_disagreement).toBe(true);
+    expect(result.flags).toContain('fix_conflict');
+  });
+
+  it('detects deterministic_vs_opinion when deterministic failed but review passed', () => {
+    const result = detectReviewDisagreement(
+      [
+        {
+          model: 'kimi-k2.5',
+          passed: true,
+          confidence: 0.9,
+          findings: [],
+        },
+        {
+          model: 'MiniMax-M2.5',
+          passed: true,
+          confidence: 0.85,
+          findings: [],
+        },
+      ],
+      { deterministic_failed: true },
+    );
+
+    expect(result.has_disagreement).toBe(true);
+    expect(result.flags).toContain('deterministic_vs_opinion');
+  });
+
+  it('does not flag deterministic_vs_opinion when deterministic passed', () => {
+    const result = detectReviewDisagreement(
+      [
+        {
+          model: 'kimi-k2.5',
+          passed: true,
+          confidence: 0.9,
+          findings: [],
+        },
+      ],
+      { deterministic_failed: false },
+    );
+
+    expect(result.has_disagreement).toBe(false);
+    expect(result.flags).toEqual([]);
+  });
 });
