@@ -26,11 +26,11 @@ Build an `authority layer` on top of Hive instead:
 - one model may act as primary
 - a second model may challenge
 - a third/fourth model may arbitrate when needed
-- `Codex` performs final synthesis, patching, and tie-break decisions
+- a dedicated synthesizer model performs final synthesis and tie-break decisions
 
 In other words:
 
-`single strong model` -> `role-based committee` -> `Codex synthesis`
+`single strong model` -> `role-based committee` -> `synthesizer pass`
 
 This makes Hive less dependent on any one provider.
 
@@ -73,8 +73,9 @@ That topology may be:
 
 - `single`
 - `pair`
-- `jury`
-- `jury + Codex`
+
+Later phases may extend this to `jury`, but CR0 only commits to the
+`single -> pair -> synthesizer pass` ladder.
 
 ## Minimum viable target
 
@@ -101,10 +102,10 @@ Why start here:
 Review committee MVP:
 
 - committee policy config
-- `single | pair | jury` mode
+- `single | pair` mode
 - low-confidence / disagreement escalation
 - manual seed profiles for Kimi / Qwen / GLM / Mimo
-- Codex synthesis as final aggregator
+- one synthesis pass as final aggregator
 
 ### CR1
 
@@ -139,7 +140,7 @@ Based on the observed behavior in the Hive repo so far:
 - `GLM` -> adversarial reviewer
 - `Qwen` -> coverage/checklist reviewer
 - `GPT` -> dispatch helper, reviewer coordinator, cross-check
-- `Codex` -> final synthesis, patching, tie-break, merge-ready conclusion
+- `GPT-5.4` -> final synthesis, tie-break, merge-ready conclusion
 
 None of these should be treated as a full drop-in Claude replacement by itself.
 The replacement is the **system**, not a single model.
@@ -150,7 +151,7 @@ These assumptions are deliberate and should be challenged by the parallel worktr
 
 1. `review` is the best first authority slice
 2. `committee escalation` is better than "always 4 models"
-3. `Codex synthesis` is required for stable final decisions
+3. a real synthesis pass is required for stable final decisions
 4. deterministic smoke/build/test must remain separate from model opinion
 5. profile seeds should be light-weight, low-confidence, and easy to overwrite
 
@@ -166,9 +167,9 @@ Do **not** do these in the first slice:
 
 ## Suggested reading order
 
-1. `docs/authority-layer/CR0_EXECUTION.md`
-2. `docs/authority-layer/INITIAL_MODEL_SEEDS.md`
-3. `docs/authority-layer/SESSION_WORKTREE_PACK.md`
-4. `docs/HIVE_COLLAB_STACK.md`
-5. `docs/hiveshell/COLLAB_STACK_PROGRESS.md`
-
+1. `docs/authority-layer/PROJECT_DIRECTION.md`
+2. `docs/authority-layer/CR0_EXECUTION.md`
+3. `docs/authority-layer/INITIAL_MODEL_SEEDS.md`
+4. `docs/authority-layer/SESSION_WORKTREE_PACK.md`
+5. `docs/HIVE_COLLAB_STACK.md`
+6. `docs/hiveshell/COLLAB_STACK_PROGRESS.md`

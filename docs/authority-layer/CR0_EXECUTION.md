@@ -1,311 +1,233 @@
 # Hive Authority Layer CR0 Execution Plan
 
 Date: 2026-04-05
-Status: ready for parallel design / implementation discussion
+Status: narrowed MVP
 Owner: codex-planner
 
 ## CR0 purpose
 
-Deliver the first usable `Claude replacer` slice for Hive without destabilizing the current Hive × AgentBus mainline.
+Deliver the first usable `review authority without Claude` slice without destabilizing the current Hive mainline.
 
-CR0 means:
+CR0 is successful when Hive can produce a usable review authority result without treating `Claude` / `Opus` as the only final authority.
 
-- review authority only
-- policy-driven committee routing
-- initial profile seeding
-- Codex-backed synthesis
+## CR0 in one sentence
 
-It does **not** mean full planner replacement yet.
+Use lightweight policy plus a thin review wrapper to introduce `single -> pair -> synthesizer pass` for review authority.
 
-## Problem statement
+Do **not** build a new parallel review subsystem in CR0.
 
-Hive currently has a practical dependency on an unreliable external authority path:
+## What CR0 includes
 
-- old workflow assumed one premium model could cover plan / review / arbitration
-- that assumption is now operationally weak
-- domestic models already cover large parts of implementation and review work
-- what is missing is not raw capability alone, but a stable authority structure
+CR0 includes only these capabilities:
 
-CR0 solves this by introducing:
+1. seed review-oriented profiles for the current domestic-model committee candidates
+2. define one authority policy source for review routing
+3. add a thin review entrypoint that can choose:
+   - existing review path
+   - minimal committee path
+4. support explicit escalation from:
+   - `single`
+   - to `pair`
+   - to one synthesis pass
+5. keep deterministic verification above model opinion
 
-- role-based committee review
-- explicit escalation rules
-- profile-driven model selection
-- synthesis by Codex rather than trust in a single reviewer
+## What CR0 does not include
 
-## Deliverables
+CR0 does **not** include:
 
-### 1. Committee policy
+- planner committee
+- default `jury` execution path
+- AgentBus-backed committee rooms
+- compact / restore persistence for committee state
+- dashboard / MCP surface expansion
+- auto-learning loop for lessons and score updates
+- a rewrite of the current scorer, registry, or full review cascade
 
-Introduce an authority policy config that can answer:
+## Target shape
 
-- when to use `single`
-- when to escalate to `pair`
-- when to escalate to `jury`
-- what counts as disagreement
-- what budget cap applies per stage
+CR0 should look like this:
 
-Minimal suggested shape:
-
-```json
-{
-  "authority": {
-    "review": {
-      "default_mode": "pair",
-      "max_models": 3,
-      "escalate_on": [
-        "high_complexity",
-        "strict_boundary",
-        "low_confidence",
-        "disagreement"
-      ],
-      "primary_candidates": ["kimi-k2.5", "mimo-v2-pro", "qwen3.5-plus", "glm-5.1"],
-      "synthesizer": "codex"
-    }
-  }
-}
+```text
+review request
+    │
+    ▼
+runReview()
+    │
+    ├─ feature off  -> existing reviewCascade()
+    └─ feature on   -> authority review wrapper
+                        │
+                        ├─ single reviewer
+                        ├─ escalate to pair when needed
+                        └─ synthesizer pass when disagreement or low-confidence remains
 ```
 
-### 2. Review committee runner
+The key rule is:
 
-Minimal flow:
+- CR0 may wrap the current review system
+- CR0 must not create an unrelated second authority stack with overlapping ownership
 
-1. choose primary reviewer
-2. optionally choose challenger / jury members
-3. collect structured review outputs
-4. detect disagreement / overlap / confidence issues
-5. synthesize into one final actionable review result
+## Minimal deliverables
 
-### 3. Seed profile support
+### 1. Profile seeds
 
-Use the existing profile system, not a new one.
+Add initial review-oriented seeds for:
 
-Existing files already support this:
+- `kimi-k2.5`
+- `MiniMax-M2.5` (Mimo role at current runtime)
+- `glm-5.1`
+- `qwen3.5-plus`
 
-- `config/model-profiles.json`
-- `config/model-lessons.json`
-- `orchestrator/profiler.ts`
-- `orchestrator/model-scorer.ts`
-- `orchestrator/model-registry.ts`
+Seed data must be treated as low-confidence guidance, not as real observed authority.
 
-CR0 should add:
+### 2. One authority policy source
 
-- light-weight seed scores for currently observed committee models
-- optional seed notes / lessons for known review behavior
+CR0 needs one authoritative place for:
 
-### 4. Human-readable docs
+- `enabled`
+- `default_mode`
+- `max_models`
+- `fallback_order`
+- `timeout_ms`
+- `partial_result_policy`
+- `escalate_on`
+- `synthesizer`
 
-Document:
+Whether this lives inside `review-policy.json` or a new `authority-policy.json` is an implementation choice, but there must be only one source of truth for authority escalation semantics.
 
-- topology
-- routing rules
-- score semantics
-- disagreement semantics
-- what the committee can and cannot decide
+### 3. Thin review wrapper
 
-## Design rules
+Introduce one entrypoint such as:
 
-### Rule 1: deterministic verification stays above opinion
+- `runReview()`
 
-Committee review may:
+Behavior:
 
-- interpret findings
-- challenge false positives
-- suggest repairs
+- if authority mode is disabled, call existing `reviewCascade()`
+- if authority mode is enabled, use minimal committee routing
 
-Committee review may **not**:
+This keeps blast radius small and gives a clean fallback.
 
-- override a failing build
-- override failing smoke/test evidence
-- redefine deterministic verification outcomes as "probably OK"
+### 4. Minimal disagreement handling
 
-### Rule 2: escalation beats fixed fan-out
+CR0 only needs a small disagreement contract.
 
-Default should be:
+Treat these as disagreement:
 
-- cheapest sufficient authority
+- opposite conclusions on the same change
+- same location with severity difference of 2 or more
+- deterministic failure path found by one reviewer but missed by another
 
-Not:
+Do **not** treat these as disagreement in CR0:
 
-- always run 4 reviewers
+- different but compatible fix suggestions
+- minor severity drift
+- checklist detail differences without verdict impact
 
-Recommended ladder:
+### 5. Synthesizer pass
 
-1. `single`
-2. `pair`
-3. `jury`
-4. `jury + Codex synthesis`
+CR0 should run one real synthesis-model pass for disputed or partial committee outputs.
 
-### Rule 3: Codex is the final synthesis layer
-
-Committee members provide:
-
-- evidence
-- objections
-- coverage gaps
-- alternative repair directions
-
-Codex provides:
+That synthesis pass is responsible for:
 
 - final merged conclusion
 - severity normalization
+- adopt / reject reasoning
 - patch-ready actionable output
 
-### Rule 4: separate this work from the AgentBus mainline
+## Default topology for CR0
 
-CR0 should happen in a separate worktree and separate doc track.
+Default CR0 ladder:
 
-The Hive × AgentBus mainline remains:
+1. `single`
+2. `pair`
+3. `synthesizer pass`
 
-- collaboration transport first
-- authority layer second
+`jury` remains a future extension, not a required CR0 runtime path.
 
-## Initial architecture
+Why:
 
-```text
-Task / review request
-        │
-        ▼
-Authority policy selector
-        │
-        ├─ single -> primary reviewer
-        ├─ pair   -> primary + challenger
-        └─ jury   -> primary + challenger + specialist(s)
-        │
-        ▼
-Structured review outputs
-        │
-        ▼
-Disagreement detector / overlap reducer
-        │
-        ▼
-Codex synthesis
-        │
-        ▼
-Final actionable review result
-```
+- it proves the authority-layer idea without 4-model fan-out
+- it limits cost and implementation surface
+- it avoids turning CR0 into a second full review framework
 
-## Proposed model roles for CR0
+## Deterministic boundary
 
-### Primary reviewer
+Deterministic verification remains above model opinion.
 
-Best current candidate:
+That means:
 
-- `kimi-k2.5`
+- failing build / smoke / test cannot be voted away
+- committee review may explain the failure, but not override it
+- CR0 may still collect advisory review when useful, but final verdict must respect deterministic failure
 
-Desired behavior:
+## Minimal implementation slice
 
-- stable severity calibration
-- clear pass/fail recommendation
-- low hallucination rate on architecture boundary
+Recommended implementation order:
 
-### Challenger / implementation reviewer
+1. seed profile data
+2. define authority policy source
+3. add thin `runReview()` wrapper
+4. add minimal disagreement detector
+5. add minimal synthesis-model handoff
 
-Best current candidate:
+Keep these out of the first patch unless needed:
 
-- `mimo-v2-pro`
+- new persistence schema
+- transport changes
+- worker status surface expansion
+- score-learning automation
 
-Desired behavior:
+## Success criteria
 
-- catch lifecycle / implementation issues
-- challenge hidden bugs the primary reviewer misses
+CR0 is done when all of these are true:
 
-### Adversarial reviewer
+1. Hive can run a review authority flow without `Claude`
+2. the system can choose at least between `single` and `pair`
+3. disagreement is explicit rather than implicit
+4. the synthesizer model can synthesize the final result when needed
+5. deterministic verification still wins over model opinion
+6. disabling the feature cleanly falls back to the existing review path
 
-Best current candidate:
+## Blockers
 
-- `glm-5.1` or `glm-5-turbo`
+These must be resolved before coding deep into CR0:
 
-Desired behavior:
+### 1. Seed semantics
 
-- intentionally search for blast radius, coupling, and silent regressions
+We must define how seed scores influence routing without pretending to be observed authority.
 
-### Checklist / coverage reviewer
+### 2. Policy ownership
 
-Best current candidate:
+We must choose one authority policy source and avoid duplicated escalation semantics.
 
-- `qwen3.5-plus`
+### 3. Wrapper boundary
 
-Desired behavior:
+We must decide clearly that CR0 is a thin wrapper over existing review flow, not a parallel review subsystem.
 
-- enumerate missing tests
-- check guard paths / config paths / non-happy paths
+### 4. Minimal member output contract
 
-### Dispatcher / external coordinator
+We need a small normalized contract for committee member outputs so disagreement detection is actually implementable.
 
-Best current candidate:
+## Defer items
 
-- `gpt-5.x`
+Push these to later phases:
 
-Desired behavior:
+- `jury` default runtime path
+- committee state in compact / restore
+- AgentBus committee collection
+- dashboard / MCP authority surfaces
+- automatic lessons / profile learning loop
+- advanced severity mapping tables
+- cache reuse and review-angle assignment
 
-- assign review angles
-- compare outputs
-- surface disagreements for Codex synthesis
+## Questions Codex should decide
 
-## Initial disagreement semantics
+1. should the default mode be `single` or `pair` in the first implementation?
+2. where should the single authority policy source live?
+3. how should seed profiles be represented so they affect routing without overstating confidence?
+4. should advisory review still run when deterministic verification already failed?
+5. should the synthesizer be hardcoded as `gpt-5.4`, or remain policy-selected with `gpt-5.4` as default?
 
-CR0 does not need complicated probabilistic voting.
+## Guardrail
 
-Simple disagreement flags are enough:
-
-- one reviewer says `PASS`, another says `must fix before smoke`
-- one reviewer claims a behavior is by design, another labels it a bug
-- multiple reviewers point at the same file/area but propose incompatible fixes
-- one reviewer finds a deterministic failure path others miss
-
-When disagreement happens:
-
-- do not average blindly
-- elevate to Codex synthesis
-- optionally request one extra targeted reviewer if the dispute is unresolved
-
-## Initial scoring policy
-
-Use the existing profile dimensions.
-
-Suggested mapping:
-
-- planning quality -> `spec_adherence`
-- review quality -> `review`
-- repair usefulness -> `repair`
-- smoke triage / integration judgement -> `integration`
-- boundary control -> `scope_discipline`
-- latency / response turnaround -> `turnaround_speed`
-
-CR0 rule:
-
-- seed scores are advisory
-- keep `samples=1`
-- keep `effective_samples` low
-- rely on later decay + updates to correct mistakes
-
-## Validation plan
-
-CR0 is ready when all of the following are true:
-
-1. a review request can run without Claude
-2. Hive can choose between `single` and `pair` at minimum
-3. disagreement can be surfaced explicitly
-4. Codex can synthesize committee output into one actionable result
-5. initial seed scores influence routing without locking it permanently
-6. the Hive × AgentBus mainline remains unaffected unless explicitly wired later
-
-## Explicit non-goals
-
-CR0 should not:
-
-- rewrite `planner.ts`
-- replace all review cascade internals at once
-- add a new persistence schema unless existing profile files are clearly insufficient
-- optimize for global cost first; correctness and stability come first
-- block the current AgentBus mainline work
-
-## Main questions for the parallel worktree group
-
-1. Should CR0 start as `pair` by default, or `single` with escalation?
-2. Should `mimo` be treated as a general reviewer or a lifecycle specialist only?
-3. Should `glm` remain an adversarial specialist or join the default pair for high-risk review?
-4. How much structured schema do we need for committee outputs before synthesis?
-5. Should committee collection happen via direct dispatch first, or via AgentBus-backed rooms from day one?
-
+If a proposed CR0 change does not directly improve `review authority without Claude`, it is probably scope creep.

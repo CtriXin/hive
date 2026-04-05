@@ -379,6 +379,14 @@ export type A2aVerdict = 'PASS' | 'CONTESTED' | 'REJECT' | 'BLOCKED';
 export type FindingSeverity = 'red' | 'yellow' | 'green';
 export type A2aLens = 'challenger' | 'architect' | 'subtractor';
 
+export interface ReviewAuthorityMetadata {
+  source: 'legacy-cascade' | 'authority-layer';
+  mode: 'single' | 'pair';
+  members: string[];
+  disagreement_flags?: string[];
+  synthesized_by?: string;
+}
+
 export interface ReviewResult {
   taskId: string;
   final_stage: ReviewStage; // Highest stage reached
@@ -389,6 +397,7 @@ export interface ReviewResult {
   duration_ms: number;
   token_stages?: StageTokenUsage[];
   external_review_collab?: CollabStatusSnapshot;
+  authority?: ReviewAuthorityMetadata;
 }
 
 export interface ReviewFinding {

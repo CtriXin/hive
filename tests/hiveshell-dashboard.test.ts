@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import type { RunScoreHistory, RunSpec, RunState, TaskPlan, WorkerStatusSnapshot } from '../orchestrator/types.js';
+import type { OrchestratorResult, RunScoreHistory, RunSpec, RunState, TaskPlan, WorkerStatusSnapshot } from '../orchestrator/types.js';
 import { loadHiveShellDashboard, renderHiveShellDashboard, resolveHiveShellRunId } from '../orchestrator/hiveshell-dashboard.js';
 import type { LoopProgress } from '../orchestrator/loop-progress-store.js';
 
@@ -198,10 +198,41 @@ describe('hiveshell-dashboard', () => {
       },
       updated_at: new Date().toISOString(),
     };
+    const result: OrchestratorResult = {
+      plan,
+      worker_results: [],
+      review_results: [
+        {
+          taskId: 'task-a',
+          final_stage: 'cross-review',
+          passed: false,
+          findings: [],
+          iterations: 2,
+          duration_ms: 100,
+          authority: {
+            source: 'authority-layer',
+            mode: 'pair',
+            members: ['kimi-k2.5', 'MiniMax-M2.5'],
+            disagreement_flags: ['conclusion_opposite'],
+            synthesized_by: 'gpt-5.4',
+          },
+        },
+      ],
+      score_updates: [],
+      total_duration_ms: 1000,
+      cost_estimate: {
+        opus_tokens: 0,
+        sonnet_tokens: 0,
+        haiku_tokens: 0,
+        domestic_tokens: 100,
+        estimated_cost_usd: 0.01,
+      },
+    };
 
     writeJson(path.join(runDir, 'spec.json'), spec);
     writeJson(path.join(runDir, 'state.json'), state);
     writeJson(path.join(runDir, 'plan.json'), plan);
+    writeJson(path.join(runDir, 'result.json'), result);
     writeJson(path.join(runDir, 'loop-progress.json'), loopProgress);
     writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
     writeJson(path.join(runDir, 'score-history.json'), scoreHistory);
@@ -230,12 +261,16 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('== HiveShell ==');
     expect(rendered).toContain('== Run Overview ==');
     expect(rendered).toContain('== Collab ==');
+    expect(rendered).toContain('== Authority ==');
     expect(rendered).toContain('== Score Trend ==');
     expect(rendered).toContain('== Workers ==');
     expect(rendered).toContain('== Mindkeeper ==');
     expect(rendered).toContain('Ship hiveshell UI');
     expect(rendered).toContain('task-a [completed]');
     expect(rendered).toContain('room-shell [collecting]');
+    expect(rendered).toContain('authority=authority-layer');
+    expect(rendered).toContain('mode=pair');
+    expect(rendered).toContain('members=kimi-k2.5+MiniMax-M2.5');
     expect(rendered).toContain('task-a -> room-task-a [closed] replies=1');
     expect(rendered).toContain('agentbus join room-shell');
     expect(rendered).toContain('r2');
