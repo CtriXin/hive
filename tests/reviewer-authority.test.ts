@@ -293,5 +293,11 @@ describe('reviewer authority path', () => {
     expect(result.authority?.synthesized_by).toBeUndefined();
     expect(result.authority?.synthesis_strategy).toBe('heuristic');
     expect(result.findings.at(-1)?.issue).toContain('heuristic synthesis');
+    expect(result.token_stages?.some((stage) =>
+      stage.stage === 'authority-synthesis:task-c'
+      && stage.model === 'gpt-5.4'
+      && stage.input_tokens === 8
+      && stage.output_tokens === 4,
+    )).toBe(true);
   });
 });

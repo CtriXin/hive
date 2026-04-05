@@ -148,6 +148,7 @@ interface SynthesizedAuthorityReview {
   findings: ReviewFinding[];
   synthesisReason: string;
   synthesizedBy?: string;
+  attemptedBy?: string;
   strategy: 'model' | 'heuristic';
   tokenUsage?: { input: number; output: number };
 }
@@ -436,7 +437,11 @@ Rules:
     };
   } catch (err: any) {
     console.warn(`    ⚠️ Authority synthesis parse failed, falling back to heuristic: ${err.message?.slice(0, 100)}`);
-    return heuristic;
+    return {
+      ...heuristic,
+      attemptedBy: synthesisModel,
+      tokenUsage: qr?.tokenUsage,
+    };
   }
 }
 
@@ -964,10 +969,11 @@ async function runAuthorityReview(
         hiveConfig,
       )
     : null;
-  if (synthesis?.tokenUsage && synthesis.synthesizedBy) {
+  const synthesisStageModel = synthesis?.synthesizedBy || synthesis?.attemptedBy;
+  if (synthesis?.tokenUsage && synthesisStageModel) {
     tokenStages.push({
       stage: `authority-synthesis:${workerResult.taskId}`,
-      model: synthesis.synthesizedBy,
+      model: synthesisStageModel,
       input_tokens: synthesis.tokenUsage.input,
       output_tokens: synthesis.tokenUsage.output,
     });
