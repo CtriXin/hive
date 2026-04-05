@@ -4,7 +4,7 @@
 export { ModelRegistry } from './model-registry.js';
 export { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from './planner.js';
 export { spawnWorker, dispatchBatch, type DispatchResult } from './dispatcher.js';
-export { reviewCascade } from './reviewer.js';
+export { reviewCascade, runReview } from './reviewer.js';
 export { resolveProvider, resolveProviderForModel, checkProviderHealth } from './provider-resolver.js';
 export { loadMmsRoutes, resolveModelRoute, resolveModelRouteFull, resolveModelByPrefix, isMmsAvailable } from './mms-routes-loader.js';
 export { translateToEnglish } from './translator.js';
@@ -692,7 +692,7 @@ async function main() {
     const planJson = JSON.parse(fs.readFileSync(args[planIdx + 1], 'utf-8'));
     const { buildPlanFromClaudeOutput } = await import('./planner.js');
     const { dispatchBatch } = await import('./dispatcher.js');
-    const { reviewCascade } = await import('./reviewer.js');
+    const { runReview } = await import('./reviewer.js');
     const { reportResults } = await import('./reporter.js');
     const { ModelRegistry } = await import('./model-registry.js');
 
@@ -709,7 +709,7 @@ async function main() {
     const reviewResults = await Promise.all(
       workerResults.map(r => {
         const task = plan.tasks.find((t: any) => t.id === r.taskId);
-        return reviewCascade(r, task!, plan, registry);
+        return runReview(r, task!, plan, registry);
       }),
     );
 

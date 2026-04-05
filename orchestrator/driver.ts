@@ -38,7 +38,7 @@ import { planGoal } from './planner-runner.js';
 import { ModelRegistry } from './model-registry.js';
 import { dispatchBatch, spawnWorker } from './dispatcher.js';
 import { saveAdvisoryScoreSignals } from './advisory-score.js';
-import { reviewCascade } from './reviewer.js';
+import { runReview } from './reviewer.js';
 import { maybeRunRecoveryAdvisory } from './recovery-room-handler.js';
 import { maybeRunExternalReviewSlot } from './review-room-handler.js';
 import { allRequiredChecksPassed, runVerification, runVerificationSuite } from './verifier.js';
@@ -46,7 +46,7 @@ import { commitAndMergeWorktree } from './worktree-manager.js';
 import { loadProjectVerificationPolicy, loadTaskVerificationRules, type TaskVerificationRule } from './project-policy.js';
 import { getBudgetStatus, loadConfig, recordSpending } from './hive-config.js';
 import { writeLoopProgress, type LoopPhase } from './loop-progress-store.js';
-import { updateWorkerStatus } from './worker-status-store.js';
+import { loadWorkerStatusSnapshot, updateWorkerStatus } from './worker-status-store.js';
 
 // ── Options & Result ──
 
@@ -127,6 +127,41 @@ function dedupe(values: string[]): string[] {
 function trimTail(text: string, limit = 4000): string {
   if (!text) return '';
   return text.length <= limit ? text : text.slice(-limit);
+}
+
+function summarizeAuthorityReview(review: ReviewResult): string {
+  const authority = review.authority;
+  if (!authority) {
+    return review.passed
+      ? `review passed at ${review.final_stage}`
+      : `review failed at ${review.final_stage}`;
+  }
+
+  const parts = [
+    `${authority.source}`,
+    `mode=${authority.mode}`,
+  ];
+  if (authority.members.length > 0) {
+    parts.push(`members=${authority.members.join('+')}`);
+  }
+  if (authority.synthesized_by) {
+    parts.push(`synth=${authority.synthesized_by}`);
+  }
+  if (authority.disagreement_flags?.length) {
+    parts.push(`disagreement=${authority.disagreement_flags.join(',')}`);
+  }
+
+  return `${review.passed ? 'review passed' : 'review failed'} | ${parts.join(' | ')}`;
+}
+
+export function mergeWorkerTaskSummary(existingSummary: string | undefined, authoritySummary: string): string {
+  if (!existingSummary) {
+    return authoritySummary;
+  }
+  if (existingSummary.includes(authoritySummary)) {
+    return existingSummary;
+  }
+  return `${existingSummary} || ${authoritySummary}`;
 }
 
 function ensureTaskState(
@@ -590,7 +625,7 @@ async function runRepairRound(
     repairWorkerResults.push(workerResult);
 
     if (workerResult.success) {
-      const reviewResult = await reviewCascade(
+      const reviewResult = await runReview(
         workerResult,
         task,
         plan,
@@ -1253,7 +1288,7 @@ export async function executeRun(
           if (!task) {
             throw new Error(`Task not found: ${wr.taskId}`);
           }
-          return reviewCascade(wr, task, plan!, registry);
+          return runReview(wr, task, plan!, registry);
         }),
       );
     }
@@ -1310,6 +1345,26 @@ export async function executeRun(
         return reviewed;
       }),
     );
+
+    reviewResults.forEach((review) => {
+      const worker = workerResults.find((item) => item.taskId === review.taskId);
+      if (!worker) return;
+      const existingSnapshot = loadWorkerStatusSnapshot(spec.cwd, spec.id);
+      const existingWorker = existingSnapshot?.workers.find((item) => item.task_id === review.taskId);
+      const authoritySummary = summarizeAuthorityReview(review);
+      updateWorkerStatus(spec.cwd, spec.id, {
+        task_id: review.taskId,
+        status: review.passed ? 'completed' : 'failed',
+        plan_id: plan!.id,
+        round: currentState.round,
+        changed_files_count: worker.changedFiles.length,
+        success: review.passed,
+        task_summary: mergeWorkerTaskSummary(existingWorker?.task_summary, authoritySummary),
+        last_message: authoritySummary,
+        error: review.passed ? undefined : review.findings[0]?.issue,
+        event_message: review.passed ? 'Review passed' : 'Review failed',
+      });
+    });
 
     // Update completed/failed tracking
     updateTaskStatesFromWorkers(currentState, workerResults);

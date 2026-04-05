@@ -158,7 +158,29 @@ function renderWorkers(snapshot: WorkerStatusSnapshot | null, limit = 8): string
       ? ` changed=${worker.changed_files_count}`
       : '';
     const discussText = worker.discuss_triggered ? ' discuss=yes' : '';
-    return `- ${worker.task_id} [${worker.status}] ${model}${changeText}${discussText} | ${truncate(worker.last_message, 90)}`;
+    const summary = worker.task_summary || worker.last_message;
+    return `- ${worker.task_id} [${worker.status}] ${model}${changeText}${discussText} | ${truncate(summary, 90)}`;
+  });
+}
+
+function renderAuthority(data: HiveShellDashboardData): string[] {
+  const reviews = data.result?.review_results || [];
+  if (reviews.length === 0) {
+    return ['- no review authority result yet'];
+  }
+
+  return reviews.map((review) => {
+    const authority = review.authority;
+    const parts = [
+      `${review.taskId} ${review.passed ? '[pass]' : '[fail]'}`,
+      `stage=${review.final_stage}`,
+    ];
+    if (authority?.source) parts.push(`authority=${authority.source}`);
+    if (authority?.mode) parts.push(`mode=${authority.mode}`);
+    if (authority?.members?.length) parts.push(`members=${authority.members.join('+')}`);
+    if (authority?.synthesized_by) parts.push(`synth=${authority.synthesized_by}`);
+    if (authority?.disagreement_flags?.length) parts.push(`disagreement=${authority.disagreement_flags.join(',')}`);
+    return `- ${parts.join(' | ')}`;
   });
 }
 
@@ -377,6 +399,7 @@ export function renderHiveShellDashboard(
     section('Run Overview', renderOverview(data)),
     section('Collab', renderCollab(data)),
     section('Advisory', renderAdvisory(data)),
+    section('Authority', renderAuthority(data)),
     section('Score Trend', renderScoreTrend(data.scoreHistory)),
     section('Workers', renderWorkers(data.workerSnapshot)),
     section('Human Bridge', renderHumanBridge(data)),

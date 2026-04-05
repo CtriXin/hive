@@ -42,6 +42,11 @@ export async function reportResults(
       stage: r.final_stage,
       findings_red: r.findings.filter(f => f.severity === 'red').length,
       findings_yellow: r.findings.filter(f => f.severity === 'yellow').length,
+      authority_mode: r.authority?.mode,
+      authority_members: r.authority?.members || [],
+      authority_source: r.authority?.source,
+      disagreement_flags: r.authority?.disagreement_flags || [],
+      synthesized_by: r.authority?.synthesized_by,
     })),
     cost: result.cost_estimate,
     score_updates: result.score_updates,
@@ -91,7 +96,18 @@ function formatLocalReport(summary: any): string {
   report += `\n### Review 结果\n\n`;
   for (const r of summary.reviews) {
     const emoji = r.passed ? '✅' : '❌';
-    report += `- ${emoji} **${r.task}**: stage=${r.stage}, ${r.findings_red}🔴 ${r.findings_yellow}🟡\n`;
+    const authorityBits = [];
+    if (r.authority_source) authorityBits.push(`authority=${r.authority_source}`);
+    if (r.authority_mode) authorityBits.push(`mode=${r.authority_mode}`);
+    if (Array.isArray(r.authority_members) && r.authority_members.length > 0) {
+      authorityBits.push(`members=${r.authority_members.join('+')}`);
+    }
+    if (r.synthesized_by) authorityBits.push(`synth=${r.synthesized_by}`);
+    if (Array.isArray(r.disagreement_flags) && r.disagreement_flags.length > 0) {
+      authorityBits.push(`disagreement=${r.disagreement_flags.join(',')}`);
+    }
+    const authorityText = authorityBits.length > 0 ? `, ${authorityBits.join(', ')}` : '';
+    report += `- ${emoji} **${r.task}**: stage=${r.stage}, ${r.findings_red}🔴 ${r.findings_yellow}🟡${authorityText}\n`;
   }
 
   if (summary.cost) {

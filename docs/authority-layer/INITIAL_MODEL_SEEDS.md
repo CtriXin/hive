@@ -48,7 +48,7 @@ Role recommendation:
 
 - primary review authority
 
-### mimo-v2-pro
+### Mimo role (`MiniMax-M2.5` at current runtime)
 
 Reasoning:
 
@@ -111,11 +111,11 @@ Role recommendation:
 
 ### Standard path
 
-- pair: `kimi-k2.5` + `mimo-v2-pro`
+- pair: `kimi-k2.5` + `MiniMax-M2.5`
 
 ### High-risk path
 
-- jury: `kimi-k2.5` + `mimo-v2-pro` + `glm-5.1`
+- jury: `kimi-k2.5` + `MiniMax-M2.5` + `glm-5.1`
 
 ### Coverage-heavy path
 
@@ -139,6 +139,5 @@ Before strengthening these seeds, gather:
 1. review false-positive rate
 2. review missed-bug rate
 3. disagreement rate against deterministic smoke/build/test
-4. Codex synthesis correction rate per reviewer
+4. synthesis-pass correction rate per reviewer
 5. per-role latency / cost / usefulness
-
