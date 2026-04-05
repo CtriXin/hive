@@ -38,4 +38,26 @@ describe('driver authority summary merge', () => {
     expect(summary).toContain('synth=heuristic');
     expect(summary).toContain('disagreement=conclusion_opposite');
   });
+
+  it('shows blocked synthesis attempt in authority summary', () => {
+    const summary = summarizeAuthorityReview({
+      taskId: 'task-d',
+      final_stage: 'cross-review',
+      passed: false,
+      verdict: 'BLOCKED',
+      findings: [],
+      iterations: 2,
+      duration_ms: 100,
+      authority: {
+        source: 'authority-layer',
+        mode: 'pair',
+        members: ['kimi-k2.5', 'MiniMax-M2.5'],
+        disagreement_flags: ['conclusion_opposite'],
+        synthesis_attempted_by: 'gpt-5.4',
+      },
+    });
+
+    expect(summary).toContain('review blocked');
+    expect(summary).toContain('synth=blocked(gpt-5.4)');
+  });
 });

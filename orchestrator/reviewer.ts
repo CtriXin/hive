@@ -1018,7 +1018,10 @@ async function runAuthorityReview(
     : passed ? 'PASS' : 'REJECT';
 
   if (needsSynthesis) {
-    console.log(`    [authority] synthesize by=${synthesis?.synthesizedBy || 'heuristic'} disagreement=${disagreement.flags.join(',') || 'low_confidence'}`);
+    const synthesisLabel = synthesis?.synthesizedBy
+      || (synthesis?.strategy === 'heuristic' ? 'heuristic' : undefined)
+      || (synthesis?.attemptedBy ? `blocked(${synthesis.attemptedBy})` : 'unknown');
+    console.log(`    [authority] synthesize by=${synthesisLabel} disagreement=${disagreement.flags.join(',') || 'low_confidence'}`);
   }
 
   return finalizeReviewResult(
@@ -1042,6 +1045,7 @@ async function runAuthorityReview(
         disagreement_flags: disagreement.flags,
         synthesized_by: synthesis?.synthesizedBy,
         synthesis_strategy: synthesis?.strategy,
+        synthesis_attempted_by: synthesis?.attemptedBy,
       },
     },
     tokenStages,

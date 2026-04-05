@@ -376,6 +376,7 @@ describe('reviewer authority path', () => {
     expect(result.verdict).toBe('BLOCKED');
     expect(result.authority?.synthesized_by).toBeUndefined();
     expect(result.authority?.synthesis_strategy).toBeUndefined();
+    expect(result.authority?.synthesis_attempted_by).toBe('gpt-5.4');
     expect(result.findings[0]?.issue).toContain('fail_closed policy');
     expect(result.findings[0]?.severity).toBe('red');
     expect(result.token_stages?.some((stage) =>

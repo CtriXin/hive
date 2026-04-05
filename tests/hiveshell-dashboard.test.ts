@@ -352,6 +352,7 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('authority=authority-layer');
     expect(rendered).toContain('mode=pair');
     expect(rendered).toContain('members=kimi-k2.5+MiniMax-M2.5');
+    expect(rendered).toContain('synth=gpt-5.4');
     expect(rendered).toContain('task-a -> room-task-a [closed] replies=1');
     expect(rendered).toContain('agentbus join room-shell');
     expect(rendered).toContain('r2');
@@ -362,5 +363,52 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('linked rooms: 2');
     expect(rendered).toContain('room link: room-shell [plan/collecting] replies=1');
     expect(rendered).toContain('room link: room-task-a [task_discuss/closed] replies=1 task=task-a');
+  });
+
+  it('renders blocked synthesis attempt in authority section', () => {
+    const rendered = renderHiveShellDashboard({
+      runId: RUN_ID,
+      cwd: TMP_DIR,
+      result: {
+        plan: {
+          id: 'plan-blocked',
+          goal: 'blocked authority',
+          tasks: [],
+          execution_order: [],
+        },
+        worker_results: [],
+        review_results: [
+          {
+            taskId: 'task-b',
+            final_stage: 'cross-review',
+            passed: false,
+            verdict: 'BLOCKED',
+            findings: [],
+            iterations: 2,
+            duration_ms: 100,
+            authority: {
+              source: 'authority-layer',
+              mode: 'pair',
+              members: ['kimi-k2.5', 'MiniMax-M2.5'],
+              disagreement_flags: ['conclusion_opposite'],
+              synthesis_attempted_by: 'gpt-5.4',
+            },
+          },
+        ],
+        score_updates: [],
+        total_duration_ms: 1000,
+        cost_estimate: {
+          opus_tokens: 0,
+          sonnet_tokens: 0,
+          haiku_tokens: 0,
+          domestic_tokens: 100,
+          estimated_cost_usd: 0.01,
+        },
+      } as OrchestratorResult,
+      updated_at: new Date().toISOString(),
+    });
+
+    expect(rendered).toContain('task-b [blocked]');
+    expect(rendered).toContain('synth=blocked(gpt-5.4)');
   });
 });

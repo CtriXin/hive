@@ -112,6 +112,8 @@ Operational note for CR0:
 - when synthesis succeeds, runtime records `synthesized_by=<model>`
 - when synthesis is attempted but falls back to heuristic merge, runtime records
   `synthesis_strategy=heuristic` instead of pretending a model completed the pass
+- when synthesis is attempted but blocked by `fail_closed`, runtime records
+  `synthesis_attempted_by=<model>` so the blocked attempt stays visible
 - synthesis failure is governed by explicit `synthesis_failure_policy`
 - default CR0 posture is `fail_closed`, not implicit heuristic fallback
 

@@ -48,6 +48,8 @@ export async function reportResults(
       disagreement_flags: r.authority?.disagreement_flags || [],
       synthesized_by: r.authority?.synthesized_by,
       synthesis_strategy: r.authority?.synthesis_strategy,
+      synthesis_attempted_by: r.authority?.synthesis_attempted_by,
+      verdict: r.verdict,
     })),
     cost: result.cost_estimate,
     score_updates: result.score_updates,
@@ -96,7 +98,7 @@ function formatLocalReport(summary: any): string {
 
   report += `\n### Review 结果\n\n`;
   for (const r of summary.reviews) {
-    const emoji = r.passed ? '✅' : '❌';
+    const emoji = r.verdict === 'BLOCKED' ? '⛔' : r.passed ? '✅' : '❌';
     const authorityBits = [];
     if (r.authority_source) authorityBits.push(`authority=${r.authority_source}`);
     if (r.authority_mode) authorityBits.push(`mode=${r.authority_mode}`);
@@ -105,6 +107,7 @@ function formatLocalReport(summary: any): string {
     }
     if (r.synthesized_by) authorityBits.push(`synth=${r.synthesized_by}`);
     else if (r.synthesis_strategy === 'heuristic') authorityBits.push('synth=heuristic');
+    else if (r.synthesis_attempted_by) authorityBits.push(`synth=blocked(${r.synthesis_attempted_by})`);
     if (Array.isArray(r.disagreement_flags) && r.disagreement_flags.length > 0) {
       authorityBits.push(`disagreement=${r.disagreement_flags.join(',')}`);
     }
