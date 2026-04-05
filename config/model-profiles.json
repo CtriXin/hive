@@ -107,10 +107,10 @@
     "kimi-k2.5": {
       "scores": {
         "implementation": {
-          "value": 0.9977165380794948,
-          "samples": 22,
-          "effective_samples": 21.7,
-          "last_updated": "2026-04-03T02:37:18.481Z"
+          "value": 0.9562366723947966,
+          "samples": 32,
+          "effective_samples": 31.650000000000002,
+          "last_updated": "2026-04-03T16:54:29.754Z"
         },
         "review": {
           "value": 0.85,
@@ -161,10 +161,10 @@
     "glm-5-turbo": {
       "scores": {
         "implementation": {
-          "value": 0.9216483464196443,
-          "samples": 56,
-          "effective_samples": 53.30000000000001,
-          "last_updated": "2026-04-03T03:52:59.852Z"
+          "value": 0.9339327417692245,
+          "samples": 67,
+          "effective_samples": 63.850000000000016,
+          "last_updated": "2026-04-03T16:53:53.301Z"
         },
         "review": {
           "value": 0.5,
@@ -179,10 +179,10 @@
           "last_updated": "2026-04-02T15:59:00.234Z"
         },
         "integration": {
-          "value": 0.9695583599805864,
-          "samples": 23,
-          "effective_samples": 23.299999999999997,
-          "last_updated": "2026-04-03T03:52:59.852Z"
+          "value": 0.9573892533525008,
+          "samples": 26,
+          "effective_samples": 26,
+          "last_updated": "2026-04-03T16:53:19.910Z"
         },
         "spec_adherence": {
           "value": 0.8,

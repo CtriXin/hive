@@ -5,6 +5,7 @@ import {
   buildRoundScoreSignals,
   computeRoundScore,
   loadRunScoreHistory,
+  resolveLatestScoredRunId,
   saveRoundScore,
 } from '../orchestrator/score-history.js';
 import type { ReviewResult, VerificationResult, WorkerResult } from '../orchestrator/types.js';
@@ -180,5 +181,38 @@ describe('score-history', () => {
     });
 
     expect(score).toBe(100);
+  });
+
+  it('falls back from a preferred no-score run to the latest scored run', () => {
+    const latestNoScoreRun = 'plan-artifact-only';
+    const olderScoredRun = 'run-score-older';
+
+    fs.mkdirSync(path.join(TMP_DIR, '.ai', 'runs', latestNoScoreRun), { recursive: true });
+    fs.writeFileSync(path.join(TMP_DIR, '.ai', 'runs', latestNoScoreRun, 'state.json'), JSON.stringify({
+      run_id: latestNoScoreRun,
+      status: 'done',
+      round: 0,
+      completed_task_ids: [],
+      failed_task_ids: [],
+      retry_counts: {},
+      replan_count: 0,
+      verification_results: [],
+      updated_at: '2026-04-02T18:00:00.000Z',
+    }, null, 2));
+
+    saveRoundScore({
+      cwd: TMP_DIR,
+      runId: olderScoredRun,
+      goal: 'Score fallback',
+      round: 1,
+      action: 'execute',
+      status: 'done',
+      workerResults: [makeWorkerResult()],
+      reviewResults: [makeReviewResult()],
+      verificationResults: [makeVerificationResult()],
+    });
+
+    expect(resolveLatestScoredRunId(TMP_DIR, latestNoScoreRun)).toBe(olderScoredRun);
+    expect(resolveLatestScoredRunId(TMP_DIR, olderScoredRun)).toBe(olderScoredRun);
   });
 });

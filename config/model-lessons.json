@@ -58,6 +58,52 @@
         "rule": "When task involves reading JSON files, include the exact file path and a sample of the JSON structure in the task prompt",
         "severity": "medium",
         "created_at": "2026-04-03T12:30:00Z"
+      },
+      {
+        "id": "les-1775233179319-1l9c",
+        "run_id": "plan-1775232049231",
+        "task_id": "task-glm-5.1",
+        "category": "api",
+        "failure_type": "worker_timeout",
+        "description": "Could not parse review response",
+        "rule": "Avoid assigning large-file edits; split into smaller targeted changes",
+        "severity": "medium",
+        "created_at": "2026-04-03T16:19:39.319Z"
+      },
+      {
+        "id": "les-1775233179319-sv55",
+        "run_id": "plan-1775232049231",
+        "task_id": "task-glm-5.1",
+        "category": "api",
+        "failure_type": "scope_violation",
+        "description": "Could not parse review response",
+        "rule": "Add explicit \"ONLY modify these files: [list]\" constraint to task prompt",
+        "severity": "medium",
+        "created_at": "2026-04-03T16:19:39.319Z"
+      }
+    ],
+    "gpt-5.4": [
+      {
+        "id": "les-1775309210007-t2fb",
+        "run_id": "dispatch-gpt54-t2-nofb-1775309210007",
+        "task_id": "gpt54-t2-nofb",
+        "category": "output_format",
+        "failure_type": "wrong_output_format",
+        "description": "Worker wrote tool_use JSON records to output file instead of markdown content. File contained '{\"type\":\"tool_use\",...}' instead of expected markdown review.",
+        "rule": "When dispatching benchmark tasks, EXPLICITLY instruct 'use Write tool to save markdown content' and add 'file content must be markdown format, not JSON tool call records'",
+        "severity": "high",
+        "created_at": "2026-04-04T21:29:00Z"
+      },
+      {
+        "id": "les-1775309355685-t3fb",
+        "run_id": "dispatch-gpt54-t3-nofb-1775309355685",
+        "task_id": "gpt54-t3-nofb",
+        "category": "output_format",
+        "failure_type": "wrong_output_format",
+        "description": "Worker wrote tool_use JSON records to output file instead of markdown content. TASK3-gpt-5.4.md contained tool call JSON instead of implementation markdown.",
+        "rule": "Require explicit format instruction: 'output must be markdown code/documentation, not tool call JSON'",
+        "severity": "high",
+        "created_at": "2026-04-04T21:31:00Z"
       }
     ]
   },
@@ -69,7 +115,12 @@
     "kimi-k2.5": [
       "Aggressively expands modification scope: ALWAYS include 'ONLY modify these files: [explicit list]' in task prompt. Will modify unrelated files if not constrained.",
       "Wrong import paths when module names are similar: include exact 'from X import Y' statements in the task description",
-      "When reading/writing JSON or config files: include exact file path AND a sample of the JSON structure (not just field names)"
+      "When reading/writing JSON or config files: include exact file path AND a sample of the JSON structure (not just field names)",
+      "Always include explicit 'ONLY modify these files: [list]' constraint. kimi-k2.5 aggressively expands scope."
+    ],
+    "gpt-5.4": [
+      "Worker may write tool call JSON instead of content: When dispatching benchmark tasks, EXPLICITLY instruct 'use Write tool to save markdown content' and verify output format",
+      "File output may be tool_use JSON instead of markdown: Add explicit requirement 'file content must be markdown format, not JSON tool call records'"
     ]
   }
 }

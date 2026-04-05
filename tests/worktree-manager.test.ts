@@ -20,5 +20,15 @@ describe('worktree-manager', () => {
       const output = 'R  docs/old.md -> docs/new.md\n';
       expect(parsePorcelainChangedFiles(output)).toEqual(['docs/new.md']);
     });
+
+    it('drops untracked directory entries such as .ai/ and .claude/', () => {
+      const output = '?? .ai/\n?? .claude/\n M README.md\n';
+      expect(parsePorcelainChangedFiles(output)).toEqual(['README.md']);
+    });
+
+    it('drops transient internal file paths under .ai/ and .claude/', () => {
+      const output = '?? .ai/restore/latest.md\n?? .claude/settings.local.json\n M src/app.ts\n';
+      expect(parsePorcelainChangedFiles(output)).toEqual(['src/app.ts']);
+    });
   });
 });

@@ -1,0 +1,20 @@
+{
+  "id": "blog-001",
+  "title": "Building Scalable MCP Servers: A Practical Guide",
+  "titleJa": "スケーラブルなMCPサーバーの構築：実践ガイド",
+  "slug": "building-scalable-mcp-servers",
+  "excerpt": "Learn how to architect Model Context Protocol servers that handle thousands of concurrent connections without breaking a sweat.",
+  "excerptJa": "数千の同時接続を問題なく処理できるモデルコンテキストプロトコルサーバーのアーキテクチャ方法を学びます。",
+  "content": "Model Context Protocol (MCP) has emerged as the standard for extending AI assistants with custom capabilities. In this deep dive, we explore proven patterns for building MCP servers that scale horizontally. From connection pooling backpressure handling to stateless design principles, you'll learn the architectural decisions that separate toy demos from production-grade systems.",
+  "contentJa": "モデルコンテキストプロトコル（MCP）は、AIアシスタントにカスタム機能を拡張するための標準として登場しました。この深掘り記事では、水平スケール可能なMCPサーバーを構築するための実証済みパターンを探ります。コネクションプーリングやバックプレッシャー処理からステートレス設計の原則まで、デモ級のシステムと本番グレードのシステムを分けるアーキテクチャ上の判断を学びます。",
+  "author": "Sarah Chen",
+  "authorJa": "サラ・チェン",
+  "publishedAt": "2025-03-15T09:00:00Z",
+  "category": "Engineering",
+  "categoryJa": "エンジニアリング",
+  "tags": ["MCP", "Scalability", "Architecture", "TypeScript"],
+  "tagsJa": ["MCP", "スケーラビリティ", "アーキテクチャ", "TypeScript"],
+  "coverImage": "imgs/articles/mcp-servers.jpg",
+  "readTimeMinutes": 8,
+  "featured": true
+}

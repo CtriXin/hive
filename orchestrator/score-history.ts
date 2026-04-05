@@ -157,6 +157,42 @@ export function loadRunScoreHistory(
   return readJson<RunScoreHistory>(scoreHistoryPath(cwd, runId));
 }
 
+export function resolveLatestScoredRunId(
+  cwd: string,
+  preferredRunId?: string,
+): string | null {
+  const dir = path.join(cwd, '.ai', 'runs');
+  const runIdsFromDisk: string[] = [];
+  if (fs.existsSync(dir)) {
+    const entries = fs.readdirSync(dir)
+      .filter((runId) => fs.existsSync(scoreHistoryPath(cwd, runId)));
+    // Pre-load timestamps into a map to avoid O(N log N) file reads in sort
+    const tsMap = new Map<string, string>();
+    for (const runId of entries) {
+      const h = loadRunScoreHistory(cwd, runId);
+      tsMap.set(runId, h?.updated_at || '');
+    }
+    entries.sort((a, b) => (tsMap.get(b) || '').localeCompare(tsMap.get(a) || ''));
+    runIdsFromDisk.push(...entries);
+  }
+  const candidateIds = [
+    preferredRunId,
+    ...runIdsFromDisk,
+  ].filter((value, index, array): value is string => (
+    typeof value === 'string'
+    && value.length > 0
+    && array.indexOf(value) === index
+  ));
+
+  for (const runId of candidateIds) {
+    if (loadRunScoreHistory(cwd, runId)) {
+      return runId;
+    }
+  }
+
+  return null;
+}
+
 export function saveRoundScore(
   input: SaveRoundScoreInput,
 ): { history: RunScoreHistory; entry: RoundScoreEntry } {

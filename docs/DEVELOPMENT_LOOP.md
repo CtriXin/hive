@@ -186,6 +186,8 @@ Budget behavior:
 
 See [docs/INTEGRATION_SMOKE.md](./INTEGRATION_SMOKE.md) for the full validation summary and smoke test procedures.
 
+For the collaboration-layer roadmap across Hive / AgentBus / agent-im / MindKeeper, see [docs/HIVE_COLLAB_STACK.md](./HIVE_COLLAB_STACK.md).
+
 ## Minimal commands
 
 ```bash

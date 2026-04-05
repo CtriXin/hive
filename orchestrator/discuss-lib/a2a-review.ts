@@ -147,6 +147,8 @@ export function extractSignatures(worktreePath: string, changedFiles: string[]):
   for (const file of changedFiles.slice(0, 10)) {
     const fullPath = path.join(worktreePath, file);
     if (!fs.existsSync(fullPath)) continue;
+    const stat = fs.statSync(fullPath);
+    if (!stat.isFile()) continue;
     const content = fs.readFileSync(fullPath, 'utf-8');
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i++) {
