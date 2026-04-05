@@ -148,6 +148,7 @@ interface SynthesizedAuthorityReview {
   findings: ReviewFinding[];
   synthesisReason: string;
   synthesizedBy?: string;
+  strategy: 'model' | 'heuristic';
   tokenUsage?: { input: number; output: number };
 }
 
@@ -253,6 +254,7 @@ function heuristicSynthesizePairReviews(
     verdict: passed ? 'PASS' : 'REJECT',
     findings,
     synthesisReason,
+    strategy: 'heuristic',
   };
 }
 
@@ -429,6 +431,7 @@ Rules:
       findings,
       synthesisReason: rationale,
       synthesizedBy: synthesisModel,
+      strategy: 'model',
       tokenUsage: qr.tokenUsage,
     };
   } catch (err: any) {
@@ -1003,6 +1006,7 @@ async function runAuthorityReview(
         members: [primaryModel, challengerModel],
         disagreement_flags: disagreement.flags,
         synthesized_by: synthesis?.synthesizedBy,
+        synthesis_strategy: synthesis?.strategy,
       },
     },
     tokenStages,

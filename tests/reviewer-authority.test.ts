@@ -146,6 +146,7 @@ describe('reviewer authority path', () => {
     expect(result.authority?.mode).toBe('pair');
     expect(result.authority?.members.length).toBe(2);
     expect(result.authority?.synthesized_by).toBe('gpt-5.4');
+    expect(result.authority?.synthesis_strategy).toBe('model');
     expect(result.authority?.disagreement_flags).toContain('conclusion_opposite');
     expect(result.passed).toBe(false);
     expect(result.findings.at(-1)?.issue).toContain('gpt-5.4 synthesis');
@@ -221,6 +222,76 @@ describe('reviewer authority path', () => {
     expect(result.passed).toBe(true);
     expect(result.verdict).toBe('PASS');
     expect(result.authority?.synthesized_by).toBe('gpt-5.4');
+    expect(result.authority?.synthesis_strategy).toBe('model');
     expect(result.findings.at(-1)?.issue).toContain('higher-confidence pass accepted');
+  });
+
+  it('marks heuristic fallback honestly when synthesis model output is unusable', async () => {
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: true,
+          confidence: 0.61,
+          flagged_issues: [],
+          summary: 'primary review',
+        }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: false,
+          confidence: 0.8,
+          flagged_issues: [
+            { severity: 'red', file: 'src/app.ts:10', description: 'must fix' },
+          ],
+          summary: 'challenger review',
+        }),
+        tokenUsage: { input: 12, output: 6 },
+      })
+      .mockResolvedValueOnce({
+        text: 'not-json',
+        tokenUsage: { input: 8, output: 4 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-c',
+      description: 'Fallback review',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-c',
+      goal: 'test synthesis fallback',
+      tasks: [task],
+      execution_order: [['task-c']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-c',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/authority-test',
+      branch: 'worker-task-c',
+      sessionId: 'worker-task-c',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.passed).toBe(false);
+    expect(result.authority?.synthesized_by).toBeUndefined();
+    expect(result.authority?.synthesis_strategy).toBe('heuristic');
+    expect(result.findings.at(-1)?.issue).toContain('heuristic synthesis');
   });
 });

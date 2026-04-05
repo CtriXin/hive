@@ -145,6 +145,8 @@ function summarizeAuthorityReview(review: ReviewResult): string {
   }
   if (authority.synthesized_by) {
     parts.push(`synth=${authority.synthesized_by}`);
+  } else if (authority.synthesis_strategy === 'heuristic') {
+    parts.push('synth=heuristic');
   }
   if (authority.disagreement_flags?.length) {
     parts.push(`disagreement=${authority.disagreement_flags.join(',')}`);

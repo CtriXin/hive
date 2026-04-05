@@ -158,6 +158,7 @@ function renderAuthority(data: HiveShellDashboardData): string[] {
     if (authority?.mode) parts.push(`mode=${authority.mode}`);
     if (authority?.members?.length) parts.push(`members=${authority.members.join('+')}`);
     if (authority?.synthesized_by) parts.push(`synth=${authority.synthesized_by}`);
+    else if (authority?.synthesis_strategy === 'heuristic') parts.push('synth=heuristic');
     if (authority?.disagreement_flags?.length) parts.push(`disagreement=${authority.disagreement_flags.join(',')}`);
     return `- ${parts.join(' | ')}`;
   });
