@@ -389,3 +389,14 @@ If context is lost, read in this order:
 10. `docs/HIVE_COLLAB_PHASE7_EXECUTION.md` — advisory scoring brief
 11. `docs/hiveshell/COLLAB_STACK_PROGRESS.md` — this file (live status)
 12. Latest `docs/agent-bridge/*.md` — incremental deltas
+
+## Real Smoke Follow-up
+
+Latest practical checklist: `docs/hiveshell/REAL_SMOKE_MATRIX.md`
+
+Recommended current order:
+
+1. latest-main baseline (`build` + `test:smoke`)
+2. real two-session smoke for `room_kind=review`
+3. authority runtime smoke (`model` / `heuristic` / `fail_closed`)
+4. combined `shell` / `compact` / `restore` surface smoke
