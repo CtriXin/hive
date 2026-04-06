@@ -305,7 +305,7 @@ function buildDetailSources(data: HiveShellDashboardData): string[] {
   }
   sources.push('.ai/plan/current.md');
 
-  return sources;
+  return [...new Set(sources)];
 }
 
 function buildRestorePrompt(packet: CompactPacket): string {

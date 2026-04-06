@@ -298,6 +298,7 @@ describe('compact-packet', () => {
     expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/mindkeeper-checkpoint-input.json');
     expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/loop-progress.json');
     expect(result!.packet.detail_sources).toContain('.ai/plan/current.md');
+    expect(result!.packet.detail_sources.filter((item) => item === '.ai/runs/run-compact-123/mindkeeper-checkpoint-input.json')).toHaveLength(1);
     expect(result!.packet.restore_prompt).toContain('You are resuming a Hive run after compact/clear/new.');
     expect(result!.packet.restore_prompt).toContain('Collab room: room-compact | collecting | replies=1');
     expect(result!.packet.restore_prompt).toContain('Primary worker collab: room-task-b | closed | replies=1');
