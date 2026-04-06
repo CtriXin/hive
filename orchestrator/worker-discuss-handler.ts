@@ -18,6 +18,7 @@ import {
   collectDiscussReplies,
   closeDiscussRoom,
   synthesizeWorkerDiscussReplies,
+  synthesizeWorkerDiscussRepliesWithModel,
 } from './agentbus-adapter.js';
 
 export interface WorkerDiscussHandlerResult {
@@ -178,7 +179,9 @@ async function handleViaAgentBus(
     await updateCard({ status: 'synthesizing', next: 'synthesizing worker discuss replies' });
     await pushEvent({ type: 'synthesis:started', room_id: room.room_id, room_kind: 'task_discuss', at: new Date().toISOString(), reply_count: replies.length, focus_task_id: trigger.task_id, note: 'Worker discuss synthesis started.' });
 
-    const synthesized = synthesizeWorkerDiscussReplies(replies, { leaning: trigger.leaning, task_id: trigger.task_id });
+    const synthesized = await synthesizeWorkerDiscussRepliesWithModel(
+      replies, { leaning: trigger.leaning, task_id: trigger.task_id }, config, workerConfig.model,
+    );
     if (workerConfig.runId) {
       saveAdvisoryScoreSignals({
         cwd: workDir,

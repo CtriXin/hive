@@ -12,6 +12,7 @@ const {
   collectDiscussRepliesMock,
   closeDiscussRoomMock,
   synthesizeWorkerDiscussRepliesMock,
+  synthesizeWorkerDiscussRepliesWithModelMock,
   loadConfigMock,
   safeQueryMock,
   resolveProviderMock,
@@ -24,6 +25,7 @@ const {
   collectDiscussRepliesMock: vi.fn(),
   closeDiscussRoomMock: vi.fn(),
   synthesizeWorkerDiscussRepliesMock: vi.fn(),
+  synthesizeWorkerDiscussRepliesWithModelMock: vi.fn(),
   loadConfigMock: vi.fn(),
   safeQueryMock: vi.fn(),
   resolveProviderMock: vi.fn(),
@@ -44,6 +46,7 @@ vi.mock('../orchestrator/agentbus-adapter.js', async () => {
     collectDiscussReplies: collectDiscussRepliesMock,
     closeDiscussRoom: closeDiscussRoomMock,
     synthesizeWorkerDiscussReplies: synthesizeWorkerDiscussRepliesMock,
+    synthesizeWorkerDiscussRepliesWithModel: synthesizeWorkerDiscussRepliesWithModelMock,
   };
 });
 
@@ -250,7 +253,7 @@ describe('spawnWorker worker discuss transport', () => {
         received_at: '2026-04-03T00:00:02.000Z',
       }];
     });
-    synthesizeWorkerDiscussRepliesMock.mockReturnValue({
+    synthesizeWorkerDiscussRepliesWithModelMock.mockResolvedValue({
       decision: 'Use Map',
       reasoning: 'AgentBus reply agrees with Map.',
       escalated: false,
@@ -317,6 +320,93 @@ describe('spawnWorker worker discuss transport', () => {
           }),
         }),
       );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to local when model synthesis throws', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-worker-model-fallback-'));
+    fs.mkdirSync(path.join(cwd, '.ai'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.ai', 'discuss-trigger.json'), JSON.stringify({
+      uncertain_about: 'Map or object?',
+      options: ['Map', 'object'],
+      leaning: 'Map',
+      why: 'Better key support',
+      task_id: 'task-a',
+      worker_model: 'glm-5-turbo',
+    }));
+
+    safeQueryMock
+      .mockResolvedValueOnce({
+        messages: [
+          {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: '[DISCUSS_TRIGGER]\nNeed help.' }] },
+          },
+          { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+      })
+      .mockResolvedValueOnce({
+        messages: [
+          { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+      });
+    openWorkerDiscussRoomMock.mockResolvedValue({
+      room_id: 'room-task-b',
+      join_hint: 'agentbus join room-task-b',
+      orchestrator_id: 'hive-worker-task-b-1',
+    });
+    collectDiscussRepliesMock.mockImplementation(async (input: any) => {
+      await input.on_reply?.({
+        participant_id: 'codex-planner',
+        content: 'Use a Map.',
+        response_time_ms: 15,
+        content_length: 10,
+        received_at: '2026-04-03T00:00:02.000Z',
+      });
+      return [{
+        participant_id: 'codex-planner',
+        content: 'Use a Map.',
+        response_time_ms: 15,
+        content_length: 10,
+        received_at: '2026-04-03T00:00:02.000Z',
+      }];
+    });
+    // Model synthesis rejects → handler catches, falls back to local
+    synthesizeWorkerDiscussRepliesWithModelMock.mockRejectedValue(
+      new Error('synthesis model unavailable'),
+    );
+    triggerDiscussionMock.mockResolvedValue({
+      decision: 'Use Map (local)',
+      reasoning: 'Local fallback.',
+      escalated: false,
+      thread_id: 'local-task-a',
+      quality_gate: 'warn',
+    });
+
+    try {
+      const result = await spawnWorker({
+        taskId: 'task-a',
+        model: 'glm-5-turbo',
+        provider: 'glm',
+        prompt: 'Implement cache handling',
+        cwd,
+        worktree: false,
+        contextInputs: [],
+        discussThreshold: 0.7,
+        maxTurns: 5,
+        runId: 'run-task-a',
+        planId: 'plan-task-a',
+        round: 1,
+        taskDescription: 'Implement cache handling',
+      });
+
+      // Model synthesis was attempted
+      expect(synthesizeWorkerDiscussRepliesWithModelMock).toHaveBeenCalledTimes(1);
+      // Handler caught the error → fell back to local
+      expect(triggerDiscussionMock).toHaveBeenCalledTimes(1);
+      expect(result.discuss_results[0]?.decision).toBe('Use Map (local)');
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

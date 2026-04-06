@@ -360,3 +360,93 @@ export function synthesizeWorkerDiscussReplies(
     quality_gate: replies.length >= 2 ? 'pass' : 'warn',
   };
 }
+
+// ── Model-based worker synthesis ──
+// Tries a cheap LLM call to synthesize replies into a DiscussResult.
+// Falls back to the heuristic synthesizeWorkerDiscussReplies on failure.
+
+export async function synthesizeWorkerDiscussRepliesWithModel(
+  replies: AgentBusReply[],
+  trigger: { leaning: string; task_id: string },
+  config: any,
+  workerModel: string,
+): Promise<DiscussResult> {
+  const rawDiscussModel = config.tiers?.discuss?.model || 'auto';
+
+  // Lazy imports — same pattern as planner-runner.ts synthesizeAgentBusReplies
+  const { resolveTierModel } = await import('./hive-config.js');
+  const { safeQuery, extractTextFromMessages } = await import('./sdk-query-safe.js');
+  const { buildSdkEnv } = await import('./project-paths.js');
+  const { resolveProviderForModel } = await import('./provider-resolver.js');
+
+  const { ModelRegistry } = await import('./model-registry.js');
+  const registry = new ModelRegistry();
+
+  const singleModelSelector: string = Array.isArray(rawDiscussModel)
+    ? (rawDiscussModel[0] || 'auto')
+    : rawDiscussModel;
+  const discussTierModel = resolveTierModel(
+    singleModelSelector,
+    () => registry.selectDiscussPartner(workerModel),
+    registry,
+    'review',
+  );
+
+  const replyText = replies.map(r =>
+    `[${r.participant_id}]: ${r.content}`,
+  ).join('\n\n');
+
+  const synthPrompt = [
+    'You are a senior developer. Synthesize these code review replies into a structured worker decision.',
+    '',
+    '## Worker Context',
+    `Uncertain about: ${trigger.leaning}`,
+    '',
+    `Worker model: ${workerModel}`,
+    '',
+    '## Review Replies',
+    replyText,
+    '',
+    'Respond with ONLY a JSON object:',
+    '{',
+    '  "decision": "clear decision (≤200 chars)",',
+    '  "reasoning": "brief reasoning citing participant IDs",',
+    '  "escalated": false,',
+    '  "quality_gate": "pass" | "warn" | "fail"',
+    '}',
+  ].join('\n');
+
+  try {
+    let env: Record<string, string>;
+    try {
+      const resolved = resolveProviderForModel(discussTierModel);
+      env = buildSdkEnv(discussTierModel, resolved.baseUrl, resolved.apiKey);
+    } catch {
+      env = buildSdkEnv(discussTierModel);
+    }
+
+    const result = await safeQuery({
+      prompt: synthPrompt,
+      options: { cwd: process.cwd(), maxTurns: 1, env, model: discussTierModel },
+    });
+    const text = extractTextFromMessages(result.messages);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.decision && parsed.reasoning) {
+        return {
+          decision: String(parsed.decision).slice(0, 200),
+          reasoning: String(parsed.reasoning).slice(0, 500),
+          escalated: Boolean(parsed.escalated) || false,
+          thread_id: `agentbus-model-${trigger.task_id}-${Date.now()}`,
+          quality_gate: parsed.quality_gate || 'warn',
+        };
+      }
+    }
+  } catch (err: any) {
+    console.log(`  ⚠️ Worker AgentBus model synthesis failed: ${err.message?.slice(0, 80)}`);
+  }
+
+  // Fallback to heuristic synthesis
+  return synthesizeWorkerDiscussReplies(replies, trigger);
+}

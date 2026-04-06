@@ -2,7 +2,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   buildRoomRef,
   collectPlannerDiscussReplies,
@@ -12,6 +12,7 @@ import {
   openRecoveryRoom,
   openReviewRoom,
   synthesizeWorkerDiscussReplies,
+  synthesizeWorkerDiscussRepliesWithModel,
   type AgentBusReply,
   type PlannerDiscussRoom,
 } from '../orchestrator/agentbus-adapter.js';
@@ -394,5 +395,194 @@ describe('synthesizeWorkerDiscussReplies', () => {
     ];
     const result = synthesizeWorkerDiscussReplies(replies, trigger);
     expect(result.decision.length).toBe(200);
+  });
+});
+
+// ── synthesizeWorkerDiscussRepliesWithModel ──
+
+// These mocks intercept the dynamic imports inside synthesizeWorkerDiscussRepliesWithModel.
+const {
+  safeQueryMock,
+  extractTextFromMessagesMock,
+  buildSdkEnvMock,
+  resolveProviderForModelMock,
+} = vi.hoisted(() => ({
+  safeQueryMock: vi.fn(),
+  extractTextFromMessagesMock: vi.fn(),
+  buildSdkEnvMock: vi.fn().mockReturnValue({}),
+  resolveProviderForModelMock: vi.fn().mockReturnValue({ baseUrl: 'http://mock', apiKey: 'key' }),
+}));
+
+vi.mock('../orchestrator/sdk-query-safe.js', () => ({
+  safeQuery: safeQueryMock,
+  extractTextFromMessages: extractTextFromMessagesMock,
+}));
+
+vi.mock('../orchestrator/project-paths.js', () => ({
+  buildSdkEnv: buildSdkEnvMock,
+  resolveProjectPath: vi.fn((...segments: string[]) => path.join(process.cwd(), ...segments)),
+}));
+
+vi.mock('../orchestrator/provider-resolver.js', () => ({
+  resolveProviderForModel: resolveProviderForModelMock,
+}));
+
+vi.mock('../orchestrator/model-registry.js', () => {
+  class ModelRegistry {
+    selectDiscussPartner() { return 'glm-5-turbo'; }
+  }
+  return { ModelRegistry };
+});
+
+vi.mock('../orchestrator/hive-config.js', () => ({
+  resolveTierModel: (_selector: string, fallback: () => string) => fallback(),
+}));
+
+describe('synthesizeWorkerDiscussRepliesWithModel', () => {
+  const trigger = { leaning: 'option-A', task_id: 'task-x' };
+  const config = { tiers: { discuss: { model: 'glm-5-turbo' } } };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    safeQueryMock.mockReset();
+    extractTextFromMessagesMock.mockReset();
+    buildSdkEnvMock.mockReset().mockReturnValue({});
+    resolveProviderForModelMock.mockReset().mockReturnValue({ baseUrl: 'http://mock', apiKey: 'key' });
+  });
+
+  it('returns valid DiscussResult on successful model synthesis', async () => {
+    const replies: AgentBusReply[] = [
+      { participant_id: 'agent-a', content: 'Use approach X', response_time_ms: 500, content_length: 15, received_at: '2026-04-03T00:00:00.500Z' },
+      { participant_id: 'agent-b', content: 'Agree with X', response_time_ms: 800, content_length: 13, received_at: '2026-04-03T00:00:00.800Z' },
+    ];
+
+    extractTextFromMessagesMock.mockReturnValue(
+      JSON.stringify({ decision: 'Go with approach X', reasoning: '[agent-a] suggests X; [agent-b] agrees', escalated: false, quality_gate: 'pass' }),
+    );
+    safeQueryMock.mockResolvedValue({ messages: [] });
+
+    const result = await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
+
+    expect(result.decision).toBe('Go with approach X');
+    expect(result.reasoning).toContain('agent-a');
+    expect(result.reasoning).toContain('agent-b');
+    expect(result.quality_gate).toBe('pass');
+    expect(result.escalated).toBe(false);
+    expect(result.thread_id).toMatch(/^agentbus-model-task-x-/);
+  });
+
+  it('calls provider resolve and buildSdkEnv on happy path', async () => {
+    const replies: AgentBusReply[] = [
+      { participant_id: 'agent-a', content: 'Do this', response_time_ms: 500, content_length: 7, received_at: '2026-04-03T00:00:00.500Z' },
+    ];
+
+    extractTextFromMessagesMock.mockReturnValue(
+      JSON.stringify({ decision: 'Do this', reasoning: '[agent-a] says do this', escalated: false, quality_gate: 'warn' }),
+    );
+    safeQueryMock.mockResolvedValue({ messages: [] });
+
+    await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
+
+    expect(resolveProviderForModelMock).toHaveBeenCalledWith('glm-5-turbo');
+    expect(buildSdkEnvMock).toHaveBeenCalledWith('glm-5-turbo', 'http://mock', 'key');
+    expect(safeQueryMock).toHaveBeenCalled();
+  });
+
+  it('falls back to env without provider when resolveProviderForModel fails', async () => {
+    const replies: AgentBusReply[] = [
+      { participant_id: 'agent-a', content: 'Do this', response_time_ms: 500, content_length: 7, received_at: '2026-04-03T00:00:00.500Z' },
+    ];
+
+    resolveProviderForModelMock.mockImplementation(() => { throw new Error('no route'); });
+    extractTextFromMessagesMock.mockReturnValue(
+      JSON.stringify({ decision: 'Do this', reasoning: '[agent-a] says do this', escalated: false, quality_gate: 'warn' }),
+    );
+    safeQueryMock.mockResolvedValue({ messages: [] });
+
+    const result = await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
+
+    // Called once: provider resolve failed, so only the catch branch calls buildSdkEnv
+    expect(buildSdkEnvMock).toHaveBeenCalledTimes(1);
+    expect(buildSdkEnvMock).toHaveBeenCalledWith('glm-5-turbo');
+    expect(result.decision).toBe('Do this');
+  });
+
+  it('falls back to heuristic when safeQuery rejects', async () => {
+    const replies: AgentBusReply[] = [
+      { participant_id: 'agent-a', content: 'Use approach X', response_time_ms: 500, content_length: 15, received_at: '2026-04-03T00:00:00.500Z' },
+      { participant_id: 'agent-b', content: 'Agree with X', response_time_ms: 800, content_length: 13, received_at: '2026-04-03T00:00:00.800Z' },
+    ];
+
+    safeQueryMock.mockRejectedValue(new Error('API down'));
+
+    const result = await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
+
+    // Fallback: heuristic produces pass for 2+ replies
+    expect(result.quality_gate).toBe('pass');
+    expect(result.decision).toBe('Use approach X');
+    expect(result.reasoning).toContain('agent-a');
+    expect(result.reasoning).toContain('agent-b');
+  });
+
+  it('falls back to heuristic when model response is not valid JSON', async () => {
+    const replies: AgentBusReply[] = [
+      { participant_id: 'agent-a', content: 'Use approach X', response_time_ms: 500, content_length: 15, received_at: '2026-04-03T00:00:00.500Z' },
+      { participant_id: 'agent-b', content: 'Agree with X', response_time_ms: 800, content_length: 13, received_at: '2026-04-03T00:00:00.800Z' },
+    ];
+
+    extractTextFromMessagesMock.mockReturnValue('Sorry, I cannot provide a valid response.');
+    safeQueryMock.mockResolvedValue({ messages: [] });
+
+    const result = await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
+
+    // No valid JSON in response → falls back to heuristic
+    expect(result.quality_gate).toBe('pass');
+    expect(result.decision).toBe('Use approach X');
+  });
+
+  it('falls back to heuristic when model returns JSON missing required fields', async () => {
+    const replies: AgentBusReply[] = [
+      { participant_id: 'agent-a', content: 'Use approach X', response_time_ms: 500, content_length: 15, received_at: '2026-04-03T00:00:00.500Z' },
+    ];
+
+    // JSON present but missing decision field
+    extractTextFromMessagesMock.mockReturnValue(JSON.stringify({ quality_gate: 'pass', something: 'else' }));
+    safeQueryMock.mockResolvedValue({ messages: [] });
+
+    const result = await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
+
+    // Missing decision/reasoning → falls back to heuristic
+    expect(result.decision).toBe('Use approach X');
+    expect(result.quality_gate).toBe('warn'); // 1 reply heuristic
+  });
+
+  it('extracts JSON from wrapped text response', async () => {
+    const replies: AgentBusReply[] = [
+      { participant_id: 'agent-a', content: 'Do X', response_time_ms: 500, content_length: 5, received_at: '2026-04-03T00:00:00.500Z' },
+    ];
+
+    const innerJson = JSON.stringify({ decision: 'Do X', reasoning: 'agent-a says so', escalated: false, quality_gate: 'warn' });
+    extractTextFromMessagesMock.mockReturnValue(
+      `Here is my analysis:\n\n${innerJson}\n\nHope that helps.`,
+    );
+    safeQueryMock.mockResolvedValue({ messages: [] });
+
+    const result = await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
+
+    expect(result.decision).toBe('Do X');
+    expect(result.reasoning).toBe('agent-a says so');
+    expect(result.quality_gate).toBe('warn');
+  });
+
+  it('falls back to heuristic with zero replies when model returns no valid JSON', async () => {
+    const replies: AgentBusReply[] = [];
+
+    extractTextFromMessagesMock.mockReturnValue('no valid json here');
+    safeQueryMock.mockResolvedValue({ messages: [] });
+
+    const result = await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
+
+    expect(result.decision).toBe('option-A');
+    expect(result.quality_gate).toBe('warn');
   });
 });

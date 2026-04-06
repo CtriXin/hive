@@ -255,6 +255,35 @@ export function buildPlanningBrief(
   };
 }
 
+export function renderPlanningBriefForSynthesis(brief: PlanningBrief): string {
+  const sections: string[] = [];
+
+  sections.push(`Goal: ${brief.goal}`);
+  sections.push(`Planner Model: ${brief.planner_model}`);
+  sections.push(`Working Directory: ${brief.cwd_hint}`);
+  sections.push('');
+
+  sections.push(`Tasks: ${brief.task_count} total`);
+  sections.push(`Execution Groups: ${brief.execution_order.length}`);
+  if (Object.keys(brief.context_flow).length > 0) {
+    const deps = Object.entries(brief.context_flow)
+      .map(([task, deps]) => `${task} depends on ${deps.join(', ')}`)
+      .join('; ');
+    sections.push(`Dependencies: ${deps}`);
+  }
+  sections.push('');
+
+  sections.push(`Review Focus: ${brief.review_focus}`);
+  sections.push('');
+
+  sections.push('Key Questions:');
+  for (const q of brief.questions) {
+    sections.push(`  - ${q}`);
+  }
+
+  return sections.join('\n');
+}
+
 function cloneCollabSnapshot(
   snapshot: CollabStatusSnapshot,
 ): CollabStatusSnapshot {
@@ -525,7 +554,7 @@ export async function executePlannerDiscuss(
   if (transport === 'agentbus') {
     try {
       const brief = buildPlanningBrief(plan, plannerModel);
-      const briefText = JSON.stringify(brief, null, 2);
+      const briefText = renderPlanningBriefForSynthesis(brief);
 
       const room = await openPlannerDiscussRoom({
         cwd,
