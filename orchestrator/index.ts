@@ -694,28 +694,35 @@ export async function main() {
     const fs = await import('fs');
     const planJson = JSON.parse(fs.readFileSync(args[planIdx + 1], 'utf-8'));
     const { buildPlanFromClaudeOutput } = await import('./planner.js');
-    const { dispatchBatch } = await import('./dispatcher.js');
-    const { runReview } = await import('./reviewer.js');
+    const { bootstrapRun, executeRun } = await import('./driver.js');
     const { reportResults } = await import('./reporter.js');
+    const { saveRunPlan, saveRunState } = await import('./run-store.js');
     const { ModelRegistry } = await import('./model-registry.js');
 
     const registry = new (ModelRegistry as any)();
     planJson.cwd = cwd;
     const plan = buildPlanFromClaudeOutput(planJson);
+    const allowAutoMerge = args.includes('--auto-merge');
+    const maxRounds = Number(getFlag('--max-rounds') || 6);
+    const { spec, state } = bootstrapRun({
+      goal: plan.goal,
+      cwd,
+      maxRounds,
+      allowAutoMerge,
+    });
+    state.current_plan_id = plan.id;
+    saveRunPlan(cwd, spec.id, plan);
+    saveRunState(cwd, state);
 
     console.log(`\n📋 Plan: ${plan.tasks.length} tasks`);
     console.log(`📋 Groups: ${plan.execution_order.map((g: string[]) => `[${g.join(',')}]`).join(' → ')}\n`);
 
-    const { worker_results: workerResults } = await dispatchBatch(plan, registry);
-
-    // Review
-    const reviewResults = await Promise.all(
-      workerResults.map(r => {
-        const task = plan.tasks.find((t: any) => t.id === r.taskId);
-        // N/A: legacy CLI path has no smoke verification; smokePassed intentionally omitted
-        return runReview(r, task!, plan, registry);
-      }),
-    );
+    const execution = await executeRun(spec, state);
+    const result = execution.result;
+    if (!result) {
+      console.log('⚠️ Plan execution finished without result artifact.');
+      return;
+    }
 
     // Report — use tiers config
     const { loadConfig: loadHiveConfig, resolveTierModel } = await import('./hive-config.js');
@@ -730,17 +737,7 @@ export async function main() {
     const reporterProvider = reporterInfo?.provider || reporterModel;
 
     const report = await reportResults(
-      {
-        plan,
-        worker_results: workerResults,
-        review_results: reviewResults,
-        score_updates: [],
-        total_duration_ms: 0,
-        cost_estimate: {
-          opus_tokens: 0, sonnet_tokens: 0, haiku_tokens: 0,
-          domestic_tokens: 0, estimated_cost_usd: 0,
-        },
-      },
+      result,
       reporterModel,
       reporterProvider,
       { language: 'zh', format: 'summary', target: 'stdout' },
