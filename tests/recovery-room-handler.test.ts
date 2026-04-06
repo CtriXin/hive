@@ -209,4 +209,65 @@ describe('maybeRunRecoveryAdvisory', () => {
       }),
     }));
   });
+
+  it('skips recovery advisory when transport is not agentbus', async () => {
+    loadConfigMock.mockReturnValue({
+      collab: {
+        recovery_transport: 'webhook',
+        recovery_timeout_ms: 3000,
+        recovery_min_replies: 0,
+        recovery_after_failures: 1,
+      },
+    });
+
+    const result = await maybeRunRecoveryAdvisory({
+      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      task: makeTask(),
+      reviewResult: makeReviewResult(),
+      retryCount: 1,
+      maxRetries: 2,
+      repairHistory: makeRepairHistory(),
+    });
+
+    expect(openRecoveryRoomMock).not.toHaveBeenCalled();
+    expect(result.findings).toHaveLength(1);
+    expect(result.recovery_collab).toBeUndefined();
+  });
+
+  it('falls back safely when openRecoveryRoom throws', async () => {
+    openRecoveryRoomMock.mockRejectedValue(new Error('room quota exceeded'));
+
+    const result = await maybeRunRecoveryAdvisory({
+      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      task: makeTask(),
+      reviewResult: makeReviewResult(),
+      retryCount: 1,
+      maxRetries: 2,
+      repairHistory: makeRepairHistory(),
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.recovery_collab).toBeUndefined();
+  });
+
+  it('closes room with fallback summary when collectDiscussReplies throws', async () => {
+    collectDiscussRepliesMock.mockRejectedValue(new Error('network timeout'));
+
+    const snapshots: string[] = [];
+    const result = await maybeRunRecoveryAdvisory({
+      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      task: makeTask(),
+      reviewResult: makeReviewResult(),
+      retryCount: 1,
+      maxRetries: 2,
+      repairHistory: makeRepairHistory(),
+      onSnapshot: async (snapshot) => {
+        snapshots.push(`${snapshot.card.room_kind}:${snapshot.card.status}:${snapshot.card.replies}`);
+      },
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.recovery_collab?.card.status).toBe('fallback');
+    expect(snapshots.some((item) => item.startsWith('recovery:fallback'))).toBe(true);
+  });
 });
