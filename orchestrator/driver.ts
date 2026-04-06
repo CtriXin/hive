@@ -114,6 +114,26 @@ function makeNextAction(
   return { kind, reason, task_ids: taskIds, instructions };
 }
 
+function makeMaxRoundsEscalation(
+  state: RunState,
+  maxRounds: number,
+): NextAction {
+  const pendingAction = state.next_action;
+  if (!pendingAction || pendingAction.kind === 'request_human') {
+    return makeNextAction(
+      'request_human',
+      `Max rounds reached (${maxRounds}). Status: ${state.status}.`,
+    );
+  }
+
+  return makeNextAction(
+    'request_human',
+    `Max rounds reached (${maxRounds}) while pending ${pendingAction.kind}: ${pendingAction.reason}`,
+    pendingAction.task_ids,
+    pendingAction.instructions,
+  );
+}
+
 function isTerminalStatus(status: RunState['status']): boolean {
   return status === 'done' || status === 'blocked';
 }
@@ -1766,12 +1786,8 @@ export async function executeRun(
   if (
     !isTerminalStatus(currentState.status)
     && currentState.round >= spec.max_rounds
-    && currentState.next_action?.kind !== 'request_human'
   ) {
-    currentState.next_action = makeNextAction(
-      'request_human',
-      `Max rounds reached (${spec.max_rounds}). Status: ${currentState.status}.`,
-    );
+    currentState.next_action = makeMaxRoundsEscalation(currentState, spec.max_rounds);
     saveRunState(spec.cwd, currentState);
   }
 

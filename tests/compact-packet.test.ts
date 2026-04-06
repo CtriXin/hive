@@ -422,4 +422,60 @@ describe('compact-packet', () => {
     expect(latestRestore!.runId).toBeUndefined();
     expect(latestRestore!.restorePrompt).toContain('workspace restore card');
   });
+
+  it('persists pending repair context in compact restore prompt after max_rounds escalation', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const spec: RunSpec = {
+      id: RUN_ID,
+      goal: 'Preserve repair context in compact',
+      cwd: TMP_DIR,
+      mode: 'safe',
+      done_conditions: [],
+      max_rounds: 1,
+      max_worker_retries: 1,
+      max_replans: 1,
+      allow_auto_merge: true,
+      stop_on_high_risk: false,
+      created_at: new Date().toISOString(),
+    };
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'partial',
+      round: 1,
+      completed_task_ids: [],
+      failed_task_ids: ['task-a'],
+      retry_counts: {},
+      replan_count: 0,
+      task_states: {
+        'task-a': {
+          task_id: 'task-a',
+          status: 'merge_blocked',
+          round: 1,
+          changed_files: ['src/task-a.ts', 'src/unexpected.ts'],
+          merged: false,
+          worker_success: true,
+          review_passed: true,
+          last_error: 'Merge blocked (scope_violation): Changed files outside estimated_files: src/unexpected.ts',
+        },
+      },
+      verification_results: [],
+      next_action: {
+        kind: 'request_human',
+        reason: 'Max rounds reached (1) while pending repair_task: 1 task(s) changed files outside estimated_files and were blocked before merge.',
+        task_ids: ['task-a'],
+      },
+      final_summary: '1 task blocked before merge',
+      updated_at: new Date().toISOString(),
+    };
+
+    writeJson(path.join(runDir, 'spec.json'), spec);
+    writeJson(path.join(runDir, 'state.json'), state);
+
+    const result = loadCompactPacket(TMP_DIR, RUN_ID);
+    expect(result).not.toBeNull();
+    expect(result!.packet.next_action).toContain('request_human: Max rounds reached (1) while pending repair_task');
+    expect(result!.packet.restore_prompt).toContain('Next action: request_human: Max rounds reached (1) while pending repair_task');
+    expect(result!.packet.restore_prompt).toContain('- task-a: Merge blocked (scope_violation): Changed files outside estimated_files: src/unexpected.ts');
+    expect(result!.markdown).toContain('- next: request_human: Max rounds reached (1) while pending repair_task');
+  });
 });

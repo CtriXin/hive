@@ -505,4 +505,28 @@ describe('executeRun() repair flow integration', () => {
     // Hook failure blocks merge → Phase 4 falls to otherMergeBlocked path → request_human
     expect(state.next_action?.kind).toBe('request_human');
   });
+
+  it('max_rounds escalation preserves scope_violation context for human follow-up', async () => {
+    const spec = makeSpec({ max_rounds: 1 });
+
+    vi.mocked(dispatchBatch).mockResolvedValue({
+      worker_results: [{
+        ...makeWorkerResult('task-a', true),
+        changedFiles: ['src/task-a.ts', 'src/unexpected.ts'],
+      }],
+      extra_stage_usages: [],
+    });
+
+    mockVerificationSequence(smokePass());
+    mockReviewSequence(makeReviewResult('task-a', true));
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(state.task_states['task-a']?.status).toBe('merge_blocked');
+    expect(state.next_action?.kind).toBe('request_human');
+    expect(state.next_action?.task_ids).toEqual(['task-a']);
+    expect(state.next_action?.reason).toContain('pending repair_task');
+    expect(state.next_action?.reason).toContain('changed files outside estimated_files');
+  });
 });
