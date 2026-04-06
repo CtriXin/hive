@@ -218,4 +218,106 @@ describe('worker-status-store', () => {
     expect(worker?.collab?.card.next).toBe('worker discuss complete');
     expect(worker?.status).toBe('completed');
   });
+
+  // Regression tests: task_summary should not be overwritten by event_message/last_message
+  it('keeps existing task_summary when update only has event_message', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-d',
+      status: 'running',
+      plan_id: 'plan-d',
+      task_summary: 'Merged collab + authority summary',
+    });
+
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-d',
+      status: 'running',
+      plan_id: 'plan-d',
+      event_message: 'Progress update',
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-d');
+    expect(worker?.task_summary).toBe('Merged collab + authority summary');
+  });
+
+  it('keeps existing task_summary when update only has last_message', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-e',
+      status: 'running',
+      plan_id: 'plan-e',
+      task_summary: 'Important merged summary',
+    });
+
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-e',
+      status: 'running',
+      plan_id: 'plan-e',
+      last_message: 'Latest log line',
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-e');
+    expect(worker?.task_summary).toBe('Important merged summary');
+    expect(worker?.last_message).toBe('Latest log line');
+  });
+
+  it('replaces task_summary when explicitly provided in update', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-f',
+      status: 'running',
+      plan_id: 'plan-f',
+      task_summary: 'Initial summary',
+    });
+
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-f',
+      status: 'running',
+      plan_id: 'plan-f',
+      task_summary: 'New explicit summary',
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-f');
+    expect(worker?.task_summary).toBe('New explicit summary');
+  });
+
+  it('falls back to last_message/event_message/task_description when no previous summary exists', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-g',
+      status: 'running',
+      plan_id: 'plan-g',
+      task_description: 'Do something important',
+      last_message: 'Working on it',
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-g');
+    expect(worker?.task_summary).toBe('Working on it');
+  });
+
+  it('falls back to event_message when no task_summary or last_message exists', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-h',
+      status: 'running',
+      plan_id: 'plan-h',
+      event_message: 'Started processing',
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-h');
+    expect(worker?.task_summary).toBe('Started processing');
+  });
+
+  it('falls back to task_description when no other summary sources exist', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-i',
+      status: 'running',
+      plan_id: 'plan-i',
+      task_description: 'This is the task description',
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-i');
+    expect(worker?.task_summary).toBe('This is the task description');
+  });
 });

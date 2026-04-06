@@ -291,8 +291,9 @@ export function updateWorkerStatus(
       || previous?.finished_at
       || (TERMINAL_STATUSES.has(update.status) ? timestamp : undefined),
     updated_at: timestamp,
-    task_summary: trimMessage(update.task_summary || update.last_message || update.event_message)
+    task_summary: trimMessage(update.task_summary)
       || previous?.task_summary
+      || trimMessage(update.last_message || update.event_message)
       || trimMessage(update.task_description),
     last_message: trimMessage(update.last_message) || previous?.last_message,
     changed_files_count: update.changed_files_count ?? previous?.changed_files_count,
