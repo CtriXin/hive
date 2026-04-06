@@ -482,4 +482,40 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('== Merge Blockers ==');
     expect(rendered).toContain('task-a | Merge blocked (scope_violation): Changed files outside estimated_files: src/unexpected.ts');
   });
+
+  it('falls back to worker snapshot goal and round for artifact-only runs', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const workerSnapshot: WorkerStatusSnapshot = {
+      run_id: RUN_ID,
+      plan_id: 'plan-artifact-only',
+      goal: 'Artifact-only shell fallback',
+      round: 3,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-z',
+          status: 'completed',
+          assigned_model: 'kimi-k2.5',
+          active_model: 'kimi-k2.5',
+          provider: 'kimi',
+          discuss_triggered: false,
+          updated_at: new Date().toISOString(),
+          changed_files_count: 2,
+          success: true,
+          last_message: 'Result: success (ok)',
+        },
+      ],
+    };
+
+    writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('== Run Overview ==');
+    expect(rendered).toContain('- goal: Artifact-only shell fallback');
+    expect(rendered).toContain('- round: 3');
+    expect(rendered).toContain('- summary: artifact-backed run');
+    expect(rendered).toContain('- workers: 1 total / 0 active / 1 completed / 0 failed');
+    expect(rendered).toContain('task-z [completed]');
+  });
 });

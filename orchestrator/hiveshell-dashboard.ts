@@ -286,15 +286,18 @@ function renderOverview(data: HiveShellDashboardData): string[] {
   const score = data.scoreHistory?.rounds.at(-1);
   const workers = data.workerSnapshot ? summarizeWorkerSnapshot(data.workerSnapshot) : null;
   const mergeBlockers = collectMergeBlockers(state);
+  const goal = spec?.goal || data.workerSnapshot?.goal || '-';
+  const round = state?.round ?? data.workerSnapshot?.round ?? 0;
+  const summary = state?.final_summary || (data.workerSnapshot ? 'artifact-backed run' : undefined);
 
   const lines = [
     `- run: ${data.runId}`,
-    `- goal: ${truncate(spec?.goal, 110)}`,
+    `- goal: ${truncate(goal, 110)}`,
     `- status: ${state?.status || 'unknown'}`,
-    `- round: ${state?.round ?? 0}${spec ? ` / ${spec.max_rounds}` : ''}`,
+    `- round: ${round}${spec ? ` / ${spec.max_rounds}` : ''}`,
     `- phase: ${progress ? `${progress.phase} | ${truncate(progress.reason, 96)}` : 'n/a'}`,
     `- next: ${state?.next_action ? `${state.next_action.kind} - ${truncate(state.next_action.reason, 90)}` : '-'}`,
-    `- summary: ${truncate(state?.final_summary, 110)}`,
+    `- summary: ${truncate(summary, 110)}`,
     `- score: ${score ? `${score.score} (best ${data.scoreHistory?.best_score ?? score.score})` : 'n/a'}`,
     `- workers: ${workers ? `${workers.total} total / ${workers.active} active / ${workers.completed} completed / ${workers.failed} failed` : 'n/a'}`,
   ];
