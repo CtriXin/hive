@@ -171,6 +171,51 @@ describe('maybeRunExternalReviewSlot', () => {
     expect(snapshots.some((item) => item.startsWith('review:closed:1'))).toBe(true);
   });
 
+  it('skips external review when reviewResult.passed is true', async () => {
+    const passedResult = { ...makeReviewResult(), passed: true };
+
+    const result = await maybeRunExternalReviewSlot({
+      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      task: makeTask(),
+      workerResult: makeWorkerResult(),
+      reviewResult: passedResult,
+    });
+
+    expect(openReviewRoomMock).not.toHaveBeenCalled();
+    expect(result).toBe(passedResult);
+  });
+
+  it('skips external review when collab.review_transport is not agentbus', async () => {
+    loadConfigMock.mockReturnValue({
+      collab: { review_transport: 'none' },
+    });
+
+    const result = await maybeRunExternalReviewSlot({
+      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      task: makeTask(),
+      workerResult: makeWorkerResult(),
+      reviewResult: makeReviewResult(),
+    });
+
+    expect(openReviewRoomMock).not.toHaveBeenCalled();
+    expect(result).toStrictEqual(makeReviewResult());
+  });
+
+  it('falls back safely when openReviewRoom throws', async () => {
+    openReviewRoomMock.mockRejectedValue(new Error('AgentBus unavailable'));
+
+    const result = await maybeRunExternalReviewSlot({
+      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      task: makeTask(),
+      workerResult: makeWorkerResult(),
+      reviewResult: makeReviewResult(),
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.external_review_collab).toBeUndefined();
+    expect(closeDiscussRoomMock).not.toHaveBeenCalled();
+  });
+
   it('keeps the original review result when no replies arrive', async () => {
     collectDiscussRepliesMock.mockResolvedValue([]);
 
