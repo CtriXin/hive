@@ -337,6 +337,12 @@ export interface RunState {
   next_action?: NextAction;
   final_summary?: string;
   updated_at: string;
+  /**
+   * Task-scoped smoke verification results from the latest execution/repair round.
+   * Key: taskId, Value: true if smoke passed, false if failed.
+   * Used by repair path and Phase 4 next_action decisions.
+   */
+  _smokeResults?: Record<string, boolean>;
 }
 
 // ── Context Recycling ──

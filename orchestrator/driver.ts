@@ -1208,7 +1208,7 @@ export async function executeRun(
       }
       const failedReviews = [...repairTargets.values()];
       // Carry forward original smoke results for review escalation
-      const inheritedSmokeResults = (currentState as any)._smokeResults as Record<string, boolean> ?? {};
+      const inheritedSmokeResults = currentState._smokeResults ?? {};
       const repair = await runRepairRound(
         spec,
         currentState,
@@ -1261,11 +1261,11 @@ export async function executeRun(
       // Refresh smoke state with actual re-smoke results from repair worktrees.
       // This replaces the old approach of using review.passed as a proxy for smoke.passed.
       // Only tasks that were actually re-smoked get updated; others keep their original state.
-      const currentSmokeResults = (currentState as any)._smokeResults as Record<string, boolean> ?? {};
+      const currentSmokeResults = currentState._smokeResults ?? {};
       for (const [taskId, passed] of Object.entries(repair.repairSmokeResults)) {
         currentSmokeResults[taskId] = passed;
       }
-      (currentState as any)._smokeResults = currentSmokeResults;
+      currentState._smokeResults = currentSmokeResults;
 
       // Merge repaired tasks that pass both review and re-smoke.
       // Same gating as fresh execution: review.passed && smoke !== false.
@@ -1346,7 +1346,7 @@ export async function executeRun(
       ]);
 
       // Persist smoke results for repair path to carry forward deterministic signal
-      (currentState as any)._smokeResults = smokeResults;
+      currentState._smokeResults = smokeResults;
 
       setLoopPhase(
         spec.cwd,
@@ -1554,7 +1554,7 @@ export async function executeRun(
 
     // ── Phase 4: Decide next action ──
     const allReviewsPassed = reviewResults.every((r) => r.passed);
-    const smokeResultsMap = (currentState as any)._smokeResults as Record<string, boolean> ?? {};
+    const smokeResultsMap = currentState._smokeResults ?? {};
     const smokeFailedTaskIds = Object.entries(smokeResultsMap)
       .filter(([, passed]) => passed === false)
       .map(([taskId]) => taskId);
