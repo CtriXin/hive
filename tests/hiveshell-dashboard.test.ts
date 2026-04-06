@@ -518,4 +518,255 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('- workers: 1 total / 0 active / 1 completed / 0 failed');
     expect(rendered).toContain('task-z [completed]');
   });
+
+  // ─── Regression: partial artifact / empty-state scenarios ─────────────────
+
+  it('renders stably when only spec.json exists', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const spec: RunSpec = {
+      id: RUN_ID,
+      goal: 'Partial artifact run',
+      cwd: TMP_DIR,
+      mode: 'safe',
+      done_conditions: [],
+      max_rounds: 4,
+      max_worker_retries: 2,
+      max_replans: 1,
+      allow_auto_merge: false,
+      stop_on_high_risk: true,
+      created_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'spec.json'), spec);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    // All sections must render without crashing
+    expect(rendered).toContain('== HiveShell ==');
+    expect(rendered).toContain('== Run Overview ==');
+    expect(rendered).toContain('== Collab ==');
+    expect(rendered).toContain('== Advisory ==');
+    expect(rendered).toContain('== Authority ==');
+    expect(rendered).toContain('== Score Trend ==');
+    expect(rendered).toContain('== Workers ==');
+    expect(rendered).toContain('== Merge Blockers ==');
+    expect(rendered).toContain('== Human Bridge ==');
+    expect(rendered).toContain('== Mindkeeper ==');
+    expect(rendered).toContain('== Recent Events ==');
+    expect(rendered).toContain('== Artifacts ==');
+    // Fallback values expected
+    expect(rendered).toContain('- no collaboration snapshot yet');
+    expect(rendered).toContain('- no review authority result yet');
+    expect(rendered).toContain('- no score history yet');
+    expect(rendered).toContain('- no worker snapshot yet');
+    expect(rendered).toContain('- no merge blockers');
+    expect(rendered).toContain('- advisory scoring artifacts not found');
+    expect(rendered).toContain('- mindkeeper artifacts not found');
+    expect(rendered).toContain('- human bridge artifacts not found');
+    expect(rendered).toContain('- no worker events yet');
+    // Goal comes from spec
+    expect(rendered).toContain('Partial artifact run');
+  });
+
+  it('renders stably when only state.json exists (with merge_blocked task)', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'partial',
+      round: 2,
+      completed_task_ids: [],
+      failed_task_ids: [],
+      retry_counts: {},
+      replan_count: 0,
+      task_states: {
+        'task-x': {
+          task_id: 'task-x',
+          status: 'merge_blocked',
+          round: 1,
+          changed_files: ['src/x.ts'],
+          merged: false,
+          worker_success: true,
+          review_passed: true,
+          last_error: 'Merge blocked (conflict): Overlapping changes',
+        },
+      },
+      verification_results: [],
+      next_action: {
+        kind: 'repair_task',
+        reason: 'repair task-x',
+        task_ids: ['task-x'],
+      },
+      final_summary: '1 task needs repair',
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'state.json'), state);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('== Merge Blockers ==');
+    expect(rendered).toContain('task-x | Merge blocked (conflict): Overlapping changes');
+    expect(rendered).toContain('- next: repair_task - repair task-x');
+  });
+
+  it('renders stably when only result.json exists (with empty review_results)', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const result: OrchestratorResult = {
+      plan: {
+        id: 'plan-empty',
+        goal: 'result-only run',
+        tasks: [],
+        execution_order: [],
+        context_flow: {},
+        created_at: new Date().toISOString(),
+      },
+      worker_results: [],
+      review_results: [],
+      score_updates: [],
+      total_duration_ms: 500,
+      cost_estimate: {
+        opus_tokens: 0,
+        sonnet_tokens: 0,
+        haiku_tokens: 0,
+        domestic_tokens: 50,
+        estimated_cost_usd: 0.005,
+      },
+    };
+    writeJson(path.join(runDir, 'result.json'), result);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('== Authority ==');
+    expect(rendered).toContain('- no review authority result yet');
+    expect(rendered).toContain('== Run Overview ==');
+    // result.plan.goal is not surfaced in overview (only spec/workerSnapshot goal is)
+    expect(rendered).toContain('- goal: -');
+  });
+
+  it('renders stably when only loop-progress.json exists (no collab card)', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const loopProgress: LoopProgress = {
+      run_id: RUN_ID,
+      round: 1,
+      phase: 'planning',
+      reason: 'initial planning',
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'loop-progress.json'), loopProgress);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('== Collab ==');
+    expect(rendered).toContain('- no collaboration snapshot yet');
+    expect(rendered).toContain('== Run Overview ==');
+    expect(rendered).toContain('phase: planning | initial planning');
+  });
+
+  it('renders stably when state has request_human next_action (no crash)', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'partial',
+      round: 1,
+      completed_task_ids: [],
+      failed_task_ids: ['task-h'],
+      retry_counts: {},
+      replan_count: 0,
+      task_states: {
+        'task-h': {
+          task_id: 'task-h',
+          status: 'merge_blocked',
+          round: 1,
+          changed_files: ['src/h.ts'],
+          merged: false,
+          worker_success: true,
+          review_passed: true,
+          last_error: 'Merge blocked (scope_violation): Changed files outside estimated_files',
+        },
+      },
+      verification_results: [],
+      next_action: {
+        kind: 'request_human',
+        reason: 'Max rounds reached (1) while pending repair_task: task-h changed files outside estimated_files.',
+        task_ids: ['task-h'],
+      },
+      final_summary: '1 task requires human review',
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'state.json'), state);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('== Run Overview ==');
+    expect(rendered).toContain('- next: request_human');
+    expect(rendered).toContain('== Merge Blockers ==');
+    expect(rendered).toContain('task-h | Merge blocked (scope_violation)');
+  });
+
+  it('renders stably when authority synthesis is blocked (no synth / no synth_strategy)', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const result: OrchestratorResult = {
+      plan: {
+        id: 'plan-blocked',
+        goal: 'blocked synthesis',
+        tasks: [],
+        execution_order: [],
+        context_flow: {},
+        created_at: new Date().toISOString(),
+      },
+      worker_results: [],
+      review_results: [
+        {
+          taskId: 'task-y',
+          final_stage: 'cross-review',
+          passed: false,
+          verdict: 'BLOCKED',
+          findings: [],
+          iterations: 1,
+          duration_ms: 80,
+          authority: {
+            source: 'authority-layer',
+            mode: 'pair',
+            members: ['kimi-k2.5', 'MiniMax-M2.5'],
+            disagreement_flags: ['conclusion_opposite'],
+            synthesis_attempted_by: 'gpt-5.4',
+            synthesis_strategy: undefined,
+            synthesized_by: undefined,
+          },
+        },
+      ],
+      score_updates: [],
+      total_duration_ms: 500,
+      cost_estimate: {
+        opus_tokens: 0,
+        sonnet_tokens: 0,
+        haiku_tokens: 0,
+        domestic_tokens: 50,
+        estimated_cost_usd: 0.005,
+      },
+    };
+    writeJson(path.join(runDir, 'result.json'), result);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('== Authority ==');
+    expect(rendered).toContain('task-y [blocked]');
+    expect(rendered).toContain('synth=blocked(gpt-5.4)');
+  });
+
+  it('renders stably when no artifact files exist at all', () => {
+    // runDir already created by resetDir with no files inside
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('== HiveShell ==');
+    expect(rendered).toContain('== Run Overview ==');
+    expect(rendered).toContain('== Collab ==');
+    expect(rendered).toContain('== Advisory ==');
+    expect(rendered).toContain('== Authority ==');
+    expect(rendered).toContain('== Score Trend ==');
+    expect(rendered).toContain('== Workers ==');
+    expect(rendered).toContain('== Merge Blockers ==');
+    expect(rendered).toContain('== Human Bridge ==');
+    expect(rendered).toContain('== Mindkeeper ==');
+    expect(rendered).toContain('== Recent Events ==');
+    expect(rendered).toContain('== Artifacts ==');
+  });
 });
