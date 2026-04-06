@@ -74,6 +74,18 @@ export interface RunExecutionResult {
   planner_diagnostics?: Record<string, unknown> | null;
 }
 
+interface MergeBlocker {
+  taskId: string;
+  kind: 'scope_violation' | 'overlap_conflict' | 'hook_failed' | 'merge_conflict';
+  reason: string;
+  files: string[];
+}
+
+interface MergePassResult {
+  mergedTaskIds: string[];
+  blocked: MergeBlocker[];
+}
+
 // ── Helpers ──
 
 function makeRunId(): string {
@@ -122,6 +134,10 @@ function setLoopPhase(
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function normalizeRepoPath(file: string): string {
+  return path.posix.normalize(file.replace(/\\/g, '/').replace(/^\.\//, ''));
 }
 
 function trimTail(text: string, limit = 4000): string {
@@ -256,6 +272,18 @@ function markMergedTasks(
     record.review_passed = true;
     record.worker_success = true;
     record.last_error = undefined;
+  }
+}
+
+function markMergeBlockedTasks(
+  state: RunState,
+  blockers: MergeBlocker[],
+): void {
+  for (const blocker of blockers) {
+    const record = ensureTaskState(state, blocker.taskId);
+    record.round = state.round;
+    record.status = 'merge_blocked';
+    record.last_error = `Merge blocked (${blocker.kind}): ${blocker.reason}`;
   }
 }
 
@@ -723,36 +751,116 @@ export function mergePassedTasks(
   preMergeHooks: PolicyHook[],
   policyHookResults: PolicyHookResult[],
   round: number,
-): string[] {
-  if (!spec.allow_auto_merge) return [];
+): MergePassResult {
+  if (!spec.allow_auto_merge) {
+    return { mergedTaskIds: [], blocked: [] };
+  }
 
-  const merged: string[] = [];
+  const blocked = new Map<string, MergeBlocker>();
+  const mergeCandidates: Array<{
+    review: ReviewResult;
+    worker: WorkerResult;
+    task: SubTask | undefined;
+  }> = [];
+
   for (const review of reviewResults) {
     if (!review.passed) continue;
-
-    // Skip if smoke verification failed for this task
     if (smokeResults[review.taskId] === false) continue;
 
     const worker = workerResults.find((w) => w.taskId === review.taskId);
     const task = plan.tasks.find((t) => t.id === review.taskId);
     if (!worker?.branch) continue;
 
-    const hookResults = runPolicyHooks(preMergeHooks, worker.worktreePath, round);
+    const expectedFiles = new Set((task?.estimated_files || []).map(normalizeRepoPath));
+    const changedFiles = dedupe(worker.changedFiles.map(normalizeRepoPath));
+    const outOfScopeFiles = expectedFiles.size === 0
+      ? []
+      : changedFiles.filter((file) => !expectedFiles.has(file));
+    if (outOfScopeFiles.length > 0) {
+      blocked.set(review.taskId, {
+        taskId: review.taskId,
+        kind: 'scope_violation',
+        reason: `Changed files outside estimated_files: ${outOfScopeFiles.join(', ')}`,
+        files: outOfScopeFiles,
+      });
+      continue;
+    }
+
+    mergeCandidates.push({ review, worker, task });
+  }
+
+  const fileOwners = new Map<string, string[]>();
+  for (const candidate of mergeCandidates) {
+    if (blocked.has(candidate.review.taskId)) continue;
+    for (const file of dedupe(candidate.worker.changedFiles.map(normalizeRepoPath))) {
+      const owners = fileOwners.get(file) || [];
+      owners.push(candidate.review.taskId);
+      fileOwners.set(file, owners);
+    }
+  }
+
+  for (const [file, owners] of fileOwners.entries()) {
+    if (owners.length <= 1) continue;
+    for (const taskId of owners) {
+      if (blocked.has(taskId)) continue;
+      const peers = owners.filter((owner) => owner !== taskId);
+      blocked.set(taskId, {
+        taskId,
+        kind: 'overlap_conflict',
+        reason: `Overlapping changed file ${file} also touched by: ${peers.join(', ')}`,
+        files: [file],
+      });
+    }
+  }
+
+  const mergedTaskIds: string[] = [];
+  for (const candidate of mergeCandidates) {
+    const taskId = candidate.review.taskId;
+    if (blocked.has(taskId)) continue;
+
+    const hookResults = runPolicyHooks(
+      preMergeHooks,
+      candidate.worker.worktreePath || spec.cwd,
+      round,
+    );
     policyHookResults.push(...hookResults);
     const blockingHookFailed = hookResults.some((item) => !item.passed && preMergeHooks.find((hook) => hook.label === item.label && hook.stage === item.stage)?.must_pass);
-    if (blockingHookFailed) continue;
+    if (blockingHookFailed) {
+      const failedLabels = hookResults
+        .filter((item) => !item.passed && preMergeHooks.find((hook) => hook.label === item.label && hook.stage === item.stage)?.must_pass)
+        .map((item) => item.label);
+      blocked.set(taskId, {
+        taskId,
+        kind: 'hook_failed',
+        reason: `Blocking pre-merge hooks failed: ${failedLabels.join(', ')}`,
+        files: [],
+      });
+      continue;
+    }
 
     const mergeResult = commitAndMergeWorktree(
-      worker.worktreePath,
-      worker.branch,
-      `task ${worker.taskId}: ${task?.description.slice(0, 80) || worker.taskId}`,
+      candidate.worker.worktreePath,
+      candidate.worker.branch,
+      `task ${candidate.worker.taskId}: ${candidate.task?.description.slice(0, 80) || candidate.worker.taskId}`,
       spec.cwd,
     );
     if (mergeResult.merged) {
-      merged.push(worker.taskId);
+      mergedTaskIds.push(candidate.worker.taskId);
+      continue;
     }
+
+    blocked.set(taskId, {
+      taskId,
+      kind: 'merge_conflict',
+      reason: mergeResult.error || 'git merge failed',
+      files: dedupe(candidate.worker.changedFiles.map(normalizeRepoPath)),
+    });
   }
-  return merged;
+
+  return {
+    mergedTaskIds,
+    blocked: [...blocked.values()],
+  };
 }
 
 // ── Outcome summary ──
@@ -761,6 +869,7 @@ function summarizeOutcome(
   result: OrchestratorResult,
   suiteVerificationPassed: boolean,
   mergedTaskIds: string[],
+  mergeBlockedTaskIds: string[],
 ): string {
   const passedReviews = result.review_results.filter((r) => r.passed).length;
   const failedReviews = result.review_results.length - passedReviews;
@@ -770,6 +879,9 @@ function summarizeOutcome(
   const mergeText = mergedTaskIds.length > 0
     ? `; merged: ${mergedTaskIds.join(', ')}`
     : '';
+  const blockedText = mergeBlockedTaskIds.length > 0
+    ? `; merge blocked: ${mergeBlockedTaskIds.join(', ')}`
+    : '';
   const noOpCount = countNoOpTasks(result.worker_results);
   const noOpText = noOpCount > 0
     ? `; no-op tasks: ${noOpCount}`
@@ -778,7 +890,7 @@ function summarizeOutcome(
     ? `; $${result.token_breakdown.actual_cost_usd.toFixed(4)} (saved $${result.token_breakdown.savings_usd.toFixed(4)} vs Claude)`
     : '';
   const budgetText = result.budget_warning ? `; ${result.budget_warning}` : '';
-  return `${passedReviews}/${result.review_results.length} reviews passed; ${failedReviews} failed; ${vText}${mergeText}${noOpText}${costText}${budgetText}.`;
+  return `${passedReviews}/${result.review_results.length} reviews passed; ${failedReviews} failed; ${vText}${mergeText}${blockedText}${noOpText}${costText}${budgetText}.`;
 }
 
 function applyBudgetStatus(state: RunState, cwd: string): void {
@@ -1170,6 +1282,7 @@ export async function executeRun(
     // ── Phase 2: Execute or Repair ──
     let workerResults: WorkerResult[];
     let reviewResults: ReviewResult[];
+    let mergePassResult: MergePassResult = { mergedTaskIds: [], blocked: [] };
 
     if (action === 'repair_task' && latestResult) {
       const requestedTaskIds = new Set(currentState.next_action?.task_ids || []);
@@ -1253,7 +1366,7 @@ export async function executeRun(
       ];
       reviewResults = [
         ...latestResult.review_results.filter(
-          (r) => r.passed || !repairedIds.has(r.taskId),
+          (r) => !repairedIds.has(r.taskId),
         ),
         ...repair.reviewResults,
       ];
@@ -1269,7 +1382,7 @@ export async function executeRun(
 
       // Merge repaired tasks that pass both review and re-smoke.
       // Same gating as fresh execution: review.passed && smoke !== false.
-      const repairMergedIds = mergePassedTasks(
+      mergePassResult = mergePassedTasks(
         spec,
         plan!,
         workerResults,
@@ -1279,7 +1392,7 @@ export async function executeRun(
         currentState.policy_hook_results,
         currentState.round,
       );
-      markMergedTasks(currentState, repairMergedIds);
+      markMergedTasks(currentState, mergePassResult.mergedTaskIds);
 
       // If no repairs were attempted (all exhausted), escalate
       if (repair.workerResults.length === 0) {
@@ -1368,7 +1481,7 @@ export async function executeRun(
       );
 
       // Step 2c: Progressive merge — each passed task merges independently
-      const mergedTaskIds = mergePassedTasks(
+      mergePassResult = mergePassedTasks(
         spec,
         plan!,
         workerResults,
@@ -1378,7 +1491,7 @@ export async function executeRun(
         currentState.policy_hook_results,
         currentState.round,
       );
-      markMergedTasks(currentState, mergedTaskIds);
+      markMergedTasks(currentState, mergePassResult.mergedTaskIds);
     }
 
     reviewResults = await Promise.all(
@@ -1457,6 +1570,7 @@ export async function executeRun(
     // Update completed/failed tracking
     updateTaskStatesFromWorkers(currentState, workerResults);
     updateTaskStatesFromReviews(currentState, reviewResults);
+    markMergeBlockedTasks(currentState, mergePassResult.blocked);
 
     currentState.completed_task_ids = workerResults
       .filter((w) => w.success)
@@ -1467,11 +1581,13 @@ export async function executeRun(
     const reviewFailedTaskIds = reviewResults
       .filter((r) => !r.passed)
       .map((r) => r.taskId);
+    const mergeBlockedTaskIds = dedupe(mergePassResult.blocked.map((item) => item.taskId));
     currentState.review_failed_task_ids = reviewFailedTaskIds;
     currentState.failed_task_ids = dedupe([
       ...currentState.failed_task_ids,  // already includes smokeFailedTaskIds from Step 2a
       ...workerFailedTaskIds,
       ...reviewFailedTaskIds,
+      ...mergeBlockedTaskIds,
     ]);
 
     // ── Phase 3: Verification & Progressive Merge ──
@@ -1559,8 +1675,14 @@ export async function executeRun(
       .filter(([, passed]) => passed === false)
       .map(([taskId]) => taskId);
     const allSmokeChecksPassed = smokeFailedTaskIds.length === 0;
+    const scopeBlockedTaskIds = mergePassResult.blocked
+      .filter((item) => item.kind === 'scope_violation')
+      .map((item) => item.taskId);
+    const otherMergeBlockedTaskIds = mergePassResult.blocked
+      .filter((item) => item.kind !== 'scope_violation')
+      .map((item) => item.taskId);
 
-    if (allReviewsPassed && allSmokeChecksPassed && suiteVerificationPassed) {
+    if (allReviewsPassed && allSmokeChecksPassed && suiteVerificationPassed && mergeBlockedTaskIds.length === 0) {
       currentState.status = 'done';
       currentState.next_action = makeNextAction(
         'finalize',
@@ -1568,11 +1690,25 @@ export async function executeRun(
           ? `All gates passed. Merged: ${currentState.merged_task_ids.join(', ')}.`
           : 'All review and verification gates passed.',
       );
+    } else if (scopeBlockedTaskIds.length > 0) {
+      currentState.status = 'partial';
+      currentState.next_action = makeNextAction(
+        'repair_task',
+        `${scopeBlockedTaskIds.length} task(s) changed files outside estimated_files and were blocked before merge.`,
+        scopeBlockedTaskIds,
+      );
     } else if (budgetStatus?.blocked) {
       currentState.status = 'blocked';
       currentState.next_action = makeNextAction(
         'request_human',
         budgetStatus.warning || 'Budget exhausted during run.',
+      );
+    } else if (otherMergeBlockedTaskIds.length > 0) {
+      currentState.status = 'partial';
+      currentState.next_action = makeNextAction(
+        'request_human',
+        `${otherMergeBlockedTaskIds.length} task(s) were blocked during auto-merge: ${mergePassResult.blocked.map((item) => `${item.taskId}=${item.kind}`).join(', ')}`,
+        otherMergeBlockedTaskIds,
       );
     } else if (allReviewsPassed && !allSmokeChecksPassed) {
       currentState.status = 'partial';
@@ -1617,6 +1753,7 @@ export async function executeRun(
       orchestratorResult,
       suiteVerificationPassed,
       currentState.merged_task_ids,
+      mergeBlockedTaskIds,
     );
     saveRunState(spec.cwd, currentState);
 

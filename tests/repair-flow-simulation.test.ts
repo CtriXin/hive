@@ -106,7 +106,7 @@ describe('repair → re-smoke → merge flow simulation', () => {
         smokeResults, [], [], 1
       );
 
-      expect(merged).toContain('task-a');
+      expect(merged.mergedTaskIds).toContain('task-a');
     });
 
     it('blocks merge when smoke fails (even if review passed)', () => {
@@ -123,7 +123,7 @@ describe('repair → re-smoke → merge flow simulation', () => {
         smokeResults, [], [], 1
       );
 
-      expect(merged).not.toContain('task-a');
+      expect(merged.mergedTaskIds).not.toContain('task-a');
     });
 
     it('allows merge when no smoke ran (backward compat)', () => {
@@ -140,7 +140,7 @@ describe('repair → re-smoke → merge flow simulation', () => {
         smokeResults, [], [], 1
       );
 
-      expect(merged).toContain('task-a');
+      expect(merged.mergedTaskIds).toContain('task-a');
     });
 
     it('blocks merge when review fails (regardless of smoke)', () => {
@@ -157,7 +157,7 @@ describe('repair → re-smoke → merge flow simulation', () => {
         smokeResults, [], [], 1
       );
 
-      expect(merged).not.toContain('task-a');
+      expect(merged.mergedTaskIds).not.toContain('task-a');
     });
   });
 

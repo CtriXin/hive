@@ -30,6 +30,11 @@ export interface CompactPacketAdvisory {
   task_ids: string[];
 }
 
+export interface CompactPacketMergeBlocker {
+  task_id: string;
+  reason: string;
+}
+
 export interface CompactPacket {
   version: 1;
   run_id: string;
@@ -46,6 +51,7 @@ export interface CompactPacket {
   room_refs: MindkeeperRoomRef[];
   bridge_refs: HumanBridgeRef[];
   advisory_focus: CompactPacketAdvisory[];
+  merge_blockers: CompactPacketMergeBlocker[];
   conversation_context?: CompactConversationContext;
   collab?: CollabCard;
   worker_focus: CompactPacketWorker[];
@@ -218,6 +224,17 @@ function buildNextActionText(data: HiveShellDashboardData): string {
   return truncate(`${action.kind}: ${action.reason}`, 140);
 }
 
+function buildMergeBlockers(data: HiveShellDashboardData): CompactPacketMergeBlocker[] {
+  const taskStates = data.state?.task_states || {};
+  return Object.values(taskStates)
+    .filter((task) => task.status === 'merge_blocked')
+    .map((task) => ({
+      task_id: task.task_id,
+      reason: truncate(task.last_error || 'Merge blocked', 140),
+    }))
+    .sort((a, b) => a.task_id.localeCompare(b.task_id));
+}
+
 function buildWorkerFocus(data: HiveShellDashboardData): CompactPacketWorker[] {
   const workers = data.workerSnapshot?.workers || [];
   const prioritized = [...workers].sort((a, b) => {
@@ -329,6 +346,15 @@ function buildRestorePrompt(packet: CompactPacket): string {
     }
   } else {
     lines.push('Primary worker: none');
+  }
+
+  if (packet.merge_blockers.length > 0) {
+    lines.push('Merge blockers:');
+    for (const blocker of packet.merge_blockers) {
+      lines.push(`- ${blocker.task_id}: ${blocker.reason}`);
+    }
+  } else {
+    lines.push('Merge blockers: none');
   }
 
   if (packet.collab) {
@@ -535,6 +561,7 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     room_refs: roomRefs,
     bridge_refs: bridgeRefs,
     advisory_focus: advisoryFocus,
+    merge_blockers: buildMergeBlockers(data),
     conversation_context: conversationContext || undefined,
     collab: data.loopProgress?.collab?.card,
     worker_focus: workerFocus,
@@ -652,6 +679,15 @@ export function renderCompactPacket(packet: CompactPacket): string {
     }
   } else {
     lines.push('- advisory focus: none');
+  }
+
+  if (packet.merge_blockers.length > 0) {
+    lines.push('- merge blockers:');
+    for (const blocker of packet.merge_blockers) {
+      lines.push(`  - ${blocker.task_id} | ${blocker.reason}`);
+    }
+  } else {
+    lines.push('- merge blockers: none');
   }
 
   lines.push('- recover with:');

@@ -95,7 +95,8 @@ describe('repair merge smoke gating', () => {
       [], noOpHooks, 1,
     );
 
-    expect(merged).toHaveLength(0);
+    expect(merged.mergedTaskIds).toHaveLength(0);
+    expect(merged.blocked).toHaveLength(0);
   });
 
   it('allows merge when review passes and smoke passes', () => {
@@ -110,8 +111,8 @@ describe('repair merge smoke gating', () => {
       [], noOpHooks, 1,
     );
 
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toBe('task-a');
+    expect(merged.mergedTaskIds).toHaveLength(1);
+    expect(merged.mergedTaskIds[0]).toBe('task-a');
   });
 
   it('allows merge when review passes and no smoke ran (undefined)', () => {
@@ -126,8 +127,8 @@ describe('repair merge smoke gating', () => {
       [], noOpHooks, 1,
     );
 
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toBe('task-b');
+    expect(merged.mergedTaskIds).toHaveLength(1);
+    expect(merged.mergedTaskIds[0]).toBe('task-b');
   });
 
   it('blocks merge when review fails regardless of smoke', () => {
@@ -145,7 +146,7 @@ describe('repair merge smoke gating', () => {
       [], noOpHooks, 1,
     );
 
-    expect(merged).toHaveLength(0);
+    expect(merged.mergedTaskIds).toHaveLength(0);
   });
 
   it('merges only smoke-passing task in mixed repair batch — smoke-fail task is blocked even if review passes', () => {
@@ -163,8 +164,8 @@ describe('repair merge smoke gating', () => {
       [], noOpHooks, 1,
     );
 
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toBe('task-a');
+    expect(merged.mergedTaskIds).toHaveLength(1);
+    expect(merged.mergedTaskIds[0]).toBe('task-a');
     // task-b is blocked by smoke failure even though review passed
   });
 
@@ -188,8 +189,8 @@ describe('repair merge smoke gating', () => {
     );
 
     // With refreshed smoke=true, task-a should now merge
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toBe('task-a');
+    expect(merged.mergedTaskIds).toHaveLength(1);
+    expect(merged.mergedTaskIds[0]).toBe('task-a');
 
     // If we had used the old smoke state (false), merge would be blocked
     const oldSmokeResults: Record<string, boolean> = { 'task-a': false };
@@ -197,7 +198,7 @@ describe('repair merge smoke gating', () => {
       mockSpec, mockPlan, mockWorkerResults, reviews, oldSmokeResults,
       [], noOpHooks, 1,
     );
-    expect(blocked).toHaveLength(0);
+    expect(blocked.mergedTaskIds).toHaveLength(0);
   });
 
   it('allows auto_merge=false to disable all merging', () => {
@@ -213,6 +214,52 @@ describe('repair merge smoke gating', () => {
       [], noOpHooks, 1,
     );
 
-    expect(merged).toHaveLength(0);
+    expect(merged.mergedTaskIds).toHaveLength(0);
+  });
+
+  it('blocks merge on scope violation before git merge', () => {
+    mockMergeResult.merged = true;
+    mockPlan.tasks[0].estimated_files = ['task-a.ts'];
+    mockWorkerResults[0].changedFiles = ['task-a.ts', 'unexpected.ts'];
+    const smokeResults: Record<string, boolean> = { 'task-a': true };
+    const reviews: ReviewResult[] = [
+      { taskId: 'task-a', final_stage: 'cross-review', passed: true, findings: [], iterations: 1, duration_ms: 100 },
+    ];
+
+    const merged = mergePassedTasks(
+      mockSpec, mockPlan, mockWorkerResults, reviews, smokeResults,
+      [], noOpHooks, 1,
+    );
+
+    expect(merged.mergedTaskIds).toHaveLength(0);
+    expect(merged.blocked).toEqual([
+      expect.objectContaining({
+        taskId: 'task-a',
+        kind: 'scope_violation',
+        files: ['unexpected.ts'],
+      }),
+    ]);
+  });
+
+  it('blocks overlapping file edits across merge candidates', () => {
+    mockMergeResult.merged = true;
+    mockPlan.tasks[0].estimated_files = ['shared.ts'];
+    mockPlan.tasks[1].estimated_files = ['shared.ts'];
+    mockWorkerResults[0].changedFiles = ['shared.ts'];
+    mockWorkerResults[1].changedFiles = ['shared.ts'];
+    const smokeResults: Record<string, boolean> = { 'task-a': true, 'task-b': true };
+    const reviews: ReviewResult[] = [
+      { taskId: 'task-a', final_stage: 'cross-review', passed: true, findings: [], iterations: 1, duration_ms: 100 },
+      { taskId: 'task-b', final_stage: 'cross-review', passed: true, findings: [], iterations: 1, duration_ms: 100 },
+    ];
+
+    const merged = mergePassedTasks(
+      mockSpec, mockPlan, mockWorkerResults, reviews, smokeResults,
+      [], noOpHooks, 1,
+    );
+
+    expect(merged.mergedTaskIds).toHaveLength(0);
+    expect(merged.blocked).toHaveLength(2);
+    expect(merged.blocked.every((item) => item.kind === 'overlap_conflict')).toBe(true);
   });
 });

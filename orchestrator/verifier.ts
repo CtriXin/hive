@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { spawnSync } from 'child_process';
 import type {
   DoneCondition,
@@ -12,6 +13,96 @@ const MAX_OUTPUT_TAIL = 4000;
 function trimTail(text: string): string {
   if (!text) return '';
   return text.length <= MAX_OUTPUT_TAIL ? text : text.slice(-MAX_OUTPUT_TAIL);
+}
+
+function collectNodeBinDirs(startCwd: string): string[] {
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+
+  const visit = (baseDir: string): void => {
+    let current = path.resolve(baseDir);
+    while (true) {
+      const binDir = path.join(current, 'node_modules', '.bin');
+      if (fs.existsSync(binDir) && fs.existsSync(path.join(current, 'package.json')) && !seen.has(binDir)) {
+        seen.add(binDir);
+        dirs.push(binDir);
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  };
+
+  visit(startCwd);
+  if (process.cwd() !== startCwd) {
+    visit(process.cwd());
+  }
+  if (process.env.PWD && process.env.PWD !== startCwd && process.env.PWD !== process.cwd()) {
+    visit(process.env.PWD);
+  }
+
+  return dirs;
+}
+
+function collectNodeModuleRoots(startCwd: string): string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+
+  const visit = (baseDir: string): void => {
+    let current = path.resolve(baseDir);
+    while (true) {
+      const modulesDir = path.join(current, 'node_modules');
+      if (fs.existsSync(modulesDir) && fs.existsSync(path.join(current, 'package.json')) && !seen.has(modulesDir)) {
+        seen.add(modulesDir);
+        roots.push(modulesDir);
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  };
+
+  if (process.cwd() !== startCwd) {
+    visit(process.cwd());
+  }
+  if (process.env.PWD && process.env.PWD !== startCwd && process.env.PWD !== process.cwd()) {
+    visit(process.env.PWD);
+  }
+  visit(startCwd);
+
+  return roots;
+}
+
+function ensureNodeModulesAvailable(cwd: string): void {
+  const packageJsonPath = path.join(cwd, 'package.json');
+  const localNodeModules = path.join(cwd, 'node_modules');
+  if (!fs.existsSync(packageJsonPath) || fs.existsSync(localNodeModules)) {
+    return;
+  }
+
+  const fallbackModules = collectNodeModuleRoots(cwd)
+    .find((dir) => path.resolve(dir) !== path.resolve(localNodeModules));
+  if (!fallbackModules) {
+    return;
+  }
+
+  try {
+    fs.symlinkSync(fallbackModules, localNodeModules, 'dir');
+  } catch {
+    // Best-effort only. Verification can still fall back to PATH injection.
+  }
+}
+
+function buildVerificationEnv(cwd: string): NodeJS.ProcessEnv {
+  ensureNodeModulesAvailable(cwd);
+  const bins = collectNodeBinDirs(cwd);
+  if (bins.length === 0) {
+    return { ...process.env };
+  }
+  return {
+    ...process.env,
+    PATH: `${bins.join(path.delimiter)}${path.delimiter}${process.env.PATH || ''}`,
+  };
 }
 
 function classifyFailure(target: DoneCondition): VerificationFailureClass {
@@ -73,6 +164,7 @@ export function runVerification(target: DoneCondition, cwd: string): Verificatio
 
   const result = spawnSync('/bin/zsh', ['-lc', command], {
     cwd,
+    env: buildVerificationEnv(cwd),
     encoding: 'utf-8',
     timeout: target.timeout_ms || DEFAULT_TIMEOUT_MS,
     maxBuffer: 1024 * 1024 * 8,

@@ -232,6 +232,7 @@ export type TaskRunStatus =
   | 'no_op'
   | 'review_failed'
   | 'verification_failed'
+  | 'merge_blocked'
   | 'verified'
   | 'merged'
   | 'superseded';

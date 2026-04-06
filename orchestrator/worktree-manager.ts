@@ -26,6 +26,7 @@ const WORKTREE_DIR = '.claude/worktrees';
 function isTransientWorktreePath(filePath: string): boolean {
   return filePath === '.ai'
     || filePath === '.claude'
+    || filePath === UNTRACKED_MANIFEST
     || filePath.startsWith('.ai/')
     || filePath.startsWith('.claude/');
 }

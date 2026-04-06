@@ -54,6 +54,18 @@ describe('hiveshell-dashboard', () => {
       failed_task_ids: ['task-b'],
       retry_counts: {},
       replan_count: 0,
+      task_states: {
+        'task-b': {
+          task_id: 'task-b',
+          status: 'merge_blocked',
+          round: 2,
+          changed_files: ['src/task-b.ts'],
+          merged: false,
+          worker_success: true,
+          review_passed: true,
+          last_error: 'Merge blocked (overlap_conflict): Overlapping changed file src/task-b.ts also touched by: task-c',
+        },
+      },
       verification_results: [],
       next_action: {
         kind: 'repair_task',
@@ -342,11 +354,14 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('== Authority ==');
     expect(rendered).toContain('== Score Trend ==');
     expect(rendered).toContain('== Workers ==');
+    expect(rendered).toContain('== Merge Blockers ==');
     expect(rendered).toContain('== Human Bridge ==');
     expect(rendered).toContain('== Mindkeeper ==');
     expect(rendered).toContain('Ship hiveshell UI');
     expect(rendered).toContain('task-a [completed]');
     expect(rendered).toContain('room-shell [collecting]');
+    expect(rendered).toContain('merge blockers: task-b');
+    expect(rendered).toContain('task-b | Merge blocked (overlap_conflict): Overlapping changed file src/task-b.ts also touched by: task-c');
     expect(rendered).toContain('avg advisory score: 92');
     expect(rendered).toContain('reviewer-a avg=92 replies=1 adopted=1/1 kinds=plan');
     expect(rendered).toContain('authority=authority-layer');

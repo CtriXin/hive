@@ -1,5 +1,6 @@
 import type { TaskPlan, SubTask, Complexity } from './types.js';
 import { loadTaskVerificationRules, suggestVerificationProfile } from './project-policy.js';
+import { loadConfig } from './hive-config.js';
 
 // Complexity 枚举必须是 4 级：low / medium / medium-high / high
 export const PLAN_PROMPT_TEMPLATE = `
@@ -43,7 +44,9 @@ schema, utils, api, tests, security, docs, config, algorithms, CRUD, i18n, refac
 export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): TaskPlan {
   // 验证 complexity 枚举
   const validComplexities: Complexity[] = ['low', 'medium', 'medium-high', 'high'];
-  const rules = loadTaskVerificationRules(cwd || process.cwd());
+  const runtimeCwd = cwd || process.cwd();
+  const rules = loadTaskVerificationRules(runtimeCwd);
+  const config = loadConfig(runtimeCwd);
 
   const tasks: SubTask[] = claudeOutput.tasks.map((task: any) => {
     if (!validComplexities.includes(task.complexity)) {
@@ -54,20 +57,29 @@ export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): Task
       ? task.verification_profile.trim()
       : undefined;
     const estimatedFiles = task.estimated_files || [];
-
-    return {
+    const partialTask = {
       id: task.id,
       description: task.description,
       complexity: task.complexity,
       category: task.category,
-      assigned_model: '', // Will be assigned by registry
-      assignment_reason: '',
       estimated_files: estimatedFiles,
       acceptance_criteria: task.acceptance_criteria || [],
       verification_profile: explicitProfile || suggestVerificationProfile(estimatedFiles, rules),
       discuss_threshold: getDiscussThreshold(task.complexity),
       depends_on: task.depends_on || [],
-      review_scale: 'auto'
+      review_scale: 'auto' as const,
+    };
+    const assignedModel = typeof task.assigned_model === 'string' && task.assigned_model.trim()
+      ? task.assigned_model.trim()
+      : pickDefaultPlanModel(config);
+    const assignmentReason = typeof task.assignment_reason === 'string' && task.assignment_reason.trim()
+      ? task.assignment_reason.trim()
+      : `Assigned by default plan model selection for ${task.complexity} ${task.category} task`;
+
+    return {
+      ...partialTask,
+      assigned_model: assignedModel,
+      assignment_reason: assignmentReason,
     };
   });
 
@@ -82,6 +94,12 @@ export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): Task
   };
 
   return plan;
+}
+
+function pickDefaultPlanModel(config: ReturnType<typeof loadConfig>): string {
+  const candidates = [config.default_worker, config.fallback_worker, config.high_tier];
+  const chosen = candidates.find((model) => model && !model.startsWith('claude-'));
+  return chosen || config.fallback_worker || 'kimi-for-coding';
 }
 
 function getDiscussThreshold(complexity: Complexity): number {

@@ -30,5 +30,10 @@ describe('worktree-manager', () => {
       const output = '?? .ai/restore/latest.md\n?? .claude/settings.local.json\n M src/app.ts\n';
       expect(parsePorcelainChangedFiles(output)).toEqual(['src/app.ts']);
     });
+
+    it('drops the transient untracked manifest created for copied worktree files', () => {
+      const output = '?? .untracked-manifest.json\n M docs/hiveshell/REAL_SMOKE_MATRIX.md\n';
+      expect(parsePorcelainChangedFiles(output)).toEqual(['docs/hiveshell/REAL_SMOKE_MATRIX.md']);
+    });
   });
 });

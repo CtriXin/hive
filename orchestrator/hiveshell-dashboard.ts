@@ -86,6 +86,11 @@ export interface HiveShellDashboardData {
   humanBridgeState: HumanBridgeStateArtifact | null;
 }
 
+interface MergeBlockerSummary {
+  taskId: string;
+  reason: string;
+}
+
 function runDir(cwd: string, runId: string): string {
   return path.join(cwd, '.ai', 'runs', runId);
 }
@@ -161,6 +166,20 @@ function renderWorkers(snapshot: WorkerStatusSnapshot | null, limit = 8): string
     const summary = worker.task_summary || worker.last_message;
     return `- ${worker.task_id} [${worker.status}] ${model}${changeText}${discussText} | ${truncate(summary, 90)}`;
   });
+}
+
+function collectMergeBlockers(state: RunState | null): MergeBlockerSummary[] {
+  if (!state?.task_states) {
+    return [];
+  }
+
+  return Object.values(state.task_states)
+    .filter((task) => task.status === 'merge_blocked')
+    .map((task) => ({
+      taskId: task.task_id,
+      reason: task.last_error || 'Merge blocked',
+    }))
+    .sort((a, b) => a.taskId.localeCompare(b.taskId));
 }
 
 function renderAuthority(data: HiveShellDashboardData): string[] {
@@ -266,8 +285,9 @@ function renderOverview(data: HiveShellDashboardData): string[] {
   const progress = data.loopProgress;
   const score = data.scoreHistory?.rounds.at(-1);
   const workers = data.workerSnapshot ? summarizeWorkerSnapshot(data.workerSnapshot) : null;
+  const mergeBlockers = collectMergeBlockers(state);
 
-  return [
+  const lines = [
     `- run: ${data.runId}`,
     `- goal: ${truncate(spec?.goal, 110)}`,
     `- status: ${state?.status || 'unknown'}`,
@@ -278,6 +298,21 @@ function renderOverview(data: HiveShellDashboardData): string[] {
     `- score: ${score ? `${score.score} (best ${data.scoreHistory?.best_score ?? score.score})` : 'n/a'}`,
     `- workers: ${workers ? `${workers.total} total / ${workers.active} active / ${workers.completed} completed / ${workers.failed} failed` : 'n/a'}`,
   ];
+
+  if (mergeBlockers.length > 0) {
+    lines.push(`- merge blockers: ${mergeBlockers.map((item) => item.taskId).join(', ')}`);
+  }
+
+  return lines;
+}
+
+function renderMergeBlockers(data: HiveShellDashboardData): string[] {
+  const blockers = collectMergeBlockers(data.state);
+  if (blockers.length === 0) {
+    return ['- no merge blockers'];
+  }
+
+  return blockers.map((blocker) => `- ${blocker.taskId} | ${truncate(blocker.reason, 120)}`);
 }
 
 function renderCollab(data: HiveShellDashboardData): string[] {
@@ -404,6 +439,7 @@ export function renderHiveShellDashboard(
     section('Authority', renderAuthority(data)),
     section('Score Trend', renderScoreTrend(data.scoreHistory)),
     section('Workers', renderWorkers(data.workerSnapshot)),
+    section('Merge Blockers', renderMergeBlockers(data)),
     section('Human Bridge', renderHumanBridge(data)),
     section('Mindkeeper', renderMindkeeper(data)),
     section('Recent Events', renderRecentEvents(data.cwd, data.runId)),

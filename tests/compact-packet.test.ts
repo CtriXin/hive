@@ -54,6 +54,18 @@ describe('compact-packet', () => {
       failed_task_ids: [],
       retry_counts: {},
       replan_count: 0,
+      task_states: {
+        'task-c': {
+          task_id: 'task-c',
+          status: 'merge_blocked',
+          round: 2,
+          changed_files: ['src/shared.ts'],
+          merged: false,
+          worker_success: true,
+          review_passed: true,
+          last_error: 'Merge blocked (overlap_conflict): Overlapping changed file src/shared.ts also touched by: task-d',
+        },
+      },
       verification_results: [],
       next_action: {
         kind: 'execute',
@@ -274,6 +286,12 @@ describe('compact-packet', () => {
     expect(result!.packet.worker_focus[0].collab?.room_id).toBe('room-task-b');
     expect(result!.packet.advisory_focus).toHaveLength(2);
     expect(result!.packet.advisory_focus[0].participant_id).toBe('reviewer-a');
+    expect(result!.packet.merge_blockers).toEqual([
+      {
+        task_id: 'task-c',
+        reason: 'Merge blocked (overlap_conflict): Overlapping changed file src/shared.ts also touched by: task-d',
+      },
+    ]);
     expect(result!.packet.suggested_commands).toContain('hive workers task-b');
     expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/advisory-score-history.json');
     expect(result!.packet.detail_sources).toContain('.ai/runs/run-compact-123/human-bridge-state.json');
@@ -283,6 +301,8 @@ describe('compact-packet', () => {
     expect(result!.packet.restore_prompt).toContain('You are resuming a Hive run after compact/clear/new.');
     expect(result!.packet.restore_prompt).toContain('Collab room: room-compact | collecting | replies=1');
     expect(result!.packet.restore_prompt).toContain('Primary worker collab: room-task-b | closed | replies=1');
+    expect(result!.packet.restore_prompt).toContain('Merge blockers:');
+    expect(result!.packet.restore_prompt).toContain('- task-c: Merge blocked (overlap_conflict): Overlapping changed file src/shared.ts also touched by: task-d');
     expect(result!.packet.restore_prompt).toContain('Mindkeeper linked rooms:');
     expect(result!.packet.restore_prompt).toContain('room-task-b [task_discuss/closed] replies=1 task=task-b');
     expect(result!.packet.restore_prompt).toContain('Human bridge threads:');
@@ -300,6 +320,8 @@ describe('compact-packet', () => {
     expect(result!.markdown).toContain('room-compact -> discord:discord-compact-1 [active] title=Plan Thread');
     expect(result!.markdown).toContain('- advisory focus:');
     expect(result!.markdown).toContain('reviewer-a avg=91 replies=1 adopted=1/1 kinds=plan');
+    expect(result!.markdown).toContain('- merge blockers:');
+    expect(result!.markdown).toContain('task-c | Merge blocked (overlap_conflict): Overlapping changed file src/shared.ts also touched by: task-d');
     expect(result!.markdown).toContain('## Restore Prompt');
     expect(result!.markdown).toContain('dst-compact-1');
     expect(fs.existsSync(path.join(runDir, 'compact-packet.json'))).toBe(true);
