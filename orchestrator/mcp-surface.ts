@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import type { CollabCard, OrchestratorResult, TaskPlan, SubTask, PlannerDiscussRoomRef } from './types.js';
 import type { CompactPacketWorker, RunCompactPacketResult } from './compact-packet.js';
+import { pickWorkerSurfaceSummary } from './worker-surface-summary.js';
 
 const MCP_DIR_SEGMENTS = ['.ai', 'mcp'];
 const MAX_FOCUS_DESCRIPTION = 96;
@@ -183,7 +184,7 @@ export function summarizePlanCard(
 }
 
 function formatFocusWorker(worker: CompactPacketWorker): string {
-  return `${worker.agent_id} | ${worker.status} | ${worker.task_summary}`;
+  return `${worker.agent_id} | ${worker.status} | ${pickWorkerSurfaceSummary(worker.task_summary) || '-'}`;
 }
 
 function buildAgentLines(cwd: string, worker?: CompactPacketWorker): string[] {

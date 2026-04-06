@@ -2,6 +2,7 @@
 
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { pickWorkerSurfaceSummary } from './worker-surface-summary.js';
 
 // ── Re-exports (for MCP server and external consumers) ──
 export { ModelRegistry } from './model-registry.js';
@@ -100,7 +101,7 @@ export async function main() {
         ? `changed=${worker.changed_files_count}`
         : '',
     ].filter(Boolean);
-    const summary = worker.task_summary || worker.last_message;
+    const summary = pickWorkerSurfaceSummary(worker.task_summary, worker.last_message);
     const collab = worker.collab?.card
       ? ` | collab ${worker.collab.card.room_id} [${worker.collab.card.status}] replies=${worker.collab.card.replies}`
       : '';
@@ -138,7 +139,7 @@ export async function main() {
     console.log(`🪪 agent: ${worker.agent_id}`);
     console.log(`📊 status: ${worker.status}`);
     console.log(`🤖 model: ${worker.assigned_model === worker.active_model ? worker.active_model : `${worker.assigned_model} -> ${worker.active_model}`}`);
-    console.log(`📝 summary: ${worker.task_summary || worker.last_message || '-'}`);
+    console.log(`📝 summary: ${pickWorkerSurfaceSummary(worker.task_summary, worker.last_message, worker.task_description) || '-'}`);
     if (worker.transcript_path) {
       console.log(`🧵 transcript: ${worker.transcript_path}`);
     }

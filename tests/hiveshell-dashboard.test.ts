@@ -769,4 +769,205 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('== Recent Events ==');
     expect(rendered).toContain('== Artifacts ==');
   });
+
+  // ─── Regression: Workers surface invariants ───────────────────────────────
+
+  it('renders task_summary when both task_summary and last_message exist', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const workerSnapshot: WorkerStatusSnapshot = {
+      run_id: RUN_ID,
+      plan_id: 'plan-worker',
+      goal: 'Worker surface test',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-summary-priority',
+          status: 'completed',
+          assigned_model: 'kimi-k2.5',
+          active_model: 'kimi-k2.5',
+          provider: 'kimi',
+          discuss_triggered: false,
+          updated_at: new Date().toISOString(),
+          changed_files_count: 3,
+          success: true,
+          last_message: 'Raw worker output message',
+          task_summary: 'Structured task summary for dashboard',
+        },
+      ],
+    };
+
+    writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('task-summary-priority [completed]');
+    // Must show task_summary, NOT last_message
+    expect(rendered).toContain('Structured task summary for dashboard');
+    expect(rendered).not.toContain('Raw worker output message');
+  });
+
+  it('falls back to last_message when task_summary is absent', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const workerSnapshot: WorkerStatusSnapshot = {
+      run_id: RUN_ID,
+      plan_id: 'plan-worker',
+      goal: 'Worker surface test',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-fallback-msg',
+          status: 'running',
+          assigned_model: 'qwen3-max',
+          active_model: 'qwen3-max',
+          provider: 'bailian',
+          discuss_triggered: false,
+          updated_at: new Date().toISOString(),
+          changed_files_count: 1,
+          success: true,
+          last_message: 'Worker progress update message',
+          // no task_summary
+        },
+      ],
+    };
+
+    writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('task-fallback-msg [running]');
+    expect(rendered).toContain('Worker progress update message');
+  });
+
+  it('sanitizes raw tool_use JSON in worker summaries', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const workerSnapshot: WorkerStatusSnapshot = {
+      run_id: RUN_ID,
+      plan_id: 'plan-worker',
+      goal: 'Worker surface sanitization',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-tool-json',
+          status: 'running',
+          assigned_model: 'kimi-k2.5',
+          active_model: 'kimi-k2.5',
+          provider: 'kimi',
+          discuss_triggered: false,
+          updated_at: new Date().toISOString(),
+          changed_files_count: 0,
+          success: true,
+          task_summary: '{"type":"tool_use","id":"tool_123","name":"Bash","input":{"command":"ls -la"}}',
+        },
+      ],
+    };
+
+    writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('task-tool-json [running]');
+    expect(rendered).toContain('Running tool: Bash');
+    expect(rendered).not.toContain('"type":"tool_use"');
+  });
+
+  it('renders dash when both task_summary and last_message are absent', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const workerSnapshot: WorkerStatusSnapshot = {
+      run_id: RUN_ID,
+      plan_id: 'plan-worker',
+      goal: 'Worker surface test',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-no-summary',
+          status: 'pending',
+          assigned_model: 'glm-4-plus',
+          active_model: 'glm-4-plus',
+          provider: 'zhipu',
+          discuss_triggered: false,
+          updated_at: new Date().toISOString(),
+          // changed_files_count undefined to avoid changed=0 output
+          success: false,
+          // no task_summary, no last_message
+        },
+      ],
+    };
+
+    writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('task-no-summary [pending]');
+    // No undefined or empty format, should show '-'
+    expect(rendered).toMatch(/task-no-summary \[pending\] glm-4-plus \| -/);
+  });
+
+  it('renders model transition when assigned_model differs from active_model', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const workerSnapshot: WorkerStatusSnapshot = {
+      run_id: RUN_ID,
+      plan_id: 'plan-worker',
+      goal: 'Worker surface test',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-model-switch',
+          status: 'running',
+          assigned_model: 'qwen3-max',
+          active_model: 'kimi-k2.5',
+          provider: 'kimi',
+          discuss_triggered: false,
+          updated_at: new Date().toISOString(),
+          changed_files_count: 2,
+          success: true,
+          last_message: 'Model fallback occurred',
+        },
+      ],
+    };
+
+    writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('task-model-switch [running]');
+    expect(rendered).toContain('qwen3-max -> kimi-k2.5');
+  });
+
+  it('renders changed_files_count and discuss_triggered when present', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const workerSnapshot: WorkerStatusSnapshot = {
+      run_id: RUN_ID,
+      plan_id: 'plan-worker',
+      goal: 'Worker surface test',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-discuss-changes',
+          status: 'completed',
+          assigned_model: 'kimi-k2.5',
+          active_model: 'kimi-k2.5',
+          provider: 'kimi',
+          discuss_triggered: true,
+          updated_at: new Date().toISOString(),
+          changed_files_count: 5,
+          success: true,
+          task_summary: 'Completed with discussion and file changes',
+        },
+      ],
+    };
+
+    writeJson(path.join(runDir, 'worker-status.json'), workerSnapshot);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('task-discuss-changes [completed]');
+    expect(rendered).toContain('changed=5');
+    expect(rendered).toContain('discuss=yes');
+  });
 });

@@ -23,6 +23,7 @@ import { loadRunPlan, loadRunResult, loadRunSpec, loadRunState, listRuns } from 
 import { loadRunScoreHistory } from './score-history.js';
 import { readLoopProgress } from './loop-progress-store.js';
 import { listWorkerStatusSnapshots, loadWorkerStatusSnapshot, summarizeWorkerSnapshot } from './worker-status-store.js';
+import { pickWorkerSurfaceSummary } from './worker-surface-summary.js';
 
 interface MindkeeperCheckpointPayload {
   repo: string;
@@ -163,7 +164,7 @@ function renderWorkers(snapshot: WorkerStatusSnapshot | null, limit = 8): string
       ? ` changed=${worker.changed_files_count}`
       : '';
     const discussText = worker.discuss_triggered ? ' discuss=yes' : '';
-    const summary = worker.task_summary || worker.last_message;
+    const summary = pickWorkerSurfaceSummary(worker.task_summary, worker.last_message) || '-';
     return `- ${worker.task_id} [${worker.status}] ${model}${changeText}${discussText} | ${truncate(summary, 90)}`;
   });
 }

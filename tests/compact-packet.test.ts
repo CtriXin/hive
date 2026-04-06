@@ -548,4 +548,67 @@ describe('compact-packet', () => {
     expect(latestRestore!.restorePrompt).toContain('Next action: request_human: Max rounds reached (1) while pending request_human');
     expect(latestRestore!.restorePrompt).toContain('- task-b: Merge blocked (overlap_conflict): Overlapping changed file src/shared.ts also touched by: task-c');
   });
+
+  it('sanitizes raw tool_use JSON in compact worker focus and restore prompt', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const spec: RunSpec = {
+      id: RUN_ID,
+      goal: 'Sanitize worker focus',
+      cwd: TMP_DIR,
+      mode: 'safe',
+      done_conditions: [],
+      max_rounds: 1,
+      max_worker_retries: 1,
+      max_replans: 1,
+      allow_auto_merge: true,
+      stop_on_high_risk: false,
+      created_at: new Date().toISOString(),
+    };
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'executing',
+      round: 1,
+      completed_task_ids: [],
+      failed_task_ids: [],
+      retry_counts: {},
+      replan_count: 0,
+      verification_results: [],
+      next_action: {
+        kind: 'execute',
+        reason: 'Dispatching 1 task',
+        task_ids: ['task-a'],
+      },
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'spec.json'), spec);
+    writeJson(path.join(runDir, 'state.json'), state);
+    writeJson(path.join(runDir, 'worker-status.json'), {
+      run_id: RUN_ID,
+      plan_id: 'plan-sanitize',
+      goal: 'Sanitize worker focus',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-a',
+          status: 'running',
+          assigned_model: 'kimi-k2.5',
+          active_model: 'kimi-k2.5',
+          provider: 'kimi',
+          agent_id: 'task-a@run-compact-123',
+          discuss_triggered: false,
+          updated_at: new Date().toISOString(),
+          task_summary: '{"type":"tool_use","id":"tool_123","name":"Bash","input":{"command":"ls -la"}}',
+          transcript_path: '.ai/runs/run-compact-123/workers/task-a.transcript.jsonl',
+        },
+      ],
+    });
+
+    const result = loadCompactPacket(TMP_DIR, RUN_ID);
+    expect(result).not.toBeNull();
+    expect(result!.packet.worker_focus[0].task_summary).toBe('Running tool: Bash');
+    expect(result!.packet.restore_prompt).toContain('Primary worker summary: Running tool: Bash');
+    expect(result!.markdown).toContain('task-a | task-a@run-compact-123 | running | Running tool: Bash');
+    expect(result!.markdown).not.toContain('"type":"tool_use"');
+  });
 });

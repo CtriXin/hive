@@ -11,6 +11,7 @@ import { loadHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashb
 import { collectHumanBridgeRefs, formatHumanBridgeRef } from './human-bridge-linkage.js';
 import { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 import { loadLatestRunLocator, saveLatestRunLocator } from './run-locator.js';
+import { pickWorkerSurfaceSummary } from './worker-surface-summary.js';
 
 export interface CompactPacketWorker {
   task_id: string;
@@ -247,7 +248,10 @@ function buildWorkerFocus(data: HiveShellDashboardData): CompactPacketWorker[] {
     task_id: worker.task_id,
     agent_id: worker.agent_id,
     status: worker.status,
-    task_summary: truncate(worker.task_summary || worker.last_message || worker.task_description, 120),
+    task_summary: truncate(
+      pickWorkerSurfaceSummary(worker.task_summary, worker.last_message, worker.task_description) || '-',
+      120,
+    ),
     transcript_path: worker.transcript_path,
     collab: worker.collab?.card,
   }));
