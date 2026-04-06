@@ -477,5 +477,11 @@ describe('compact-packet', () => {
     expect(result!.packet.restore_prompt).toContain('Next action: request_human: Max rounds reached (1) while pending repair_task');
     expect(result!.packet.restore_prompt).toContain('- task-a: Merge blocked (scope_violation): Changed files outside estimated_files: src/unexpected.ts');
     expect(result!.markdown).toContain('- next: request_human: Max rounds reached (1) while pending repair_task');
+
+    const latestRestore = loadLatestCompactRestore(TMP_DIR);
+    expect(latestRestore).not.toBeNull();
+    expect(latestRestore!.runId).toBe(RUN_ID);
+    expect(latestRestore!.restorePrompt).toContain('Next action: request_human: Max rounds reached (1) while pending repair_task');
+    expect(latestRestore!.restorePrompt).toContain('- task-a: Merge blocked (scope_violation): Changed files outside estimated_files: src/unexpected.ts');
   });
 });
