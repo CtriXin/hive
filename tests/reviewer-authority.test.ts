@@ -654,6 +654,229 @@ describe('reviewer authority path', () => {
     expect(round2.passed).toBe(true);
   });
 
+  it('authority verdict is immutable when external advisory findings are merged', async () => {
+    // Authority pair: disagree → synthesis says REJECT
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: true,
+          confidence: 0.7,
+          flagged_issues: [],
+          summary: 'primary: looks ok',
+        }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: false,
+          confidence: 0.85,
+          flagged_issues: [
+            { severity: 'red', file: 'src/app.ts:10', description: 'must fix' },
+          ],
+          summary: 'challenger: real issue',
+        }),
+        tokenUsage: { input: 12, output: 6 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: false,
+          rationale: 'red finding confirmed — reject',
+          final_findings: [
+            { severity: 'red', file: 'src/app.ts:10', issue: 'must fix', decision: 'flag' },
+          ],
+        }),
+        tokenUsage: { input: 8, output: 4 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-ext-1',
+      description: 'External advisory immutability',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-ext-1',
+      goal: 'test authority verdict immutability with external advisory',
+      tasks: [task],
+      execution_order: [['task-ext-1']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-ext-1',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/ext-advisory-test',
+      branch: 'worker-task-ext-1',
+      sessionId: 'worker-task-ext-1',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    // Snapshot authority state before external advisory merge
+    expect(result.passed).toBe(false);
+    expect(result.verdict).toBe('REJECT');
+    const originalAuthority = result.authority;
+    const originalFindingCount = result.findings.length;
+
+    // Simulate what maybeRunExternalReviewSlot does: spread + append advisory findings
+    const merged = {
+      ...result,
+      findings: [
+        ...result.findings,
+        {
+          id: result.findings.length + 1,
+          severity: 'yellow' as const,
+          lens: 'external-review',
+          file: 'review-room:external-a',
+          issue: 'External advisory: the red finding may be a false positive',
+          decision: 'flag' as const,
+          decision_reason: 'External review advisory (500ms, 120 chars)',
+        },
+      ],
+      external_review_collab: {
+        card: {
+          room_id: 'room-review-ext-1',
+          room_kind: 'review',
+          status: 'closed',
+          replies: 1,
+          focus_task_id: 'task-ext-1',
+          next: 'external review complete',
+        },
+        recent_events: [],
+      },
+    };
+
+    // Authority verdict must be unchanged — external advisory cannot override it
+    expect(merged.passed).toBe(false);
+    expect(merged.verdict).toBe('REJECT');
+    expect(merged.authority).toBe(originalAuthority);
+    expect(merged.authority?.source).toBe('authority-layer');
+    expect(merged.authority?.disagreement_flags).toContain('conclusion_opposite');
+    // External advisory is appended, not replacing
+    expect(merged.findings).toHaveLength(originalFindingCount + 1);
+    expect(merged.findings.at(-1)?.lens).toBe('external-review');
+    expect(merged.findings.at(-1)?.severity).toBe('yellow');
+  });
+
+  it('deterministic_vs_opinion persists after external advisory merge', async () => {
+    // smokeFailed + reviewers pass → deterministic_vs_opinion → synthesis says FAIL
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: true,
+          confidence: 0.91,
+          flagged_issues: [],
+          summary: 'primary: LGTM',
+        }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: true,
+          confidence: 0.88,
+          flagged_issues: [],
+          summary: 'challenger: also fine',
+        }),
+        tokenUsage: { input: 12, output: 6 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: false,
+          rationale: 'deterministic smoke failure overrides',
+          final_findings: [
+            { severity: 'red', file: '(smoke)', issue: 'smoke failure', decision: 'flag' },
+          ],
+        }),
+        tokenUsage: { input: 8, output: 4 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-ext-2',
+      description: 'Deterministic + external advisory',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-ext-2',
+      goal: 'test deterministic flag survives external advisory',
+      tasks: [task],
+      execution_order: [['task-ext-2']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-ext-2',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/det-ext-test',
+      branch: 'worker-task-ext-2',
+      sessionId: 'worker-task-ext-2',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 800,
+      token_usage: { input: 15, output: 8 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry, false);
+
+    // Deterministic flag present
+    expect(result.authority?.disagreement_flags).toContain('deterministic_vs_opinion');
+    expect(result.passed).toBe(false);
+
+    // Simulate external advisory merge (like maybeRunExternalReviewSlot)
+    const merged = {
+      ...result,
+      findings: [
+        ...result.findings,
+        {
+          id: result.findings.length + 1,
+          severity: 'yellow' as const,
+          lens: 'external-review',
+          file: 'review-room:external-b',
+          issue: 'External advisory: reviewers were right, code looks fine',
+          decision: 'flag' as const,
+          decision_reason: 'External review advisory (300ms, 80 chars)',
+        },
+      ],
+      external_review_collab: {
+        card: {
+          room_id: 'room-review-ext-2',
+          room_kind: 'review',
+          status: 'closed',
+          replies: 1,
+          focus_task_id: 'task-ext-2',
+          next: 'external review complete',
+        },
+        recent_events: [],
+      },
+    };
+
+    // deterministic_vs_opinion must survive — external opinion cannot override it
+    expect(merged.authority?.disagreement_flags).toContain('deterministic_vs_opinion');
+    expect(merged.passed).toBe(false);
+    expect(merged.authority?.source).toBe('authority-layer');
+    expect(merged.authority?.synthesized_by).toBe('gpt-5.4');
+  });
+
   it('deterministic signal is independent of review outcome — smoke still fails after repair review passes', async () => {
     // Scenario: repair worker succeeds, review passes, but smoke re-run still fails.
     // The review escalation must still fire because original smoke failed.
