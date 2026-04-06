@@ -320,4 +320,197 @@ describe('worker-status-store', () => {
     const worker = findWorkerStatusEntry(snapshot, 'task-i');
     expect(worker?.task_summary).toBe('This is the task description');
   });
+
+  // ============================================================
+  // Transcript / Event Artifact Boundary Regression Tests
+  // ============================================================
+
+  describe('appendWorkerTranscriptEntry edge cases', () => {
+    it('does NOT write entry when content is blank/whitespace-only', () => {
+      appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
+        task_id: 'task-blank',
+        plan_id: 'plan-x',
+        type: 'assistant',
+        content: '   \n\t  ', // whitespace only
+      });
+
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task-blank');
+      expect(transcript).toHaveLength(0);
+    });
+
+    it('does NOT write entry when content is empty string', () => {
+      appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
+        task_id: 'task-empty',
+        plan_id: 'plan-x',
+        type: 'assistant',
+        content: '',
+      });
+
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task-empty');
+      expect(transcript).toHaveLength(0);
+    });
+
+    it('trims content when exceeding MAX_TRANSCRIPT_CONTENT (1200 chars)', () => {
+      const longContent = 'A'.repeat(1500);
+      appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
+        task_id: 'task-long',
+        plan_id: 'plan-x',
+        type: 'assistant',
+        content: longContent,
+      });
+
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task-long');
+      expect(transcript).toHaveLength(1);
+      expect(transcript[0].content.length).toBeLessThanOrEqual(1200);
+      expect(transcript[0].content).toMatch(/A+\.\.\.$/);
+    });
+
+    it('trims leading/trailing whitespace in content', () => {
+      appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
+        task_id: 'task-ws',
+        plan_id: 'plan-x',
+        type: 'assistant',
+        content: '  Hello World  ',
+      });
+
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task-ws');
+      expect(transcript).toHaveLength(1);
+      expect(transcript[0].content).toBe('Hello World');
+    });
+
+    it('preserves internal whitespace/newlines (no normalization)', () => {
+      appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
+        task_id: 'task-internal-ws',
+        plan_id: 'plan-x',
+        type: 'assistant',
+        content: 'Line1\n  Line2',
+      });
+
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task-internal-ws');
+      expect(transcript).toHaveLength(1);
+      // trimTranscriptContent only does .trim(), not \s+ normalization
+      expect(transcript[0].content).toBe('Line1\n  Line2');
+    });
+  });
+
+  describe('loadWorkerTranscript resilience', () => {
+    it('reads transcript by taskId even when worker not in snapshot', () => {
+      // Create a transcript file directly (simulating orphan file)
+      const transcriptsDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'workers');
+      fs.mkdirSync(transcriptsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(transcriptsDir, 'orphan-task.transcript.jsonl'),
+        JSON.stringify({
+          run_id: RUN_ID,
+          task_id: 'orphan-task',
+          agent_id: 'orphan-task@run-worker-123',
+          type: 'assistant',
+          timestamp: '2026-04-06T00:00:00.000Z',
+          content: 'I exist even without a snapshot entry',
+        }) + '\n',
+      );
+
+      // No updateWorkerStatus called, so worker not in snapshot
+      const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+      expect(snapshot).toBeNull();
+
+      // But loadWorkerTranscript should still find the file
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'orphan-task');
+      expect(transcript).toHaveLength(1);
+      expect(transcript[0].content).toBe('I exist even without a snapshot entry');
+    });
+
+    it('returns [] when transcript file has corrupted/non-JSON lines', () => {
+      const transcriptsDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'workers');
+      fs.mkdirSync(transcriptsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(transcriptsDir, 'corrupt.transcript.jsonl'),
+        'this is not valid JSON\n{"valid": "entry"}\n{broken json\n',
+      );
+
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'corrupt');
+      // Current behavior: entire file parse fails -> returns []
+      expect(transcript).toHaveLength(0);
+    });
+
+    it('returns [] when transcript file is missing', () => {
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'nonexistent');
+      expect(transcript).toHaveLength(0);
+    });
+  });
+
+  describe('loadWorkerEvents resilience', () => {
+    it('returns [] when events file has corrupted/non-JSON lines', () => {
+      const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(runDir, 'worker-events.jsonl'),
+        'invalid json line\n{"valid": true}\n{"also": "valid"}\n{bad\n',
+      );
+
+      const events = loadWorkerEvents(TMP_DIR, RUN_ID);
+      // Current behavior: entire file parse fails -> returns []
+      expect(events).toHaveLength(0);
+    });
+
+    it('returns [] when events file is missing', () => {
+      const events = loadWorkerEvents(TMP_DIR, RUN_ID);
+      expect(events).toHaveLength(0);
+    });
+
+    it('parses valid events file correctly', () => {
+      const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(runDir, 'worker-events.jsonl'),
+        '{"task_id":"t1","status":"queued","timestamp":"2026-04-06T00:00:00.000Z"}\n' +
+        '{"task_id":"t1","status":"running","timestamp":"2026-04-06T00:01:00.000Z"}\n',
+      );
+
+      const events = loadWorkerEvents(TMP_DIR, RUN_ID);
+      expect(events).toHaveLength(2);
+      expect(events[0].status).toBe('queued');
+      expect(events[1].status).toBe('running');
+    });
+  });
+
+  describe('safeTaskId behavior for special characters', () => {
+    it('sanitizes task IDs with special characters in transcript filename', () => {
+      // Test via actual transcript write - the filename should be sanitized
+      appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
+        task_id: 'task/with:special*chars!',
+        plan_id: 'plan-x',
+        type: 'assistant',
+        content: 'Testing special chars',
+      });
+
+      // The transcript should be readable via the same task_id
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task/with:special*chars!');
+      expect(transcript).toHaveLength(1);
+      expect(transcript[0].content).toBe('Testing special chars');
+
+      // Verify the actual filename is sanitized
+      const transcriptsDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'workers');
+      const files = fs.readdirSync(transcriptsDir);
+      expect(files.length).toBe(1);
+      // Special chars should be replaced with dashes
+      expect(files[0]).toMatch(/^task-with-special-chars-\.transcript\.jsonl$/);
+    });
+
+    it('preserves allowed characters (alphanumeric, dot, underscore, dash)', () => {
+      appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
+        task_id: 'task_123.test-xyz',
+        plan_id: 'plan-x',
+        type: 'assistant',
+        content: 'Allowed chars test',
+      });
+
+      const transcript = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task_123.test-xyz');
+      expect(transcript).toHaveLength(1);
+
+      const transcriptsDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'workers');
+      const files = fs.readdirSync(transcriptsDir);
+      expect(files[0]).toBe('task_123.test-xyz.transcript.jsonl');
+    });
+  });
 });
