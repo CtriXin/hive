@@ -16,6 +16,8 @@ Most slices are unit-tested and build-clean, but real smoke should now focus on:
 
 This file is the practical checklist for that work.
 
+Quick closeout guide: see `docs/hiveshell/PHASE_CLOSEOUT_CHECKLIST.md`.
+
 ## Current baseline
 
 Already green on latest `main`:
