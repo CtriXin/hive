@@ -348,4 +348,119 @@ describe('handoff-continuity-slice-001', () => {
     // Assert: No request_human_trace
     expect(packet.request_human_trace).toBeUndefined();
   });
+
+  it('shows planner discuss and request_human trace in hive status CLI output', async () => {
+    const { main } = await import('../orchestrator/index.js');
+    const { writeLoopProgress } = await import('../orchestrator/loop-progress-store.js');
+    const { updateWorkerStatus } = await import('../orchestrator/worker-status-store.js');
+
+    // Arrange: Create run with planner discuss and request_human state
+    const spec: RunSpec = {
+      id: RUN_ID,
+      goal: 'Test CLI handoff continuity',
+      cwd: TMP_DIR,
+      mode: 'safe',
+      done_conditions: [],
+      max_rounds: 4,
+      max_worker_retries: 2,
+      max_replans: 1,
+      allow_auto_merge: false,
+      stop_on_high_risk: true,
+      created_at: new Date().toISOString(),
+    };
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'blocked',
+      round: 2,
+      completed_task_ids: ['task-a'],
+      failed_task_ids: ['task-b'],
+      retry_counts: { 'task-b': 2 },
+      replan_count: 0,
+      task_states: {
+        'task-b': {
+          task_id: 'task-b',
+          status: 'review_failed',
+          round: 2,
+          changed_files: ['src/task-b.ts'],
+          merged: false,
+          worker_success: true,
+          review_passed: false,
+          last_error: 'Critical issue in error handling',
+        },
+      },
+      verification_results: [],
+      next_action: {
+        kind: 'request_human',
+        reason: 'Retry budget exhausted for task-b after 2 attempts. Human intervention needed.',
+        task_ids: ['task-b'],
+        instructions: 'Review task-b failure and decide: escalate to stronger model, simplify scope, or mark as known limitation.',
+      },
+      final_summary: 'Blocked: retry budget exhausted',
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'spec.json'), spec);
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'state.json'), state);
+
+    // Arrange: Loop progress with planner discuss conclusion
+    writeLoopProgress(TMP_DIR, RUN_ID, {
+      run_id: RUN_ID,
+      round: 2,
+      phase: 'blocked',
+      reason: 'Waiting for human intervention',
+      planner_model: 'gpt-5',
+      planner_discuss_conclusion: {
+        quality_gate: 'warn',
+        overall_assessment: 'Plan was solid but task-b needs human review due to repeated failures.',
+      },
+    });
+
+    // Arrange: Worker status snapshot (required for status command)
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-a',
+      status: 'completed',
+      plan_id: RUN_ID,
+      round: 1,
+      assigned_model: 'qwen3-max',
+      active_model: 'qwen3-max',
+      provider: 'bailian',
+      task_description: 'Completed task',
+      task_summary: 'Task A completed successfully',
+      last_message: 'Done',
+      success: true,
+      changed_files_count: 2,
+    });
+
+    // Act: Capture console output
+    const originalLog = console.log;
+    const outputLines: string[] = [];
+    console.log = (...args) => {
+      outputLines.push(args.join(' '));
+    };
+
+    // Simulate: hive status --run-id <RUN_ID>
+    const originalArgv = process.argv;
+    process.argv = ['node', 'hive', 'status', '--run-id', RUN_ID, '--cwd', TMP_DIR];
+
+    try {
+      await main();
+    } finally {
+      console.log = originalLog;
+      process.argv = originalArgv;
+    }
+
+    // Assert: Output contains planner discuss
+    const output = outputLines.join('\n');
+    expect(output).toContain('planner discuss: warn');
+    expect(output).toContain('Plan was solid but task-b needs human review');
+
+    // Assert: Output contains request_human why_blocked
+    expect(output).toContain('request_human:');
+    expect(output).toContain('why_blocked:');
+    expect(output).toContain('Retry budget exhausted');
+
+    // Assert: Output contains request_human what_needs_human
+    expect(output).toContain('what_needs_human:');
+    expect(output).toContain('Review task-b failure');
+    expect(output).toContain('escalate to stronger model');
+  });
 });

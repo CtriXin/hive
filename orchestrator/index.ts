@@ -528,6 +528,20 @@ export async function main() {
           console.log(`   join: ${card.join_hint}`);
         }
       }
+      if (progress?.planner_discuss_conclusion) {
+        const pd = progress.planner_discuss_conclusion;
+        console.log(`🧠 planner discuss: ${pd.quality_gate} | ${pd.overall_assessment.slice(0, 100)}${pd.overall_assessment.length > 100 ? '...' : ''}`);
+      }
+      if (sState.next_action?.kind === 'request_human') {
+        const taskIds = sState.next_action.task_ids?.join(', ') || 'unknown';
+        const why = sState.next_action.reason;
+        const what = sState.next_action.instructions
+          ? `${sState.next_action.instructions} (tasks: ${taskIds})`
+          : `Resolve: ${why} (tasks: ${taskIds})`;
+        console.log(`🙋 request_human:`);
+        console.log(`   why_blocked: ${why.slice(0, 120)}${why.length > 120 ? '...' : ''}`);
+        console.log(`   what_needs_human: ${what.slice(0, 120)}${what.length > 120 ? '...' : ''}`);
+      }
       if (latestScore) {
         console.log(`📈 latest score: ${latestScore.score} (delta ${formatScoreDelta(latestScore.delta_from_previous)})`);
         console.log('💡 inspect score: hive score');
