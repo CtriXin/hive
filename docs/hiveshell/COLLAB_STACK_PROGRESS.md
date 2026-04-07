@@ -400,3 +400,32 @@ Recommended current order:
 2. real two-session smoke for `room_kind=review`
 3. authority runtime smoke (`model` / `heuristic` / `fail_closed`)
 4. combined `shell` / `compact` / `restore` surface smoke
+
+## Validation Closeout Snapshot (2026-04-07)
+
+Closeout result:
+
+- latest `main` reached the current validation exit bar in `docs/hiveshell/REAL_SMOKE_MATRIX.md`
+- no new product code was required for this pass; the work was validation, triage, and surface honesty confirmation
+
+Freshly confirmed:
+
+- `SMK-001`: baseline green (`npm run build`, `npm run test:smoke`)
+- `SMK-002`: external `review` room passed on latest `main`
+- `SMK-003`: authority output is honest across all 3 visible paths
+  - model synthesis -> `synth=gpt-5.4`
+  - heuristic fallback -> `synth=heuristic`
+  - fail-closed block -> `synth=blocked(gpt-5.4)`
+- `SMK-004`: `shell` / `compact` / `restore` can co-render collab + advisory + authority + human bridge + mindkeeper surfaces
+- `SMK-006`: local MCP stdio validation saw `10` tools and clean `run_status` / `compact_run` output
+
+Important interpretation:
+
+- a previous external MCP harness `Transport closed` signal did not reproduce in local stdio MCP validation
+- treat that as harness transport triage, not as evidence that Hive's MCP surfaces regressed
+
+Recommended next step:
+
+- stop expanding the current validation phase
+- move to either real operator usage / real-case observation, or start the next product phase
+- only re-open `SMK-005` if room lifecycle code changes again

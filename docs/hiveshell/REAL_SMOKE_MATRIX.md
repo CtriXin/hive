@@ -1,7 +1,7 @@
 # Hive Real Smoke Matrix
 
-Date: 2026-04-05
-Status: active execution checklist
+Date: 2026-04-07
+Status: latest-main validation closeout reached
 Owner: codex-planner
 
 ## Why this file exists
@@ -32,11 +32,12 @@ Historically real-smoked already:
 - worker discuss (`room_kind=task_discuss`)
 - recovery advisory (`room_kind=recovery`)
 
-Still most worth re-running on current `main`:
+Freshly re-confirmed on current `main`:
 
 - external review two-session smoke (`room_kind=review`)
 - combined compact / restore / dashboard surface smoke with room refs + bridge refs + advisory + authority
-- authority runtime smoke for `model synthesis` vs `heuristic fallback` vs `fail_closed`
+- authority runtime honesty for `model synthesis` vs `heuristic fallback` vs `fail_closed`
+- MCP `run_status` / `compact_run` / tools registration surfaces
 
 ## Priority bands
 
@@ -50,12 +51,12 @@ Use this rule:
 
 | ID | Priority | Area | Goal | Current state | Suggested executor |
 |---|---|---|---|---|---|
-| SMK-001 | P0 | Latest-main baseline | Reconfirm build + structural smoke on current `main` | Green | any agent |
-| SMK-002 | P0 | External review room | Verify real two-session `review` room lifecycle | Not yet re-run on latest `main` | dual-terminal agent |
-| SMK-003 | P0 | Authority runtime | Verify honest authority surfaces for model / heuristic / fail_closed paths | Unit-covered, real smoke still needed | codex or strong reviewer agent |
-| SMK-004 | P0 | Surface integration | Verify `hive shell` / `hive compact` / `hive restore` and dashboard carry collab + bridge + advisory + authority together | Partially smoked before merge, should re-run once on latest `main` | any careful agent |
+| SMK-001 | P0 | Latest-main baseline | Reconfirm build + structural smoke on current `main` | PASS on latest `main` | any agent |
+| SMK-002 | P0 | External review room | Verify real two-session `review` room lifecycle | PASS on latest `main` | dual-terminal agent |
+| SMK-003 | P0 | Authority runtime | Verify honest authority surfaces for model / heuristic / fail_closed paths | PASS across all 3 subcases on latest `main` surfaces | codex or strong reviewer agent |
+| SMK-004 | P0 | Surface integration | Verify `hive shell` / `hive compact` / `hive restore` and dashboard carry collab + bridge + advisory + authority together | PASS on latest `main` | any careful agent |
 | SMK-005 | P1 | Planner / task / recovery regression | Reconfirm old room kinds after authority merge only if runtime drift is suspected | Historical smoke passed | delegated agent |
-| SMK-006 | P1 | MCP surfaces | Reconfirm `run_status` / `compact_run` / tools list after latest merge | Surface smoke passed before latest authority follow-up | delegated agent |
+| SMK-006 | P1 | MCP surfaces | Reconfirm `run_status` / `compact_run` / tools list after latest merge | PASS on latest `main` | delegated agent |
 | SMK-007 | P2 | Human bridge runtime | Real downstream `agent-im` posting if/when runtime exists | Not in scope yet | later |
 
 ## Detailed checklist
@@ -205,6 +206,7 @@ Run if you want one more host-side confidence pass:
 Purpose:
 
 - confirm that compact and status surfaces did not regress after the latest merge chain
+- note: if an external MCP harness reports `Transport closed`, distinguish harness transport issues from local Hive MCP behavior before treating it as a product regression
 
 ## Recommended execution order
 
@@ -216,6 +218,19 @@ If time is limited, do exactly this:
 4. `SMK-004` combined surface integration smoke
 
 That sequence gives the highest signal for the least effort.
+
+## Latest closeout snapshot
+
+Validated on 2026-04-07:
+
+- `SMK-001`: latest `main` baseline remained green (`build` + `test:smoke`)
+- `SMK-002`: real two-session `review` room smoke passed; open=`review-brief`, close=`external-review-summary`, basename-only `cwd_hint`, room closed cleanly
+- `SMK-003`: driver/report/shell all render authority honestly:
+  - `model synthesis` -> `synth=gpt-5.4`
+  - `heuristic fallback` -> `synth=heuristic`
+  - `fail_closed` -> `synth=blocked(gpt-5.4)` with failure reason preserved and no score side effects
+- `SMK-004`: `shell` / `compact` / `restore` carried collab + advisory + authority + bridge + mindkeeper surfaces together without truncation or misleading labels
+- `SMK-006`: local MCP stdio client saw `10` registered tools and both `run_status` / `compact_run` returned expected surfaces
 
 ## Suggested split across parallel agents
 
