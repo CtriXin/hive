@@ -66,6 +66,7 @@ function clampScore(value: number): number {
 }
 
 function summarizeSignals(score: number, signals: RunScoreSignals): string {
+  const fragmentCount = Object.values(signals.prompt_fragment_usage || {}).reduce((sum, count) => sum + (count || 0), 0);
   return [
     `score ${score}`,
     `workers ${signals.worker_success_count}/${signals.worker_count}`,
@@ -73,6 +74,7 @@ function summarizeSignals(score: number, signals: RunScoreSignals): string {
     `verification ${signals.verification_pass_count}/${signals.verification_count}`,
     `discuss ${signals.discuss_triggered_count}`,
     `changed ${signals.changed_files_count}`,
+    `fragments ${fragmentCount}`,
   ].join(' | ');
 }
 
@@ -86,6 +88,8 @@ export function buildRoundScoreSignals(
   let totalOutputTokens = 0;
   let totalDurationMs = 0;
   let discussTriggeredCount = 0;
+  const promptFragmentUsage: RunScoreSignals['prompt_fragment_usage'] = {};
+  const promptPolicyVersionUsage: RunScoreSignals['prompt_policy_version_usage'] = {};
 
   for (const worker of workerResults) {
     totalInputTokens += worker.token_usage.input;
@@ -93,6 +97,12 @@ export function buildRoundScoreSignals(
     totalDurationMs += worker.duration_ms;
     if (worker.discuss_triggered) {
       discussTriggeredCount += 1;
+    }
+    if (worker.prompt_policy_version) {
+      promptPolicyVersionUsage[worker.prompt_policy_version] = (promptPolicyVersionUsage[worker.prompt_policy_version] || 0) + 1;
+    }
+    for (const fragment of worker.prompt_fragments || []) {
+      promptFragmentUsage[fragment] = (promptFragmentUsage[fragment] || 0) + 1;
     }
     for (const file of worker.changedFiles) {
       changedFiles.add(file);
@@ -113,6 +123,8 @@ export function buildRoundScoreSignals(
     verification_fail_count: Math.max(0, verificationResults.length - verificationPassCount),
     discuss_triggered_count: discussTriggeredCount,
     changed_files_count: changedFiles.size,
+    prompt_fragment_usage: promptFragmentUsage,
+    prompt_policy_version_usage: promptPolicyVersionUsage,
     total_duration_ms: totalDurationMs,
     total_input_tokens: totalInputTokens,
     total_output_tokens: totalOutputTokens,

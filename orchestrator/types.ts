@@ -72,6 +72,19 @@ export interface SubTask {
   review_scale: 'light' | 'medium' | 'heavy' | 'heavy+' | 'auto';
 }
 
+export type PromptPolicyFragmentId =
+  | 'strict_file_boundary'
+  | 'exact_api_signatures'
+  | 'json_structure_sample'
+  | 'output_format_guard'
+  | 'acceptance_checklist';
+
+export interface PromptPolicySelection {
+  version: string;
+  fragments: PromptPolicyFragmentId[];
+  reasons: string[];
+}
+
 // ── Worker ──
 
 export interface WorkerConfig {
@@ -91,6 +104,7 @@ export interface WorkerConfig {
   round?: number;
   taskDescription?: string;
   fromBranch?: string;
+  promptPolicy?: PromptPolicySelection;
   onWorkerDiscussSnapshot?: (snapshot: CollabStatusSnapshot) => void | Promise<void>;
 }
 
@@ -107,6 +121,8 @@ export interface WorkerResult {
   token_usage: { input: number; output: number };
   discuss_triggered: boolean;
   discuss_results: DiscussResult[];
+  prompt_policy_version?: string;
+  prompt_fragments?: PromptPolicyFragmentId[];
   worker_discuss_collab?: CollabStatusSnapshot;
 }
 
@@ -400,6 +416,15 @@ export interface ReviewAuthorityMetadata {
   synthesis_attempted_by?: string;
 }
 
+export type ReviewFailureAttribution =
+  | 'none'
+  | 'prompt_fault'
+  | 'model_fault'
+  | 'task_design_fault'
+  | 'infra_fault'
+  | 'mixed'
+  | 'unknown';
+
 export interface ReviewResult {
   taskId: string;
   final_stage: ReviewStage; // Highest stage reached
@@ -411,6 +436,9 @@ export interface ReviewResult {
   token_stages?: StageTokenUsage[];
   external_review_collab?: CollabStatusSnapshot;
   authority?: ReviewAuthorityMetadata;
+  failure_attribution?: ReviewFailureAttribution;
+  prompt_fault_confidence?: number;
+  recommended_fragments?: PromptPolicyFragmentId[];
 }
 
 export interface ReviewFinding {
@@ -427,6 +455,9 @@ export interface ReviewFinding {
 export interface CrossReviewResult {
   passed: boolean;
   confidence: number; // 0-1
+  failure_attribution?: ReviewFailureAttribution;
+  prompt_fault_confidence?: number;
+  recommended_fragments?: PromptPolicyFragmentId[];
   flagged_issues: Array<{
     severity: FindingSeverity;
     file: string;
@@ -709,6 +740,8 @@ export interface RunScoreSignals {
   verification_fail_count: number;
   discuss_triggered_count: number;
   changed_files_count: number;
+  prompt_fragment_usage: Partial<Record<PromptPolicyFragmentId, number>>;
+  prompt_policy_version_usage: Record<string, number>;
   total_duration_ms: number;
   total_input_tokens: number;
   total_output_tokens: number;
