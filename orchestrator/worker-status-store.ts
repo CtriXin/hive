@@ -277,6 +277,7 @@ export function updateWorkerStatus(
     || (update.status === 'starting' || update.status === 'running' || update.status === 'discussing'
       ? timestamp
       : undefined);
+  const shouldClearError = update.success === true || update.status === 'completed';
 
   const nextEntry: WorkerStatusEntry = {
     task_id: update.task_id,
@@ -302,7 +303,11 @@ export function updateWorkerStatus(
     last_message: trimMessage(update.last_message) || previous?.last_message,
     changed_files_count: update.changed_files_count ?? previous?.changed_files_count,
     success: update.success ?? previous?.success,
-    error: update.error || previous?.error,
+    error: update.error !== undefined
+      ? update.error
+      : shouldClearError
+        ? undefined
+        : previous?.error,
     transcript_path: previous?.transcript_path || buildWorkerTranscriptPath(runId, update.task_id),
     collab: cloneCollabSnapshot(update.collab) || cloneCollabSnapshot(previous?.collab),
     discuss_conclusion: update.discuss_conclusion || previous?.discuss_conclusion,

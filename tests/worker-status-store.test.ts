@@ -219,6 +219,30 @@ describe('worker-status-store', () => {
     expect(worker?.status).toBe('completed');
   });
 
+  it('clears stale error text after a worker later completes successfully', () => {
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-c',
+      status: 'failed',
+      plan_id: 'plan-c',
+      error: 'initial failure',
+      success: false,
+    });
+
+    updateWorkerStatus(TMP_DIR, RUN_ID, {
+      task_id: 'task-c',
+      status: 'completed',
+      plan_id: 'plan-c',
+      success: true,
+      changed_files_count: 1,
+    });
+
+    const snapshot = loadWorkerStatusSnapshot(TMP_DIR, RUN_ID);
+    const worker = findWorkerStatusEntry(snapshot, 'task-c');
+    expect(worker?.status).toBe('completed');
+    expect(worker?.success).toBe(true);
+    expect(worker?.error).toBeUndefined();
+  });
+
   // Regression tests: task_summary should not be overwritten by event_message/last_message
   it('keeps existing task_summary when update only has event_message', () => {
     updateWorkerStatus(TMP_DIR, RUN_ID, {

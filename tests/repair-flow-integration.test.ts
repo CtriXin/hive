@@ -79,6 +79,7 @@ vi.mock('../orchestrator/hive-config.js', () => ({
 }));
 
 vi.mock('../orchestrator/loop-progress-store.js', () => ({
+  readLoopProgress: vi.fn(() => null),
   writeLoopProgress: vi.fn(),
 }));
 
@@ -103,6 +104,10 @@ vi.mock('../orchestrator/project-policy.js', () => ({
 
 vi.mock('../orchestrator/advisory-score.js', () => ({
   saveAdvisoryScoreSignals: vi.fn(),
+}));
+
+vi.mock('../orchestrator/score-history.js', () => ({
+  saveRoundScore: vi.fn(),
 }));
 
 vi.mock('../orchestrator/model-registry.js', () => {
@@ -143,6 +148,7 @@ import { runVerification, runVerificationSuite } from '../orchestrator/verifier.
 import { commitAndMergeWorktree } from '../orchestrator/worktree-manager.js';
 import { loadRunPlan, loadRunResult } from '../orchestrator/run-store.js';
 import { loadProjectVerificationPolicy } from '../orchestrator/project-policy.js';
+import { saveRoundScore } from '../orchestrator/score-history.js';
 import { spawnSync } from 'child_process';
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -349,6 +355,27 @@ describe('executeRun() repair flow integration', () => {
     expect(state.next_action?.kind).toBe('request_human');
   });
 
+  it('persists score history for each executed round', async () => {
+    const spec = makeSpec({ max_rounds: 1 });
+
+    mockVerificationSequence(smokePass());
+    mockReviewSequence(makeReviewResult('task-a', true));
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(state.status).toBe('done');
+    expect(saveRoundScore).toHaveBeenCalledTimes(1);
+    expect(saveRoundScore).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: spec.cwd,
+      runId: spec.id,
+      goal: spec.goal,
+      round: 1,
+      action: 'execute',
+      status: 'done',
+    }));
+  });
+
   it('review passed + smoke failed → repair → re-smoke pass → merge (critical path)', async () => {
     const spec = makeSpec({ max_rounds: 2 });
 
@@ -373,6 +400,8 @@ describe('executeRun() repair flow integration', () => {
     expect(state.next_action?.kind).toBe('finalize');
     expect(state.merged_task_ids).toContain('task-a');
     expect(state._smokeResults?.['task-a']).toBe(true);
+    expect(state.failed_task_ids).toEqual([]);
+    expect(state.review_failed_task_ids).toEqual([]);
     expect(commitAndMergeWorktree).toHaveBeenCalledTimes(1);
   });
 

@@ -43,4 +43,34 @@ describe('planner', () => {
     expect(plan.tasks[0].assigned_model).toBe('qwen3.5-plus');
     expect(plan.tasks[0].assignment_reason).toBe('manual override');
   });
+
+  it('drops read-only tasks and rewires downstream dependencies', () => {
+    const plan = buildPlanFromClaudeOutput({
+      goal: 'create one doc',
+      tasks: [
+        {
+          id: 'task-a',
+          description: 'Review existing artifacts without changing any files.',
+          complexity: 'medium',
+          category: 'docs',
+          estimated_files: ['docs/source.md'],
+          acceptance_criteria: ['No files are modified in this step.'],
+          depends_on: [],
+        },
+        {
+          id: 'task-b',
+          description: 'Create the requested doc file',
+          complexity: 'low',
+          category: 'docs',
+          estimated_files: ['docs/output.md'],
+          acceptance_criteria: ['docs/output.md exists'],
+          depends_on: ['task-a'],
+        },
+      ],
+    });
+
+    expect(plan.tasks.map((task) => task.id)).toEqual(['task-b']);
+    expect(plan.tasks[0].depends_on).toEqual([]);
+    expect(plan.execution_order).toEqual([['task-b']]);
+  });
 });

@@ -19,6 +19,8 @@ Do NOT call plan_tasks or any other tool. Just output raw JSON text directly.
 4. **Parallelism**: Tasks that work on different files can be done in parallel
 5. **Dependencies**: Only specify if absolutely necessary
 6. **verification_profile**: Optional. Only include when the repo exposes a matching rule from .hive/rules/<id>.md
+7. **Executable tasks only**: Every task must create or modify at least one project file listed in "estimated_files"
+8. **No read-only tasks**: Do NOT emit research-only, review-only, or verification-only tasks like "review artifacts" or "verify no files changed"; fold that work into an editing task's acceptance criteria instead
 
 ## Categories:
 schema, utils, api, tests, security, docs, config, algorithms, CRUD, i18n, refactor
@@ -41,6 +43,61 @@ schema, utils, api, tests, security, docs, config, algorithms, CRUD, i18n, refac
 }
 `;
 
+const READ_ONLY_TASK_PATTERNS = [
+  /without changing any existing files?/i,
+  /without changing any files?/i,
+  /without modifying any existing files?/i,
+  /without modifying any files?/i,
+  /no files are modified/i,
+  /no file is modified/i,
+  /no files modified/i,
+];
+
+function isReadOnlyTask(task: Pick<SubTask, 'description' | 'acceptance_criteria'>): boolean {
+  const text = [task.description, ...task.acceptance_criteria].join('\n');
+  return READ_ONLY_TASK_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function collapseDependencies(taskId: string, dependencyMap: Map<string, string[]>, removedTaskIds: Set<string>): string[] {
+  const resolved: string[] = [];
+  const queue = [...(dependencyMap.get(taskId) || [])];
+  const seen = new Set<string>();
+
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (!next || seen.has(next)) continue;
+    seen.add(next);
+    if (removedTaskIds.has(next)) {
+      queue.unshift(...(dependencyMap.get(next) || []));
+      continue;
+    }
+    resolved.push(next);
+  }
+
+  return resolved;
+}
+
+function sanitizeExecutableTasks(tasks: SubTask[]): SubTask[] {
+  const removedTaskIds = new Set(tasks.filter((task) => isReadOnlyTask(task)).map((task) => task.id));
+  if (removedTaskIds.size === 0) {
+    return tasks;
+  }
+
+  const dependencyMap = new Map(tasks.map((task) => [task.id, task.depends_on || []]));
+  const executableTasks = tasks
+    .filter((task) => !removedTaskIds.has(task.id))
+    .map((task) => ({
+      ...task,
+      depends_on: collapseDependencies(task.id, dependencyMap, removedTaskIds),
+    }));
+
+  if (executableTasks.length === 0) {
+    throw new Error('Planner produced only read-only tasks. Every task must create or modify files.');
+  }
+
+  return executableTasks;
+}
+
 export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): TaskPlan {
   // 验证 complexity 枚举
   const validComplexities: Complexity[] = ['low', 'medium', 'medium-high', 'high'];
@@ -48,7 +105,7 @@ export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): Task
   const rules = loadTaskVerificationRules(runtimeCwd);
   const config = loadConfig(runtimeCwd);
 
-  const tasks: SubTask[] = claudeOutput.tasks.map((task: any) => {
+  const rawTasks: SubTask[] = claudeOutput.tasks.map((task: any) => {
     if (!validComplexities.includes(task.complexity)) {
       throw new Error(`Invalid complexity: ${task.complexity}. Must be one of: ${validComplexities.join(', ')}`);
     }
@@ -82,6 +139,7 @@ export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): Task
       assignment_reason: assignmentReason,
     };
   });
+  const tasks = sanitizeExecutableTasks(rawTasks);
 
   const plan: TaskPlan = {
     id: `plan-${Date.now()}`,

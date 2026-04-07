@@ -18,6 +18,7 @@ import type {
   SubTask,
   TaskPlan,
   TaskRunRecord,
+  TaskRunStatus,
   TokenBreakdown,
   VerificationResult,
   WorkerResult,
@@ -46,6 +47,7 @@ import { commitAndMergeWorktree } from './worktree-manager.js';
 import { loadProjectVerificationPolicy, loadTaskVerificationRules, type TaskVerificationRule } from './project-policy.js';
 import { getBudgetStatus, loadConfig, recordSpending } from './hive-config.js';
 import { writeLoopProgress, readLoopProgress, type LoopPhase, type LoopProgress } from './loop-progress-store.js';
+import { saveRoundScore } from './score-history.js';
 import { loadWorkerStatusSnapshot, updateWorkerStatus } from './worker-status-store.js';
 
 // ── Options & Result ──
@@ -157,6 +159,22 @@ function setLoopPhase(
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+const FAILED_TASK_STATUSES = new Set<TaskRunStatus>([
+  'worker_failed',
+  'no_op',
+  'review_failed',
+  'verification_failed',
+  'merge_blocked',
+]);
+
+function syncFailedTaskIds(state: RunState): void {
+  state.failed_task_ids = dedupe(
+    Object.values(state.task_states)
+      .filter((task) => FAILED_TASK_STATUSES.has(task.status))
+      .map((task) => task.task_id),
+  );
 }
 
 function normalizeRepoPath(file: string): string {
@@ -1444,6 +1462,7 @@ export async function executeRun(
       // If no repairs were attempted (all exhausted), escalate
       if (repair.workerResults.length === 0) {
         currentState.status = 'partial';
+        syncFailedTaskIds(currentState);
         currentState.next_action = makeNextAction(
           'request_human',
           'All failed tasks exhausted retry budget. Human intervention needed.',
@@ -1497,14 +1516,6 @@ export async function executeRun(
         smokeResults[wr.taskId] = results.length === 0
           || allRequiredChecksPassed(results);
       }
-      const smokeFailedTaskIds = Object.entries(smokeResults)
-        .filter(([, passed]) => passed === false)
-        .map(([taskId]) => taskId);
-      currentState.failed_task_ids = dedupe([
-        ...currentState.failed_task_ids,
-        ...smokeFailedTaskIds,
-      ]);
-
       // Persist smoke results for repair path to carry forward deterministic signal
       currentState._smokeResults = smokeResults;
 
@@ -1622,20 +1633,12 @@ export async function executeRun(
     currentState.completed_task_ids = workerResults
       .filter((w) => w.success)
       .map((w) => w.taskId);
-    const workerFailedTaskIds = workerResults
-      .filter((w) => !w.success)
-      .map((w) => w.taskId);
     const reviewFailedTaskIds = reviewResults
       .filter((r) => !r.passed)
       .map((r) => r.taskId);
     const mergeBlockedTaskIds = dedupe(mergePassResult.blocked.map((item) => item.taskId));
     currentState.review_failed_task_ids = reviewFailedTaskIds;
-    currentState.failed_task_ids = dedupe([
-      ...currentState.failed_task_ids,  // already includes smokeFailedTaskIds from Step 2a
-      ...workerFailedTaskIds,
-      ...reviewFailedTaskIds,
-      ...mergeBlockedTaskIds,
-    ]);
+    syncFailedTaskIds(currentState);
 
     // ── Phase 3: Verification & Progressive Merge ──
     const reviewPassed = reviewResults.filter(r => r.passed).length;
@@ -1802,6 +1805,17 @@ export async function executeRun(
       currentState.merged_task_ids,
       mergeBlockedTaskIds,
     );
+    saveRoundScore({
+      cwd: spec.cwd,
+      runId: spec.id,
+      goal: spec.goal,
+      round: currentState.round,
+      action,
+      status: currentState.status,
+      workerResults,
+      reviewResults,
+      verificationResults: [...suiteResults, ...taskSuiteResults],
+    });
     saveRunState(spec.cwd, currentState);
 
     console.log(
