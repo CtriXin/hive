@@ -36,6 +36,10 @@ export interface WorkerStatusUpdate {
   error?: string;
   event_message?: string;
   collab?: CollabStatusSnapshot;
+  discuss_conclusion?: {
+    quality_gate: 'pass' | 'warn' | 'fail' | 'fallback';
+    conclusion: string;
+  };
 }
 
 function runsDir(cwd: string): string {
@@ -301,6 +305,7 @@ export function updateWorkerStatus(
     error: update.error || previous?.error,
     transcript_path: previous?.transcript_path || buildWorkerTranscriptPath(runId, update.task_id),
     collab: cloneCollabSnapshot(update.collab) || cloneCollabSnapshot(previous?.collab),
+    discuss_conclusion: update.discuss_conclusion || previous?.discuss_conclusion,
   };
 
   if (index >= 0) {

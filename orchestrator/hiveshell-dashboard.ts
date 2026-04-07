@@ -164,8 +164,11 @@ function renderWorkers(snapshot: WorkerStatusSnapshot | null, limit = 8): string
       ? ` changed=${worker.changed_files_count}`
       : '';
     const discussText = worker.discuss_triggered ? ' discuss=yes' : '';
+    const discussConclusionText = worker.discuss_conclusion
+      ? ` [${worker.discuss_conclusion.quality_gate}] ${truncate(worker.discuss_conclusion.conclusion, 60)}`
+      : '';
     const summary = pickWorkerSurfaceSummary(worker.task_summary, worker.last_message) || '-';
-    return `- ${worker.task_id} [${worker.status}] ${model}${changeText}${discussText} | ${truncate(summary, 90)}`;
+    return `- ${worker.task_id} [${worker.status}] ${model}${changeText}${discussText}${discussConclusionText} | ${truncate(summary, 90)}`;
   });
 }
 
@@ -302,6 +305,10 @@ function renderOverview(data: HiveShellDashboardData): string[] {
     `- score: ${score ? `${score.score} (best ${data.scoreHistory?.best_score ?? score.score})` : 'n/a'}`,
     `- workers: ${workers ? `${workers.total} total / ${workers.active} active / ${workers.completed} completed / ${workers.failed} failed` : 'n/a'}`,
   ];
+
+  if (progress?.planner_discuss_conclusion) {
+    lines.push(`- planner discuss: ${progress.planner_discuss_conclusion.quality_gate} | ${truncate(progress.planner_discuss_conclusion.overall_assessment, 90)}`);
+  }
 
   if (mergeBlockers.length > 0) {
     lines.push(`- merge blockers: ${mergeBlockers.map((item) => item.taskId).join(', ')}`);

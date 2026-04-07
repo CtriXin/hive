@@ -59,6 +59,14 @@ export interface CompactPacket {
   suggested_commands: string[];
   detail_sources: string[];
   restore_prompt: string;
+  request_human_trace?: {
+    why_blocked: string;
+    what_needs_human: string;
+  };
+  planner_discuss?: {
+    quality_gate: 'pass' | 'warn' | 'fail' | 'fallback';
+    overall_assessment: string;
+  };
 }
 
 export interface WorkspaceCompactPacket {
@@ -225,6 +233,24 @@ function buildNextActionText(data: HiveShellDashboardData): string {
   return truncate(`${action.kind}: ${action.reason}`, 140);
 }
 
+function buildRequestHumanTrace(data: HiveShellDashboardData): CompactPacket['request_human_trace'] | undefined {
+  const nextAction = data.state?.next_action;
+  if (!nextAction || nextAction.kind !== 'request_human') {
+    return undefined;
+  }
+
+  const whyBlocked = nextAction.reason || 'Unknown reason';
+  const taskIds = nextAction.task_ids?.length ? nextAction.task_ids.join(', ') : 'none';
+  const whatNeedsHuman = nextAction.instructions
+    ? `${nextAction.instructions} (tasks: ${taskIds})`
+    : `Resolve: ${whyBlocked} (tasks: ${taskIds})`;
+
+  return {
+    why_blocked: truncate(whyBlocked, 200),
+    what_needs_human: truncate(whatNeedsHuman, 200),
+  };
+}
+
 function buildMergeBlockers(data: HiveShellDashboardData): CompactPacketMergeBlocker[] {
   const taskStates = data.state?.task_states || {};
   return Object.values(taskStates)
@@ -324,6 +350,12 @@ function buildRestorePrompt(packet: CompactPacket): string {
     `Mindkeeper thread: ${packet.thread_id || '-'}`,
   ];
 
+  if (packet.planner_discuss) {
+    lines.push(
+      `Planner discuss: ${packet.planner_discuss.quality_gate} | ${truncate(packet.planner_discuss.overall_assessment, 100)}`,
+    );
+  }
+
   if (packet.conversation_context) {
     lines.push('');
     lines.push('Conversation carry-over:');
@@ -359,6 +391,14 @@ function buildRestorePrompt(packet: CompactPacket): string {
     }
   } else {
     lines.push('Merge blockers: none');
+  }
+
+  if (packet.request_human_trace) {
+    lines.push(
+      'Handoff trace (request_human):',
+      `  why_blocked: ${packet.request_human_trace.why_blocked}`,
+      `  what_needs_human: ${packet.request_human_trace.what_needs_human}`,
+    );
   }
 
   if (packet.collab) {
@@ -549,6 +589,8 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     room_kinds: [...participant.room_kinds],
     task_ids: [...participant.task_ids],
   }));
+  const requestHumanTrace = buildRequestHumanTrace(data);
+  const plannerDiscuss = data.loopProgress?.planner_discuss_conclusion;
   const packet: CompactPacket = {
     version: 1,
     run_id: data.runId,
@@ -572,6 +614,8 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     suggested_commands: [],
     detail_sources: [],
     restore_prompt: '',
+    request_human_trace: requestHumanTrace,
+    planner_discuss: plannerDiscuss,
   };
   packet.suggested_commands = buildSuggestedCommands(packet);
   packet.detail_sources = buildDetailSources(data);
@@ -644,6 +688,14 @@ export function renderCompactPacket(packet: CompactPacket): string {
     lines.push('- worker focus: none');
   }
 
+  if (packet.planner_discuss) {
+    lines.push(
+      '- planner discuss:',
+      `  - quality_gate: ${packet.planner_discuss.quality_gate}`,
+      `  - assessment: ${truncate(packet.planner_discuss.overall_assessment, 100)}`,
+    );
+  }
+
   if (packet.collab) {
     lines.push('- collab:');
     lines.push(`  - ${packet.collab.room_id} | ${packet.collab.status} | replies=${packet.collab.replies}`);
@@ -692,6 +744,14 @@ export function renderCompactPacket(packet: CompactPacket): string {
     }
   } else {
     lines.push('- merge blockers: none');
+  }
+
+  if (packet.request_human_trace) {
+    lines.push(
+      '- handoff trace (request_human):',
+      `  - why_blocked: ${packet.request_human_trace.why_blocked}`,
+      `  - what_needs_human: ${packet.request_human_trace.what_needs_human}`,
+    );
   }
 
   lines.push('- recover with:');

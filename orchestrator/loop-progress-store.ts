@@ -28,6 +28,10 @@ export interface LoopProgress {
   transcript_path?: string;
   planner_model?: string;
   collab?: CollabStatusSnapshot;
+  planner_discuss_conclusion?: {
+    quality_gate: 'pass' | 'warn' | 'fail' | 'fallback';
+    overall_assessment: string;
+  };
   updated_at: string;
 }
 
@@ -45,9 +49,12 @@ export function writeLoopProgress(
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  // Preserve existing planner_discuss_conclusion if not provided
+  const existing = readLoopProgress(cwd, runId);
   const full: LoopProgress = {
     ...progress,
     updated_at: new Date().toISOString(),
+    planner_discuss_conclusion: progress.planner_discuss_conclusion || existing?.planner_discuss_conclusion,
   };
   fs.writeFileSync(filePath, JSON.stringify(full, null, 2));
 }

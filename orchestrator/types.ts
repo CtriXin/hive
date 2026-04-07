@@ -148,6 +148,10 @@ export interface WorkerStatusEntry {
   error?: string;
   transcript_path?: string;
   collab?: CollabStatusSnapshot;
+  discuss_conclusion?: {
+    quality_gate: 'pass' | 'warn' | 'fail' | 'fallback';
+    conclusion: string;
+  };
 }
 
 export interface WorkerStatusSnapshot {

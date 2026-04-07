@@ -360,6 +360,10 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
         task_summary: summarizeMessage(discussResult.decision),
         event_message: `Discussion resolved with ${discussResult.quality_gate}`,
         last_message: summarizeMessage(discussResult.decision),
+        discuss_conclusion: {
+          quality_gate: discussResult.quality_gate,
+          conclusion: discussResult.decision,
+        },
       });
       appendTranscript('system', `Discuss result (${discussResult.quality_gate}): ${discussResult.decision}`);
 

@@ -45,7 +45,7 @@ import { allRequiredChecksPassed, runVerification, runVerificationSuite } from '
 import { commitAndMergeWorktree } from './worktree-manager.js';
 import { loadProjectVerificationPolicy, loadTaskVerificationRules, type TaskVerificationRule } from './project-policy.js';
 import { getBudgetStatus, loadConfig, recordSpending } from './hive-config.js';
-import { writeLoopProgress, type LoopPhase } from './loop-progress-store.js';
+import { writeLoopProgress, readLoopProgress, type LoopPhase, type LoopProgress } from './loop-progress-store.js';
 import { loadWorkerStatusSnapshot, updateWorkerStatus } from './worker-status-store.js';
 
 // ── Options & Result ──
@@ -85,6 +85,9 @@ interface MergePassResult {
   mergedTaskIds: string[];
   blocked: MergeBlocker[];
 }
+
+// Module-level variable to preserve planner discuss conclusion across emitProgress calls
+let plannerDiscussConclusion: LoopProgress['planner_discuss_conclusion'] | undefined;
 
 // ── Helpers ──
 
@@ -436,6 +439,25 @@ function persistPlannerAdvisoryScores(
     })),
     adoptedParticipantIds: discuss?.partner_models || [],
   });
+}
+
+function persistPlannerDiscussConclusion(
+  cwd: string,
+  runId: string,
+  discuss: PlanDiscussResult | null | undefined,
+): void {
+  if (!discuss) return;
+  // Store in module-level variable so emitProgress can preserve it
+  plannerDiscussConclusion = {
+    quality_gate: discuss.quality_gate,
+    overall_assessment: discuss.overall_assessment,
+  };
+  // Also write immediately for safety
+  const progress = readLoopProgress(cwd, runId);
+  if (progress) {
+    progress.planner_discuss_conclusion = plannerDiscussConclusion;
+    writeLoopProgress(cwd, runId, progress);
+  }
 }
 
 // ── Done Conditions ──
@@ -1090,6 +1112,7 @@ export async function executeRun(
   const progressCb = onProgress || (() => {});
   let planDiscussCollab: CollabStatusSnapshot | null | undefined;
   let activeCollabSnapshot: CollabStatusSnapshot | null | undefined;
+  let plannerDiscussConclusion: LoopProgress['planner_discuss_conclusion'] | undefined;
   const emitProgress = (phase: LoopPhase, reason: string, extra?: {
     focus_task_id?: string; focus_model?: string; focus_summary?: string;
     collab?: CollabStatusSnapshot | null;
@@ -1097,6 +1120,7 @@ export async function executeRun(
     const collab = extra?.collab === undefined
       ? activeCollabSnapshot
       : extra.collab;
+    const existing = readLoopProgress(spec.cwd, spec.id);
     writeLoopProgress(spec.cwd, spec.id, {
       run_id: spec.id, round: currentState.round, phase, reason,
       planner_model: plannerModel,
@@ -1104,6 +1128,7 @@ export async function executeRun(
       focus_task_id: extra?.focus_task_id,
       focus_model: extra?.focus_model,
       focus_summary: extra?.focus_summary,
+      planner_discuss_conclusion: existing?.planner_discuss_conclusion || plannerDiscussConclusion,
     });
     progressCb(phase, reason);
   };
@@ -1205,6 +1230,7 @@ export async function executeRun(
       activeCollabSnapshot = planning.plan_discuss_collab;
       plannerDiagnostics = planning.planner_diagnostics;
       persistPlannerAdvisoryScores(spec.cwd, spec.id, planDiscussRoom, planDiscuss);
+      persistPlannerDiscussConclusion(spec.cwd, spec.id, planDiscuss);
       emitProgress('executing', `Plan ready: ${plan.tasks.length} tasks via ${plannerModel || 'auto'}${planDiscuss ? ` | discuss: ${planDiscuss.quality_gate}` : ''}`);
       seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
@@ -1284,6 +1310,7 @@ export async function executeRun(
       activeCollabSnapshot = planning.plan_discuss_collab;
       plannerDiagnostics = planning.planner_diagnostics;
       persistPlannerAdvisoryScores(spec.cwd, spec.id, planDiscussRoom, planDiscuss);
+      persistPlannerDiscussConclusion(spec.cwd, spec.id, planDiscuss);
       seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
       saveRunPlan(spec.cwd, spec.id, plan);
