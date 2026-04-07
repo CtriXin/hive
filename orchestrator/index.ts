@@ -530,7 +530,12 @@ export async function main() {
       }
       if (progress?.planner_discuss_conclusion) {
         const pd = progress.planner_discuss_conclusion;
-        console.log(`🧠 planner discuss: ${pd.quality_gate} | ${pd.overall_assessment.slice(0, 100)}${pd.overall_assessment.length > 100 ? '...' : ''}`);
+        // Flatten multiline assessment to keep status output concise and single-line
+        const flattenedAssessment = pd.overall_assessment
+          .replace(/\r?\n/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        console.log(`🧠 planner discuss: ${pd.quality_gate} | ${flattenedAssessment.slice(0, 100)}${flattenedAssessment.length > 100 ? '...' : ''}`);
       }
       if (sState.next_action?.kind === 'request_human') {
         const taskIds = sState.next_action.task_ids?.join(', ') || 'unknown';

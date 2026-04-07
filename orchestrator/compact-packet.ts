@@ -748,9 +748,9 @@ export function renderCompactPacket(packet: CompactPacket): string {
 
   if (packet.request_human_trace) {
     lines.push(
-      '- handoff trace (request_human):',
-      `  - why_blocked: ${packet.request_human_trace.why_blocked}`,
-      `  - what_needs_human: ${packet.request_human_trace.what_needs_human}`,
+      '- 🙋 request_human:',
+      `   why_blocked: ${packet.request_human_trace.why_blocked}`,
+      `   what_needs_human: ${packet.request_human_trace.what_needs_human}`,
     );
   }
 

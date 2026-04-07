@@ -317,7 +317,7 @@ function renderOverview(data: HiveShellDashboardData): string[] {
       ? `${state.next_action.instructions} (tasks: ${taskIds})`
       : `Resolve: ${why} (tasks: ${taskIds})`;
     lines.push(
-      `- request_human:`,
+      `- 🙋 request_human:`,
       `   why_blocked: ${truncate(why, 100)}`,
       `   what_needs_human: ${truncate(what, 100)}`,
     );

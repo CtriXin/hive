@@ -726,7 +726,7 @@ describe('hiveshell-dashboard', () => {
 
     const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
 
-    expect(rendered).toContain('- request_human:');
+    expect(rendered).toContain('- 🙋 request_human:');
     expect(rendered).toContain('why_blocked:');
     expect(rendered).toContain('Retry budget exhausted');
     expect(rendered).toContain('what_needs_human:');

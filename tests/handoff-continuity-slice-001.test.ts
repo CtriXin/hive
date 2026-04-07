@@ -463,4 +463,90 @@ describe('handoff-continuity-slice-001', () => {
     expect(output).toContain('Review task-b failure');
     expect(output).toContain('escalate to stronger model');
   });
+
+  it('flattens multiline planner discuss assessment to single line in status output', async () => {
+    const { main } = await import('../orchestrator/index.js');
+    const { saveRunSpec } = await import('../orchestrator/run-store.js');
+
+    // Setup: Create run with multiline planner discuss assessment
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+
+    // Create spec (required for status command to find the run)
+    const spec: RunSpec = {
+      id: RUN_ID,
+      goal: 'Test multiline planner discuss flattening',
+      cwd: TMP_DIR,
+      mode: 'safe',
+      done_conditions: [],
+      max_rounds: 4,
+      max_worker_retries: 2,
+      max_replans: 1,
+      allow_auto_merge: false,
+      stop_on_high_risk: true,
+      created_at: new Date().toISOString(),
+    };
+    saveRunSpec(TMP_DIR, spec);
+
+    const loopProgress: LoopProgress = {
+      run_id: RUN_ID,
+      plan_id: 'plan-test',
+      round: 1,
+      phase: 'executing',
+      reason: 'Testing multiline flatten',
+      planner_discuss_conclusion: {
+        quality_gate: 'warn',
+        overall_assessment: '[qwen3-max] No assessment\n[glm-5] No assessment\n[kimi-k2.5] No assessment',
+      },
+    };
+    writeJson(path.join(runDir, 'loop-progress.json'), loopProgress);
+
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'executing',
+      round: 1,
+      completed_task_ids: [],
+      failed_task_ids: [],
+      review_failed_task_ids: [],
+      merged_task_ids: [],
+      retry_counts: {},
+      replan_count: 0,
+      task_states: {},
+      task_verification_results: {},
+      repair_history: [],
+      policy_hook_results: [],
+      verification_results: [],
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'state.json'), state);
+
+    const outputLines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      outputLines.push(args.map(String).join(' '));
+    };
+
+    const originalArgv = process.argv;
+    process.argv = ['node', 'hive', 'status', '--run-id', RUN_ID, '--cwd', TMP_DIR];
+
+    try {
+      await main();
+    } finally {
+      console.log = originalLog;
+      process.argv = originalArgv;
+    }
+
+    // Assert: Multiline assessment is flattened to single line
+    const output = outputLines.join('\n');
+    expect(output).toContain('planner discuss: warn');
+    // The key assertion: no raw newlines in the planner discuss line
+    const plannerDiscussLine = outputLines.find(line => line.includes('planner discuss:'));
+    expect(plannerDiscussLine).toBeDefined();
+    // Line should not contain unflattened newlines (i.e., each model on separate line)
+    expect(plannerDiscussLine).not.toMatch(/\[qwen3-max\].*\n.*\[glm-5\]/);
+    expect(plannerDiscussLine).not.toMatch(/\[glm-5\].*\n.*\[kimi-k2\.5\]/);
+    // All model mentions should be on the same line
+    expect(plannerDiscussLine).toContain('[qwen3-max]');
+    expect(plannerDiscussLine).toContain('[glm-5]');
+    expect(plannerDiscussLine).toContain('[kimi-k2.5]');
+  });
 });
