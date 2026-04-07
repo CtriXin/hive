@@ -701,6 +701,38 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('task-h | Merge blocked (scope_violation)');
   });
 
+  it('shows request_human why_blocked and what_needs_human in hive shell output', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'blocked',
+      round: 2,
+      completed_task_ids: ['task-a'],
+      failed_task_ids: ['task-b'],
+      retry_counts: { 'task-b': 2 },
+      replan_count: 0,
+      task_states: {},
+      verification_results: [],
+      next_action: {
+        kind: 'request_human',
+        reason: 'Retry budget exhausted for task-b after 2 attempts.',
+        task_ids: ['task-b'],
+        instructions: 'Review task-b failure and decide: escalate, simplify, or mark as known limitation.',
+      },
+      final_summary: 'Blocked: retry budget exhausted',
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'state.json'), state);
+
+    const rendered = renderHiveShellDashboard(loadHiveShellDashboard(TMP_DIR, RUN_ID)!);
+
+    expect(rendered).toContain('- request_human:');
+    expect(rendered).toContain('why_blocked:');
+    expect(rendered).toContain('Retry budget exhausted');
+    expect(rendered).toContain('what_needs_human:');
+    expect(rendered).toContain('Review task-b failure');
+  });
+
   it('renders stably when authority synthesis is blocked (no synth / no synth_strategy)', () => {
     const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
     const result: OrchestratorResult = {

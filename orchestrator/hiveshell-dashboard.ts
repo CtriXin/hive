@@ -310,6 +310,19 @@ function renderOverview(data: HiveShellDashboardData): string[] {
     lines.push(`- planner discuss: ${progress.planner_discuss_conclusion.quality_gate} | ${truncate(progress.planner_discuss_conclusion.overall_assessment, 90)}`);
   }
 
+  if (state?.next_action?.kind === 'request_human') {
+    const taskIds = state.next_action.task_ids?.join(', ') || 'unknown';
+    const why = state.next_action.reason;
+    const what = state.next_action.instructions
+      ? `${state.next_action.instructions} (tasks: ${taskIds})`
+      : `Resolve: ${why} (tasks: ${taskIds})`;
+    lines.push(
+      `- request_human:`,
+      `   why_blocked: ${truncate(why, 100)}`,
+      `   what_needs_human: ${truncate(what, 100)}`,
+    );
+  }
+
   if (mergeBlockers.length > 0) {
     lines.push(`- merge blockers: ${mergeBlockers.map((item) => item.taskId).join(', ')}`);
   }
