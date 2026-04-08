@@ -62,4 +62,23 @@ describe('worktree merge', () => {
     expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf-8')).toContain('- merged cleanly');
     expect(fs.existsSync(path.join(repo, '.ai'))).toBe(false);
   });
+
+  it('handles commit messages with shell-significant characters', () => {
+    const repo = makeRepo();
+    const worktree = createWorktree({ cwd: repo, name: 'task-c' });
+
+    fs.writeFileSync(path.join(worktree.path, 'README.md'), '# Repo\n\n- merged with quoted message\n', 'utf-8');
+
+    const result = commitAndMergeWorktree(
+      worktree.path,
+      worktree.branch,
+      'task task-c: update `README.md` > keep docs-only',
+      repo,
+    );
+
+    expect(result).toEqual({ merged: true });
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf-8')).toContain('- merged with quoted message');
+    expect(execSync('git log --format=%s -1', { cwd: repo, encoding: 'utf-8' }).trim())
+      .toBe('merge: task task-c: update `README.md` > keep docs-only');
+  });
 });

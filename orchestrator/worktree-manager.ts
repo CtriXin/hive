@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -293,28 +293,36 @@ export function commitAndMergeWorktree(
       // Stage each real change individually instead of git add -A
       for (const file of changedFiles) {
         try {
-          execSync(`git add -- "${file}"`, { cwd: worktreePath, encoding: 'utf-8' });
+          execFileSync('git', ['add', '--', file], { cwd: worktreePath, encoding: 'utf-8' });
         } catch {
           // File may have been deleted
-          execSync(`git rm --cached -- "${file}"`, { cwd: worktreePath, encoding: 'utf-8', stdio: 'pipe' }).toString();
+          execFileSync('git', ['rm', '--cached', '--', file], {
+            cwd: worktreePath,
+            encoding: 'utf-8',
+            stdio: 'pipe',
+          }).toString();
         }
       }
-      execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, {
-        cwd: worktreePath, encoding: 'utf-8',
+      execFileSync('git', ['commit', '-m', commitMsg], {
+        cwd: worktreePath,
+        encoding: 'utf-8',
       });
     }
 
     // Merge branch into main from project root
-    execSync(`git merge "${branch}" --no-ff -m "merge: ${commitMsg.replace(/"/g, '\\"')}"`, {
-      cwd: root, encoding: 'utf-8',
+    execFileSync('git', ['merge', branch, '--no-ff', '-m', `merge: ${commitMsg}`], {
+      cwd: root,
+      encoding: 'utf-8',
     });
 
     // Clean up: remove worktree and delete branch
-    execSync(`git worktree remove "${worktreePath}" --force`, {
-      cwd: root, encoding: 'utf-8',
+    execFileSync('git', ['worktree', 'remove', worktreePath, '--force'], {
+      cwd: root,
+      encoding: 'utf-8',
     });
-    execSync(`git branch -d "${branch}"`, {
-      cwd: root, encoding: 'utf-8',
+    execFileSync('git', ['branch', '-d', branch], {
+      cwd: root,
+      encoding: 'utf-8',
     });
 
     return { merged: true };
