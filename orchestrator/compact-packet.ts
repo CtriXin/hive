@@ -6,12 +6,17 @@ import { loadConversationContext } from './claude-session-context.js';
 import type { CollabCard, HumanBridgeRef, MindkeeperRoomRef } from './types.js';
 import type { AdvisoryParticipantScore } from './advisory-score.js';
 import { formatAdvisoryParticipant, topAdvisoryParticipants } from './advisory-score.js';
-import type { HiveShellDashboardData } from './hiveshell-dashboard.js';
-import { loadHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashboard.js';
+import type { HiveShellDashboardData, LatestWorkerDiscussSurface } from './hiveshell-dashboard.js';
+import { loadHiveShellDashboard, resolveHiveShellRunId, selectLatestWorkerDiscuss } from './hiveshell-dashboard.js';
 import { collectHumanBridgeRefs, formatHumanBridgeRef } from './human-bridge-linkage.js';
 import { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 import { loadLatestRunLocator, saveLatestRunLocator } from './run-locator.js';
 import { pickWorkerSurfaceSummary } from './worker-surface-summary.js';
+
+export interface CompactPacketWorkerDiscussConclusion {
+  quality_gate: 'pass' | 'warn' | 'fail' | 'fallback';
+  conclusion: string;
+}
 
 export interface CompactPacketWorker {
   task_id: string;
@@ -20,6 +25,7 @@ export interface CompactPacketWorker {
   task_summary: string;
   transcript_path?: string;
   collab?: CollabCard;
+  discuss_conclusion?: CompactPacketWorkerDiscussConclusion;
 }
 
 export interface CompactPacketAdvisory {
@@ -56,6 +62,7 @@ export interface CompactPacket {
   conversation_context?: CompactConversationContext;
   collab?: CollabCard;
   worker_focus: CompactPacketWorker[];
+  latest_worker_discuss?: LatestWorkerDiscussSurface;
   suggested_commands: string[];
   detail_sources: string[];
   restore_prompt: string;
@@ -280,6 +287,9 @@ function buildWorkerFocus(data: HiveShellDashboardData): CompactPacketWorker[] {
     ),
     transcript_path: worker.transcript_path,
     collab: worker.collab?.card,
+    discuss_conclusion: worker.discuss_conclusion
+      ? { quality_gate: worker.discuss_conclusion.quality_gate, conclusion: worker.discuss_conclusion.conclusion }
+      : undefined,
   }));
 }
 
@@ -336,6 +346,7 @@ function buildDetailSources(data: HiveShellDashboardData): string[] {
 
 function buildRestorePrompt(packet: CompactPacket): string {
   const worker = packet.worker_focus[0];
+  const latestWorkerDiscuss = packet.latest_worker_discuss;
   const lines = [
     'You are resuming a Hive run after compact/clear/new.',
     'Use this packet as the primary context. Do not ask for a broad recap first.',
@@ -382,6 +393,14 @@ function buildRestorePrompt(packet: CompactPacket): string {
     }
   } else {
     lines.push('Primary worker: none');
+  }
+
+  if (latestWorkerDiscuss) {
+    lines.push(
+      `Latest worker discuss: ${latestWorkerDiscuss.task_id} | ${latestWorkerDiscuss.quality_gate} | ${truncate(latestWorkerDiscuss.conclusion, 100)}`,
+    );
+  } else {
+    lines.push('Latest worker discuss: none');
   }
 
   if (packet.merge_blockers.length > 0) {
@@ -591,6 +610,7 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
   }));
   const requestHumanTrace = buildRequestHumanTrace(data);
   const plannerDiscuss = data.loopProgress?.planner_discuss_conclusion;
+  const latestWorkerDiscuss = selectLatestWorkerDiscuss(data.workerSnapshot);
   const packet: CompactPacket = {
     version: 1,
     run_id: data.runId,
@@ -611,6 +631,7 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     conversation_context: conversationContext || undefined,
     collab: data.loopProgress?.collab?.card,
     worker_focus: workerFocus,
+    latest_worker_discuss: latestWorkerDiscuss,
     suggested_commands: [],
     detail_sources: [],
     restore_prompt: '',
@@ -683,9 +704,22 @@ export function renderCompactPacket(packet: CompactPacket): string {
         lines.push(`    collab: ${worker.collab.room_id} | ${worker.collab.status} | replies=${worker.collab.replies}`);
         lines.push(`    collab next: ${worker.collab.next}`);
       }
+      if (worker.discuss_conclusion) {
+        lines.push(
+          `    discuss: ${worker.discuss_conclusion.quality_gate} | ${truncate(worker.discuss_conclusion.conclusion, 100)}`,
+        );
+      }
     }
   } else {
     lines.push('- worker focus: none');
+  }
+
+  if (packet.latest_worker_discuss) {
+    lines.push(
+      `- latest worker discuss: ${packet.latest_worker_discuss.task_id} | ${packet.latest_worker_discuss.quality_gate} | ${truncate(packet.latest_worker_discuss.conclusion, 100)}`,
+    );
+  } else {
+    lines.push('- latest worker discuss: none');
   }
 
   if (packet.planner_discuss) {

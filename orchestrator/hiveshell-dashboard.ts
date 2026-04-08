@@ -92,6 +92,14 @@ interface MergeBlockerSummary {
   reason: string;
 }
 
+export interface LatestWorkerDiscussSurface {
+  task_id: string;
+  agent_id?: string;
+  updated_at?: string;
+  quality_gate: 'pass' | 'warn' | 'fail' | 'fallback';
+  conclusion: string;
+}
+
 function runDir(cwd: string, runId: string): string {
   return path.join(cwd, '.ai', 'runs', runId);
 }
@@ -123,6 +131,31 @@ function truncate(text: string | undefined, limit: number): string {
   if (!normalized) return '-';
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit - 3)}...`;
+}
+
+export function selectLatestWorkerDiscuss(
+  snapshot: WorkerStatusSnapshot | null | undefined,
+): LatestWorkerDiscussSurface | undefined {
+  const workers = snapshot?.workers || [];
+  const latest = [...workers]
+    .filter((worker) => worker.discuss_conclusion)
+    .sort((a, b) => {
+      const updatedCompare = (b.updated_at || '').localeCompare(a.updated_at || '');
+      if (updatedCompare !== 0) return updatedCompare;
+      return a.task_id.localeCompare(b.task_id);
+    })[0];
+
+  if (!latest?.discuss_conclusion) {
+    return undefined;
+  }
+
+  return {
+    task_id: latest.task_id,
+    agent_id: latest.agent_id,
+    updated_at: latest.updated_at,
+    quality_gate: latest.discuss_conclusion.quality_gate,
+    conclusion: latest.discuss_conclusion.conclusion,
+  };
 }
 
 function repeat(char: string, count: number): string {
@@ -308,6 +341,11 @@ function renderOverview(data: HiveShellDashboardData): string[] {
 
   if (progress?.planner_discuss_conclusion) {
     lines.push(`- planner discuss: ${progress.planner_discuss_conclusion.quality_gate} | ${truncate(progress.planner_discuss_conclusion.overall_assessment, 90)}`);
+  }
+
+  const latestWorkerDiscuss = selectLatestWorkerDiscuss(data.workerSnapshot);
+  if (latestWorkerDiscuss) {
+    lines.push(`- worker discuss: ${latestWorkerDiscuss.task_id} | ${latestWorkerDiscuss.quality_gate} | ${truncate(latestWorkerDiscuss.conclusion, 90)}`);
   }
 
   if (state?.next_action?.kind === 'request_human') {

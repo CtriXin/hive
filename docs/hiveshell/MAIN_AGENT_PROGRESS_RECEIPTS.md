@@ -1056,3 +1056,54 @@ node dist/orchestrator/index.js compact --run-id run-1775482417055
 - Run went through 4 rounds with real review cascade
 - All 3 surfaces show consistent `request_human` handoff trace with why_blocked + what_needs_human
 - Wording is unified across all surfaces in real runtime output
+
+---
+
+## Receipt 2026-04-08 — Worker Discuss Conclusion Visibility (Slice 001)
+
+**Date:** 2026-04-08
+**Run ID:** run-1775611760454
+**Status:** done (2/6 rounds, 6/6 reviews passed)
+**Cost:** $0.7623
+
+**What changed:**
+- `orchestrator/compact-packet.ts`: Added `CompactPacketWorkerDiscussConclusion` type and `discuss_conclusion` field per worker in `CompactPacketWorker`. Builder populates it from worker status snapshot. Restore prompt and markdown render it for primary worker.
+- `orchestrator/claude-compact-hook.ts`: `buildPostCompactMessage` now surfaces primary worker's discuss conclusion in post-compact hook output.
+- `orchestrator/hiveshell-dashboard.ts`: `renderOverview` now shows latest worker discuss conclusion line (quality_gate + conclusion) when any worker has one.
+- `tests/compact-packet.test.ts`: Two new tests — one verifying discuss_conclusion surfaces in packet/restore prompt/markdown when present, one verifying it's absent when no worker has one.
+
+**Validation:**
+- `npm run build`: clean
+- 13 tests pass (including 2 new discuss_conclusion tests)
+- No changes to prompt-policy, planner-authority, or unrelated files
+
+**Can compact/restore now show worker discuss conclusion?** Yes — all three surfaces (compact packet JSON, restore prompt, markdown) include per-worker discuss_conclusion when present.
+
+---
+
+## Receipt 2026-04-08 — Latest Worker Discuss Source Unification (Follow-up)
+
+**Date:** 2026-04-08
+**Run ID:** n/a (mainline follow-up patch after review)
+**Status:** local fix validated
+
+**What changed:**
+- `orchestrator/hiveshell-dashboard.ts`: Added one shared selector for the latest worker discuss source and made overview render `task_id | quality_gate | conclusion` from that selector.
+- `orchestrator/compact-packet.ts`: Added top-level `latest_worker_discuss` to the packet and switched restore / markdown continuity surfaces to use it instead of `worker_focus[0]`.
+- `orchestrator/claude-compact-hook.ts`: Post-compact hook now reads `latest_worker_discuss`, normalizes whitespace, and truncates the rendered conclusion to one compact line.
+- `tests/compact-packet.test.ts`: Replaced the earlier happy-path assertion with a regression that proves restore / markdown still show the latest discuss when the primary worker has no discuss result.
+- `tests/claude-compact-hook.test.ts`: Added a regression test proving hook output uses the latest discuss source and stays normalized / truncated.
+
+**Why this was needed:**
+- the prior slice mixed two different selection rules:
+  - dashboard overview picked the latest discuss by worker `updated_at`
+  - compact / restore / hook read from `worker_focus[0]`
+- that could make surfaces disagree whenever the primary worker was not the worker with the latest discuss result
+
+**Validation:**
+- `npm test -- --run compact-packet claude-compact-hook handoff-continuity-slice-001 hiveshell-dashboard`: 40 passed
+- `npm run build`: pass
+
+**What is now proved:**
+- compact packet JSON, restore prompt, markdown, hook output, and dashboard overview now anchor to the same latest worker discuss source
+- hook output no longer leaks multiline / oversized discuss text into the post-compact message

@@ -107,6 +107,8 @@ function seedRun(): void {
           verification_fail_count: 0,
           discuss_triggered_count: 0,
           changed_files_count: 0,
+          prompt_fragment_usage: {},
+          prompt_policy_version_usage: {},
           total_duration_ms: 100,
           total_input_tokens: 10,
           total_output_tokens: 10,
@@ -154,6 +156,58 @@ describe('claude-compact-hook', () => {
     });
 
     expect(output).toBe('Hive restore: .ai/restore/latest-compact-restore-prompt.md');
+  });
+
+  it('uses the latest discuss source and normalizes hook output to one truncated line', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    writeJson(path.join(runDir, 'worker-status.json'), {
+      run_id: RUN_ID,
+      plan_id: 'plan-hook-1',
+      goal: 'Preserve Hive restore card',
+      round: 2,
+      updated_at: '2026-04-08T10:00:00.000Z',
+      workers: [
+        {
+          task_id: 'task-b',
+          status: 'running',
+          assigned_model: 'qwen3-max',
+          active_model: 'qwen3-max',
+          provider: 'bailian',
+          agent_id: 'task-b@run-hook-123',
+          discuss_triggered: false,
+          updated_at: '2026-04-08T10:00:00.000Z',
+          task_summary: 'Primary worker still running',
+        },
+        {
+          task_id: 'task-c',
+          status: 'completed',
+          assigned_model: 'kimi-k2.5',
+          active_model: 'kimi-k2.5',
+          provider: 'kimi',
+          agent_id: 'task-c@run-hook-123',
+          discuss_triggered: true,
+          updated_at: '2026-04-08T10:05:00.000Z',
+          task_summary: 'Discuss concluded',
+          discuss_conclusion: {
+            quality_gate: 'warn',
+            conclusion: `First line with spacing\n\nSecond line should be normalized before the hook renders ${'x'.repeat(120)}`,
+          },
+        },
+      ],
+    });
+
+    const output = renderClaudeCompactHookOutput(TMP_DIR, {
+      hook_event_name: 'PostCompact',
+      trigger: 'auto',
+      compact_summary: 'summary text',
+    });
+
+    const lines = output.split('\n');
+    expect(lines[0]).toBe('Hive restore: .ai/restore/latest-compact-restore-prompt.md');
+    expect(lines[1]).toContain('Discuss: task-c | warn | First line with spacing Second line should be normalized');
+    expect(lines[1]).not.toContain('\n');
+    expect(lines[1].endsWith('...')).toBe(true);
+    expect(lines[1].length).toBeLessThanOrEqual(160);
   });
 
   it('stores compact summary into the latest restore prompt for follow-up sessions', () => {

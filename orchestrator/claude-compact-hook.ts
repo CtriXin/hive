@@ -23,9 +23,29 @@ function buildWorkspacePreCompactInstructions(packet: WorkspaceCompactPacket): s
   return 'Keep Hive restore: .ai/restore/latest-compact-restore-prompt.md';
 }
 
-function buildPostCompactMessage(restorePromptPath: string): string {
+function normalizeHookText(text: string | undefined): string {
+  return (text || '').replace(/\s+/g, ' ').trim();
+}
+
+function truncateHookText(text: string | undefined, limit: number): string {
+  const normalized = normalizeHookText(text);
+  if (!normalized) return '-';
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit - 3)}...`;
+}
+
+function buildPostCompactMessage(
+  restorePromptPath: string,
+  latestDiscuss?: CompactPacket['latest_worker_discuss'],
+): string {
   void restorePromptPath;
-  return 'Hive restore: .ai/restore/latest-compact-restore-prompt.md';
+  const lines = ['Hive restore: .ai/restore/latest-compact-restore-prompt.md'];
+  if (latestDiscuss) {
+    lines.push(
+      `Discuss: ${latestDiscuss.task_id} | ${latestDiscuss.quality_gate} | ${truncateHookText(latestDiscuss.conclusion, 120)}`,
+    );
+  }
+  return lines.join('\n');
 }
 
 function refreshLatestRestore(cwd: string): void {
@@ -64,5 +84,6 @@ export function renderClaudeCompactHookOutput(
 
   return buildPostCompactMessage(
     compact?.restorePromptPath || workspaceCompact!.restorePromptPath,
+    compact?.packet.latest_worker_discuss,
   );
 }

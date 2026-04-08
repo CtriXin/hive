@@ -151,6 +151,8 @@ describe('compact-packet', () => {
             verification_fail_count: 0,
             discuss_triggered_count: 0,
             changed_files_count: 0,
+            prompt_fragment_usage: {},
+            prompt_policy_version_usage: {},
             total_duration_ms: 100,
             total_input_tokens: 10,
             total_output_tokens: 10,
@@ -611,5 +613,141 @@ describe('compact-packet', () => {
     expect(result!.packet.restore_prompt).toContain('Primary worker summary: Running tool: Bash');
     expect(result!.markdown).toContain('task-a | task-a@run-compact-123 | running | Running tool: Bash');
     expect(result!.markdown).not.toContain('"type":"tool_use"');
+  });
+
+  it('uses the latest worker discuss source even when the primary worker has no discuss conclusion', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const spec: RunSpec = {
+      id: RUN_ID,
+      goal: 'Worker discuss surface',
+      cwd: TMP_DIR,
+      mode: 'safe',
+      done_conditions: [],
+      max_rounds: 2,
+      max_worker_retries: 1,
+      max_replans: 1,
+      allow_auto_merge: false,
+      stop_on_high_risk: true,
+      created_at: new Date().toISOString(),
+    };
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'executing',
+      round: 1,
+      completed_task_ids: [],
+      failed_task_ids: [],
+      retry_counts: {},
+      replan_count: 0,
+      verification_results: [],
+      next_action: { kind: 'execute', reason: 'Continue', task_ids: ['task-a'] },
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'spec.json'), spec);
+    writeJson(path.join(runDir, 'state.json'), state);
+    writeJson(path.join(runDir, 'worker-status.json'), {
+      run_id: RUN_ID,
+      plan_id: 'plan-wd',
+      goal: 'Worker discuss surface',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-a',
+          status: 'running',
+          assigned_model: 'qwen3-max',
+          active_model: 'qwen3-max',
+          provider: 'bailian',
+          agent_id: 'task-a@run-compact-123',
+          discuss_triggered: false,
+          updated_at: '2026-04-08T09:00:00.000Z',
+          task_summary: 'Still running without discuss result',
+        },
+        {
+          task_id: 'task-b',
+          status: 'completed',
+          assigned_model: 'kimi-k2.5',
+          active_model: 'kimi-k2.5',
+          provider: 'kimi',
+          agent_id: 'task-b@run-compact-123',
+          discuss_triggered: true,
+          updated_at: '2026-04-08T09:05:00.000Z',
+          task_summary: 'Discuss resolved later',
+          discuss_conclusion: {
+            quality_gate: 'pass',
+            conclusion: 'Proceed with option A, add error handling for edge case',
+          },
+        },
+      ],
+    });
+
+    const result = loadCompactPacket(TMP_DIR, RUN_ID);
+    expect(result).not.toBeNull();
+    const workerA = result!.packet.worker_focus.find((w) => w.task_id === 'task-a');
+    expect(workerA?.discuss_conclusion).toBeUndefined();
+    const workerB = result!.packet.worker_focus.find((w) => w.task_id === 'task-b');
+    expect(workerB?.discuss_conclusion).toBeDefined();
+    expect(result!.packet.latest_worker_discuss?.task_id).toBe('task-b');
+    expect(result!.packet.latest_worker_discuss?.quality_gate).toBe('pass');
+    expect(result!.packet.restore_prompt).toContain('Latest worker discuss: task-b | pass | Proceed with option A, add error handling for edge case');
+    expect(result!.markdown).toContain('- latest worker discuss: task-b | pass | Proceed with option A, add error handling for edge case');
+    expect(result!.markdown).toContain('discuss: pass | Proceed with option A, add error handling for edge case');
+  });
+
+  it('omits discuss_conclusion when no worker has one', () => {
+    const runDir = path.join(TMP_DIR, '.ai', 'runs', RUN_ID);
+    const spec: RunSpec = {
+      id: RUN_ID,
+      goal: 'No discuss',
+      cwd: TMP_DIR,
+      mode: 'safe',
+      done_conditions: [],
+      max_rounds: 1,
+      max_worker_retries: 1,
+      max_replans: 1,
+      allow_auto_merge: false,
+      stop_on_high_risk: true,
+      created_at: new Date().toISOString(),
+    };
+    const state: RunState = {
+      run_id: RUN_ID,
+      status: 'executing',
+      round: 1,
+      completed_task_ids: [],
+      failed_task_ids: [],
+      retry_counts: {},
+      replan_count: 0,
+      verification_results: [],
+      next_action: { kind: 'execute', reason: 'start', task_ids: [] },
+      updated_at: new Date().toISOString(),
+    };
+    writeJson(path.join(runDir, 'spec.json'), spec);
+    writeJson(path.join(runDir, 'state.json'), state);
+    writeJson(path.join(runDir, 'worker-status.json'), {
+      run_id: RUN_ID,
+      plan_id: 'plan-nod',
+      goal: 'No discuss',
+      round: 1,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-a',
+          status: 'running',
+          assigned_model: 'qwen3-max',
+          active_model: 'qwen3-max',
+          provider: 'bailian',
+          agent_id: 'task-a@run-compact-123',
+          discuss_triggered: false,
+          updated_at: new Date().toISOString(),
+          task_summary: 'Working',
+        },
+      ],
+    });
+
+    const result = loadCompactPacket(TMP_DIR, RUN_ID);
+    expect(result).not.toBeNull();
+    expect(result!.packet.worker_focus[0].discuss_conclusion).toBeUndefined();
+    expect(result!.packet.latest_worker_discuss).toBeUndefined();
+    expect(result!.packet.restore_prompt).toContain('Latest worker discuss: none');
+    expect(result!.markdown).toContain('- latest worker discuss: none');
   });
 });
