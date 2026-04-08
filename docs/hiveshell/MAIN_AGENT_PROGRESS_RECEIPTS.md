@@ -18,6 +18,75 @@ Rules:
 
 ---
 
+## Round 011 - 2026-04-08 08:16
+
+### Goal
+- Remove the last auto-merge validation noise so the docs-only smoke path is clean enough for real operator testing.
+
+### Change Type
+- bugfix + runtime validation
+
+### Scope
+- Fix shell-unsafe commit / merge message handling in worktree auto-merge
+- Add a regression test covering shell-significant characters in merge commit messages
+- Re-run docs-only auto-merge smoke in a clean isolated worktree
+
+### Changed Files
+- `orchestrator/worktree-manager.ts`
+- `tests/worktree-merge.test.ts`
+- `docs/hiveshell/MAIN_AGENT_PROGRESS_RECEIPTS.md`
+
+### What Actually Changed
+- Replaced shell-interpolated `git commit` / `git merge` / cleanup calls inside `commitAndMergeWorktree()` with argv-based `execFileSync()` calls
+- This removes accidental shell interpretation of commit messages containing backticks or `>`
+- Added a regression test proving a commit message like ``task task-c: update `README.md` > keep docs-only`` still merges successfully
+- Re-ran the docs-only `--auto-merge` smoke in a clean isolated worktree based on commit `a60ad1d`
+
+### Root Cause
+- The earlier auto-merge smoke emitted:
+  - `/bin/sh: docs/hiveshell/REAL_VALIDATION_RUN_LOG.md: Permission denied`
+- Root cause: `commitAndMergeWorktree()` constructed shell commands with raw commit messages
+- When the task description included backticks around a file path, the shell treated them as command substitution and attempted to execute the Markdown file path
+
+### Validation Run
+- command: `npm test -- --run worktree-merge`
+- result: 3 tests passed
+- command: `npm run build`
+- result: pass
+- isolated worktree: `/tmp/hive-auto-merge-verify-177558`
+- command: `./bin/hive run --goal "Create or update docs/hiveshell/REAL_VALIDATION_RUN_LOG.md ..." --cwd /tmp/hive-auto-merge-verify-177558 --auto-merge`
+- result: `run-1775607244222` finished `done`
+- run evidence:
+  - `status`: `done`
+  - `plan tasks`: `1`
+  - `merged: task-a`
+  - no `Permission denied` noise appeared during the run
+
+### What Is Now Proved
+- The docs-only safe smoke path now works in both modes:
+  - non-merge mode on the main working tree
+  - `--auto-merge` mode in a clean isolated worktree
+- Auto-merge no longer misbehaves when task descriptions contain shell-significant characters
+- The remaining mainline path is stable enough for real operator testing
+
+### What Is Not Proved
+- This round still validates on an isolated clean worktree for `--auto-merge`, not on the user's current dirty main worktree
+- Broader non-doc auto-merge tasks may still expose unrelated edge cases later
+
+### Risks / Gaps
+- Real operator testing should still prefer either:
+  - the current main worktree without `--auto-merge`, or
+  - a clean worktree when `--auto-merge` is desired
+- The isolated validation worktree remains on disk as evidence and can be cleaned up later if no longer needed
+
+### Suggested Next Step
+- Let the human run a real task with the refreshed docs-only smoke path, or start a real product task using the same clean-worktree pattern if auto-merge is required
+
+### Commit
+- pending separate commit
+
+---
+
 ## Round 010 - 2026-04-07 23:46
 
 ### Goal
