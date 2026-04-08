@@ -1,3 +1,6 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlanDiscussResult, TaskPlan } from '../orchestrator/types.js';
 
@@ -7,12 +10,14 @@ const {
   collectPlannerDiscussRepliesMock,
   safeQueryMock,
   extractTextFromMessagesMock,
+  extractTokenUsageMock,
 } = vi.hoisted(() => ({
   discussPlanMock: vi.fn(),
   openPlannerDiscussRoomMock: vi.fn(),
   collectPlannerDiscussRepliesMock: vi.fn(),
   safeQueryMock: vi.fn(),
   extractTextFromMessagesMock: vi.fn(),
+  extractTokenUsageMock: vi.fn(() => ({ input: 0, output: 0 })),
 }));
 
 vi.mock('../orchestrator/discuss-bridge.js', () => ({
@@ -31,13 +36,29 @@ vi.mock('../orchestrator/agentbus-adapter.js', async () => {
 vi.mock('../orchestrator/sdk-query-safe.js', () => ({
   safeQuery: safeQueryMock,
   extractTextFromMessages: extractTextFromMessagesMock,
+  extractTokenUsage: extractTokenUsageMock,
 }));
 
 vi.mock('../orchestrator/provider-resolver.js', () => ({
   resolveProviderForModel: () => ({ baseUrl: 'http://mock-route', apiKey: 'mock-key' }),
 }));
 
-import { buildPlanningBrief, executePlannerDiscuss, renderPlanningBriefForSynthesis } from '../orchestrator/planner-runner.js';
+vi.mock('../orchestrator/project-paths.js', async () => {
+  const actual = await vi.importActual<typeof import('../orchestrator/project-paths.js')>('../orchestrator/project-paths.js');
+  return {
+    ...actual,
+    buildSdkEnv: vi.fn(() => ({ ANTHROPIC_MODEL: 'mock-model' })),
+  };
+});
+
+import {
+  buildPlannerContext,
+  buildPlanningBrief,
+  describePlannerJsonError,
+  executePlannerDiscuss,
+  renderPlanningBriefForSynthesis,
+  runClaudePlanner,
+} from '../orchestrator/planner-runner.js';
 import { ModelRegistry } from '../orchestrator/model-registry.js';
 
 function buildPlan(): TaskPlan {
@@ -184,6 +205,75 @@ describe('renderPlanningBriefForSynthesis', () => {
     expect(rendered).toContain('Key Questions:');
     expect(rendered).toContain('  - ');
     expect(rendered).toContain('dependency');
+  });
+});
+
+describe('buildPlannerContext', () => {
+  it('excludes hidden runtime artifacts such as .ai from auto-collected context', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-planner-context-'));
+
+    fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(tempDir, '.ai', 'runs'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, 'src', 'visible.ts'), 'export interface VisibleType { ok: true }\n');
+    fs.writeFileSync(path.join(tempDir, '.ai', 'runs', 'state.json'), '{"run":"hidden"}\n');
+    fs.writeFileSync(path.join(tempDir, '.ai', 'hidden.ts'), 'export type HiddenType = string\n');
+
+    try {
+      const context = buildPlannerContext(tempDir);
+      expect(context).toContain('src/visible.ts');
+      expect(context).toContain('VisibleType');
+      expect(context).not.toContain('.ai/runs/state.json');
+      expect(context).not.toContain('HiddenType');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('planner diagnostics', () => {
+  it('describes tool-use drift instead of generic invalid JSON', () => {
+    const message = describePlannerJsonError('', {
+      modelId: 'kimi-for-coding',
+      agentModel: 'kimi-for-coding',
+      resolvedBaseUrl: 'http://mock-route',
+      providerResolveFailed: null,
+      maxTurns: 2,
+      messageCount: 3,
+      rawLength: 0,
+      messages: [],
+      exitError: 'error_max_turns',
+      toolUseDetected: true,
+      toolUseNames: ['Read'],
+    });
+
+    expect(message).toContain('attempted tool use');
+    expect(message).toContain('Read');
+  });
+
+  it('fails fast when a non-Claude planner starts using tools', async () => {
+    safeQueryMock.mockResolvedValue({
+      messages: [
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'tool_use', name: 'Read', input: { file_path: 'README.md' } },
+            ],
+          },
+        },
+        {
+          type: 'result',
+          subtype: 'error_max_turns',
+          usage: { input_tokens: 10, output_tokens: 2 },
+        },
+      ],
+      exitError: new Error('error_max_turns'),
+    });
+    extractTextFromMessagesMock.mockReturnValue('');
+
+    await expect(runClaudePlanner('Return JSON only', '/tmp/hive-planner', 'kimi-for-coding')).rejects.toThrow(
+      'Planner attempted tool use (Read) instead of returning JSON',
+    );
   });
 });
 

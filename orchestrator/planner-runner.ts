@@ -27,12 +27,38 @@ import {
 
 const MAX_COLLAB_EVENTS = 8;
 
+const PLANNER_CONTEXT_EXCLUDED_GLOBS = [
+  'node_modules/**',
+  'dist/**',
+  '.git/**',
+  '.ai/**',
+  '.sessions/**',
+] as const;
+
+export function buildPlannerFileTreeCommand(maxLines = 80): string {
+  const includeGlobs = ['*.ts', '*.js', '*.json']
+    .map((glob) => `-g '${glob}'`)
+    .join(' ');
+  const excludeGlobs = PLANNER_CONTEXT_EXCLUDED_GLOBS
+    .map((glob) => `-g '!${glob}' -g '!**/${glob}'`)
+    .join(' ');
+  return `rg --files ${includeGlobs} ${excludeGlobs} | sort | head -${maxLines}`;
+}
+
+export function buildPlannerTypeSearchCommand(maxLines = 50): string {
+  const excludeGlobs = PLANNER_CONTEXT_EXCLUDED_GLOBS
+    .map((glob) => `-g '!${glob}' -g '!**/${glob}'`)
+    .join(' ');
+  return `rg -n "^export (interface|type|enum)" -g '*.ts' ${excludeGlobs} . | head -${maxLines}`;
+}
+
 function collectFileTree(cwd: string, maxLines = 80): string {
   try {
-    const raw = execSync(
-      `find . -type f \\( -name "*.ts" -o -name "*.js" -o -name "*.json" \\) | grep -v node_modules | grep -v dist | grep -v .git | sort | head -${maxLines}`,
-      { cwd, encoding: 'utf-8', timeout: 5000 },
-    );
+    const raw = execSync(buildPlannerFileTreeCommand(maxLines), {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
     return raw.trim();
   } catch {
     return '(file tree unavailable)';
@@ -41,10 +67,11 @@ function collectFileTree(cwd: string, maxLines = 80): string {
 
 function collectKeyTypes(cwd: string, maxLines = 50): string {
   try {
-    const raw = execSync(
-      `grep -rn "^export \\(interface\\|type\\|enum\\)" --include="*.ts" . | grep -v node_modules | grep -v dist | head -${maxLines}`,
-      { cwd, encoding: 'utf-8', timeout: 5000 },
-    );
+    const raw = execSync(buildPlannerTypeSearchCommand(maxLines), {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
     return raw.trim();
   } catch {
     return '(type signatures unavailable)';
@@ -109,16 +136,96 @@ export function parseJsonBlock<T>(raw: string): T {
 export interface PlannerRunResult {
   text: string;
   tokenUsage: { input: number; output: number };
-  diagnostics: {
-    modelId: string;
-    agentModel: string;
-    resolvedBaseUrl: string | null;
-    providerResolveFailed: string | null;
-    maxTurns: number;
-    messageCount: number;
-    rawLength: number;
-    messages: string[];
-  };
+  diagnostics: PlannerRunDiagnostics;
+}
+
+export interface PlannerRunDiagnostics extends Record<string, unknown> {
+  modelId: string;
+  agentModel: string;
+  resolvedBaseUrl: string | null;
+  providerResolveFailed: string | null;
+  maxTurns: number;
+  messageCount: number;
+  rawLength: number;
+  messages: string[];
+  exitError: string | null;
+  toolUseDetected: boolean;
+  toolUseNames: string[];
+}
+
+class PlannerRunError extends Error {
+  rawText: string;
+  diagnostics: PlannerRunDiagnostics | null;
+
+  constructor(message: string, rawText: string, diagnostics: PlannerRunDiagnostics | null) {
+    super(message);
+    this.name = 'PlannerRunError';
+    this.rawText = rawText;
+    this.diagnostics = diagnostics;
+  }
+}
+
+function isPlannerRunError(error: unknown): error is PlannerRunError {
+  return error instanceof PlannerRunError;
+}
+
+function collectPlannerToolUseNames(messages: any[]): string[] {
+  const names = new Set<string>();
+
+  for (const message of messages) {
+    if (message?.type !== 'assistant') {
+      continue;
+    }
+    const content = message.message?.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block?.type === 'tool_use' && typeof block.name === 'string' && block.name.trim()) {
+          names.add(block.name.trim());
+        }
+      }
+      continue;
+    }
+    if (typeof content === 'string') {
+      const matches = content.matchAll(/"type"\s*:\s*"tool_use"[\s\S]*?"name"\s*:\s*"([^"]+)"/g);
+      for (const match of matches) {
+        if (match[1]) {
+          names.add(match[1].trim());
+        }
+      }
+    }
+  }
+
+  return [...names];
+}
+
+export function describePlannerJsonError(
+  raw: string,
+  diagnostics: PlannerRunDiagnostics | null = null,
+): string {
+  const toolSuffix = diagnostics?.toolUseNames?.length
+    ? ` (${diagnostics.toolUseNames.join(', ')})`
+    : '';
+  if (diagnostics?.toolUseDetected) {
+    return `Planner attempted tool use${toolSuffix} instead of returning JSON`;
+  }
+  if (!raw.trim() && diagnostics?.exitError) {
+    return `Planner returned no JSON output before transport error: ${diagnostics.exitError}`;
+  }
+  if (!raw.trim()) {
+    return 'Planner returned empty output instead of valid JSON';
+  }
+  return 'Planner did not return valid JSON';
+}
+
+export function parsePlannerJsonBlock<T>(
+  raw: string,
+  diagnostics: PlannerRunDiagnostics | null = null,
+): T {
+  try {
+    return parseJsonBlock<T>(raw);
+  } catch {
+    throw new Error(describePlannerJsonError(raw, diagnostics));
+  }
 }
 
 export interface PlanGoalResult {
@@ -399,6 +506,7 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
 
   const text = extractTextFromMessages(result.messages);
   const tokenUsage = extractTokenUsage(result.messages);
+  const toolUseNames = collectPlannerToolUseNames(result.messages);
   const messages = result.messages.map((m: any, i: number) => {
     const type = m.type || '?';
     let preview = '';
@@ -415,7 +523,7 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
     return `[${i}] ${type}: ${preview || '(no text)'}`;
   });
 
-  return {
+  const plannerResult: PlannerRunResult = {
     text,
     tokenUsage,
     diagnostics: {
@@ -427,8 +535,23 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
       messageCount: result.messages.length,
       rawLength: text.length,
       messages,
+      exitError: result.exitError?.message || null,
+      toolUseDetected: toolUseNames.length > 0,
+      toolUseNames,
     },
   };
+
+  if (!agentModel.startsWith('claude-')) {
+    if (plannerResult.diagnostics.toolUseDetected || (!text.trim() && plannerResult.diagnostics.exitError)) {
+      throw new PlannerRunError(
+        describePlannerJsonError(text, plannerResult.diagnostics),
+        text,
+        plannerResult.diagnostics,
+      );
+    }
+  }
+
+  return plannerResult;
 }
 
 // ── AgentBus reply synthesis ──
@@ -775,7 +898,10 @@ export async function planGoal(
         input_tokens: plannerResult.tokenUsage.input,
         output_tokens: plannerResult.tokenUsage.output,
       };
-      const parsed = parseJsonBlock<{ goal: string; tasks: unknown[] }>(plannerRawOutput);
+      const parsed = parsePlannerJsonBlock<{ goal: string; tasks: unknown[] }>(
+        plannerRawOutput,
+        plannerDiagnostics,
+      );
       plan = buildPlanFromClaudeOutput(parsed, cwd);
       plan.cwd = cwd;
       for (const task of plan.tasks) {
@@ -785,6 +911,10 @@ export async function planGoal(
       plannerError = null;
       break;
     } catch (err: any) {
+      if (isPlannerRunError(err)) {
+        plannerRawOutput = err.rawText;
+        plannerDiagnostics = err.diagnostics;
+      }
       plannerError = `${tryModel}: ${err.message}`;
       console.log(`  ⚠️ Planner ${tryModel} failed: ${err.message.slice(0, 100)}`);
     }
