@@ -52,6 +52,7 @@ vi.mock('../orchestrator/project-paths.js', async () => {
 });
 
 import {
+  PLANNER_CONTEXT_TOTAL_CHAR_LIMIT,
   buildPlannerContext,
   buildPlanningBrief,
   describePlannerJsonError,
@@ -228,6 +229,31 @@ describe('buildPlannerContext', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('caps planner context size for large repos', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-planner-context-large-'));
+
+    try {
+      for (let i = 0; i < 180; i += 1) {
+        const nested = path.join(tempDir, 'src', `deep-${String(i).padStart(3, '0')}`, 'module');
+        fs.mkdirSync(nested, { recursive: true });
+        fs.writeFileSync(
+          path.join(nested, `very-long-file-name-${String(i).padStart(3, '0')}.ts`),
+          `export interface VeryLongTypeName${i} { value: '${'x'.repeat(40)}' }\n`,
+        );
+      }
+
+      const context = buildPlannerContext(tempDir);
+      expect(context.length).toBeLessThanOrEqual(PLANNER_CONTEXT_TOTAL_CHAR_LIMIT);
+      expect(
+        context.includes('planner context truncated')
+        || context.includes('file tree truncated')
+        || context.includes('exported types truncated'),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('planner diagnostics', () => {
@@ -274,6 +300,19 @@ describe('planner diagnostics', () => {
     await expect(runClaudePlanner('Return JSON only', '/tmp/hive-planner', 'kimi-for-coding')).rejects.toThrow(
       'Planner attempted tool use (Read) instead of returning JSON',
     );
+    expect(safeQueryMock.mock.calls[0]?.[0]?.timeoutMs).toBe(45000);
+  });
+
+  it('fails with a descriptive error when planner transport returns malformed result', async () => {
+    safeQueryMock.mockResolvedValue({
+      exitError: new Error('transport broke'),
+    });
+    extractTextFromMessagesMock.mockReturnValue('');
+
+    await expect(runClaudePlanner('Return JSON only', '/tmp/hive-planner', 'gpt-5.4')).rejects.toThrow(
+      'Planner transport returned malformed result: messages array missing',
+    );
+    expect(safeQueryMock.mock.calls[0]?.[0]?.timeoutMs).toBe(45000);
   });
 });
 
@@ -379,6 +418,7 @@ describe('executePlannerDiscuss', () => {
     ]);
     expect(result.plan_discuss).not.toBeNull();
     expect(safeQueryMock).toHaveBeenCalledTimes(1);
+    expect(safeQueryMock.mock.calls[0]?.[0]?.timeoutMs).toBe(20000);
   });
 
   it('uses rendered brief (not JSON) for model synthesis', async () => {

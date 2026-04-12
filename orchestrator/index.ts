@@ -499,6 +499,37 @@ export async function main() {
       if (progress) {
         console.log(`🧭 phase: ${progress.phase} — ${progress.reason}`);
       }
+      // Phase 8C / 8D: Mode display with effective mode resolver
+      const { resolveEffectiveMode } = await import('./mode-policy.js');
+      const effectiveMode = resolveEffectiveMode(sSpec ?? { execution_mode: undefined }, sState ?? { runtime_mode_override: undefined });
+      const escCount = sState.mode_escalation_history?.length ?? 0;
+      const overrideTag = effectiveMode.overridden ? ` (steered from ${sSpec?.execution_mode ?? 'auto'})` : '';
+      console.log(`\u26A1 mode: ${effectiveMode.mode}${overrideTag}${escCount > 0 ? ` [escalated ${escCount}x]` : ''}`);
+      const escHistory = sState.mode_escalation_history;
+      if (escHistory && escHistory.length > 0) {
+        for (const e of escHistory) {
+          console.log(`   ${e.from} → ${e.to} (round ${e.round})`);
+        }
+      }
+      // Phase 8C: Provider health summary
+      const { ProviderHealthStore } = await import('./provider-resilience.js');
+      const fsMod = await import('fs');
+      const providerHealthDir = path.join(cwd, '.ai', 'runs', runId);
+      const healthPath = path.join(providerHealthDir, 'provider-health.json');
+      if (fsMod.existsSync(healthPath)) {
+        const healthStore = new ProviderHealthStore(providerHealthDir);
+        const states = healthStore.getAllStates();
+        const summary: Record<string, number> = {};
+        for (const [, state] of states) {
+          summary[state.breaker] = (summary[state.breaker] || 0) + 1;
+        }
+        const parts = [`${states.size} total`];
+        if (summary.healthy) parts.push(`${summary.healthy} healthy`);
+        if (summary.degraded) parts.push(`${summary.degraded} degraded`);
+        if (summary.open) parts.push(`${summary.open} open`);
+        if (summary.probing) parts.push(`${summary.probing} probing`);
+        console.log(`\uD83C\uDFE5 provider: ${parts.join(' | ')}`);
+      }
       console.log(`📋 plan tasks: ${plan?.tasks.length || 0}`);
       console.log(`🧪 verification checks: ${sState.verification_results.length}`);
       console.log(`🧾 summary: ${sState.final_summary || 'n/a'}`);
@@ -547,6 +578,135 @@ export async function main() {
         console.log(`   why_blocked: ${why.slice(0, 120)}${why.length > 120 ? '...' : ''}`);
         console.log(`   what_needs_human: ${what.slice(0, 120)}${what.length > 120 ? '...' : ''}`);
       }
+      // Phase 8B: Steering visibility
+      if (sState.steering) {
+        const s = sState.steering;
+        if (s.paused) console.log(`⏸️  steering: PAUSED`);
+        if (s.last_applied) {
+          console.log(`🎯 last steering: ${s.last_applied.action_type} → ${s.last_applied.outcome.slice(0, 100)}`);
+        }
+        if (s.last_rejected) {
+          console.log(`⛔ last rejected: ${s.last_rejected.action_type} — ${s.last_rejected.reason.slice(0, 100)}`);
+        }
+        if (s.pending_actions.length > 0) {
+          console.log(`📬 pending steering: ${s.pending_actions.length} action(s)`);
+        }
+      }
+      // Phase 9A: Operator summary and next action hints
+      const { loadProviderHealth } = await import('./watch-loader.js');
+      const providerHealth = loadProviderHealth(cwd, runId);
+      const { generateRunSummary } = await import('./operator-summary.js');
+      const summary = generateRunSummary({
+        runId,
+        spec: sSpec,
+        state: sState,
+        progress,
+        plan,
+        reviewResults: result?.review_results,
+        providerHealth,
+      });
+      const { generateOperatorHints } = await import('./operator-hints.js');
+      const hints = generateOperatorHints({ spec: sSpec, state: sState, providerHealth });
+
+      console.log('');
+      console.log(`== Operator Summary ==`);
+      console.log(`📊 overall: ${summary.overall_state} | round ${summary.round}${summary.max_rounds ? `/${summary.max_rounds}` : ''}`);
+
+      if (summary.top_successes.length > 0) {
+        console.log(`✅ ${summary.top_successes.length} task(s) completed:`);
+        for (const s of summary.top_successes) {
+          console.log(`   - ${s.task_id}${s.merged ? ' (merged)' : ''}`);
+        }
+      }
+
+      if (summary.top_failures.length > 0) {
+        console.log(`❌ ${summary.top_failures.length} task(s) failed:`);
+        for (const f of summary.top_failures) {
+          console.log(`   - ${f.task_id} (${f.failure_class}, ${f.retry_count} retries)`);
+        }
+      }
+
+      if (summary.primary_blocker) {
+        console.log(`⚠️  blocker: ${summary.primary_blocker.description}`);
+      }
+      if (summary.provider_summary) {
+        console.log(`🔌 provider: ${summary.provider_summary}`);
+      }
+      if (summary.latest_route) {
+        console.log(`🧭 latest route: ${summary.latest_route}`);
+      }
+      if (summary.latest_resilience) {
+        console.log(`🛡️  latest resilience: ${summary.latest_resilience}`);
+      }
+
+      if (hints.hints.length > 0) {
+        console.log('');
+        console.log(`== Next Actions ==`);
+        for (const hint of hints.hints.slice(0, 3)) {
+          const icon = hint.priority === 'high' ? '‼️' : hint.priority === 'medium' ? '▶️' : '💡';
+          console.log(`${icon} [${hint.priority}] ${hint.description}`);
+          console.log(`   action: ${hint.action}`);
+          if (hint.rationale && hint.rationale !== hint.description) {
+            console.log(`   why: ${hint.rationale.slice(0, 80)}${hint.rationale.length > 80 ? '...' : ''}`);
+          }
+        }
+      }
+
+      // Phase 10A: Collaboration summary — handoff-ready surface
+      const { loadSteeringStore } = await import('./steering-store.js');
+      const steeringStore = loadSteeringStore(cwd, runId);
+      const steeringActions = steeringStore?.actions || [];
+      const { generateCollaborationSummary, formatCollabSummary } = await import('./collab-summary.js');
+      const collabSummary = generateCollaborationSummary({
+        runId,
+        state: sState,
+        spec: sSpec,
+        steeringActions,
+        reviewResults: result?.review_results,
+        providerHealth,
+      });
+      if (collabSummary.active_cues > 0 || collabSummary.blocker_categories.length > 0) {
+        console.log('');
+        console.log('== Collaboration ==');
+        const cueDist = collabSummary.cue_distribution;
+        const cueParts: string[] = [];
+        if (cueDist.needs_human > 0) cueParts.push(`human:${cueDist.needs_human}`);
+        if (cueDist.blocked > 0) cueParts.push(`blocked:${cueDist.blocked}`);
+        if (cueDist.needs_review > 0) cueParts.push(`review:${cueDist.needs_review}`);
+        if (cueDist.watch > 0) cueParts.push(`watch:${cueDist.watch}`);
+        if (cueDist.ready > 0) cueParts.push(`ready:${cueDist.ready}`);
+        console.log(`   cues: ${cueParts.join(' | ')}`);
+        for (const item of collabSummary.top_attention_items.slice(0, 3)) {
+          console.log(`   - ${item.task_id}: ${item.reason}`);
+        }
+        if (collabSummary.blocker_categories.length > 0) {
+          for (const b of collabSummary.blocker_categories) {
+            console.log(`   blocker: ${b.category} → ${b.tasks.join(', ')}`);
+          }
+        }
+        console.log(`   handoff: ${collabSummary.handoff_ready ? 'ready' : 'not_ready'}`);
+      }
+
+      // Phase 9B: Suggested Commands — lifecycle-aware quick commands
+      const { suggestNextCommands } = await import('./operator-commands.js');
+      const topHint = hints.hints[0];
+      const cmdContext = {
+        runId,
+        topHintAction: topHint?.action,
+        taskId: topHint?.task_id,
+        provider: topHint?.provider,
+        hasSteering: ((sState.steering?.pending_actions || []).length) > 0,
+        hasFailures: summary.top_failures.length > 0,
+      };
+      const suggestedCmds = suggestNextCommands(summary.overall_state, cmdContext);
+      if (suggestedCmds.length > 0) {
+        console.log('');
+        console.log(`== Quick Commands ==`);
+        for (const cmd of suggestedCmds.slice(0, 4)) {
+          console.log(`  ${cmd.command}  # ${cmd.label}`);
+        }
+      }
+
       if (latestScore) {
         console.log(`📈 latest score: ${latestScore.score} (delta ${formatScoreDelta(latestScore.delta_from_previous)})`);
         console.log('💡 inspect score: hive score');
@@ -565,6 +725,60 @@ export async function main() {
     for (const run of runs) {
       console.log(`${run.id}  ${run.state?.status || 'unknown'}  ${run.spec?.goal || '(no goal)'}`);
     }
+    return;
+  }
+
+  if (command === 'steer') {
+    const { submitSteeringAction, getSteeringActions } = await import('./steering-store.js');
+    const { loadRunSpec, loadRunState, listRuns } = await import('./run-store.js');
+    const cwd = getFlag('--cwd') || process.cwd();
+    const runId = getFlag('--run-id') || firstPositionalAfterCommand || listRuns(cwd)[0]?.id;
+    const actionType = getFlag('--action');
+
+    if (!runId) {
+      console.error('❌ steer requires --run-id or a recent run must exist');
+      process.exit(1);
+    }
+    if (!actionType) {
+      // List steering actions for this run
+      const actions = getSteeringActions(cwd, runId);
+      if (actions.length === 0) {
+        console.log(`🟡 No steering actions for ${runId}`);
+      } else {
+        console.log(`🟡 Steering actions for ${runId}:`);
+        for (const a of actions) {
+          const icon = a.status === 'applied' ? '✅' : a.status === 'rejected' ? '⛔' : a.status === 'suppressed' ? '🔇' : '⏳';
+          console.log(`  ${icon} ${a.action_id}: ${a.action_type} [${a.status}]${a.task_id ? ` → ${a.task_id}` : ''}${a.outcome ? ` — ${a.outcome.slice(0, 80)}` : ''}`);
+        }
+      }
+      return;
+    }
+
+    const spec = loadRunSpec(cwd, runId);
+    const state = loadRunState(cwd, runId);
+    if (!spec || !state) {
+      console.error(`❌ run not found: ${runId}`);
+      process.exit(1);
+    }
+
+    const taskId = getFlag('--task-id');
+    const targetMode = getFlag('--target-mode');
+    const reason = getFlag('--reason');
+    const noteArg = getFlag('--note');
+
+    const action = submitSteeringAction(cwd, runId, {
+      run_id: runId,
+      task_id: taskId,
+      action_type: actionType as any,
+      scope: taskId ? 'task' : 'run',
+      payload: { target_mode: targetMode as import('./types.js').ExecutionMode | undefined, note: noteArg, reason },
+      requested_by: 'cli',
+    });
+
+    console.log(`✅ Steering submitted: ${action.action_id}`);
+    console.log(`   action: ${action.action_type}`);
+    console.log(`   scope: ${action.scope}${taskId ? ` → ${taskId}` : ''}`);
+    console.log(`   status: ${action.status}`);
     return;
   }
 
@@ -641,11 +855,38 @@ export async function main() {
   if (command === 'watch') {
     const cwd = getFlag('--cwd') || process.cwd();
     const runId = getFlag('--run-id') || firstPositionalAfterCommand;
-    const intervalMs = Number(getFlag('--interval-ms') || 1500);
+    const intervalMs = Number(getFlag('--interval-ms') || 2000);
+    const once = args.includes('--once');
+
+    const { loadWatchData } = await import('./watch-loader.js');
+    const { formatWatch } = await import('./watch-format.js');
+    const { listRuns } = await import('./run-store.js');
+
+    const resolvedRunId = runId || await resolveWorkerRunId(cwd) || listRuns(cwd)[0]?.id;
+    if (!resolvedRunId) {
+      console.error('❌ no run found for watch');
+      process.exit(1);
+    }
+
+    const renderOnce = async () => {
+      const data = loadWatchData(cwd, resolvedRunId);
+      if (!data) {
+        console.error(`❌ no watch data for run: ${resolvedRunId}`);
+        return false;
+      }
+      console.log(formatWatch(data));
+      return true;
+    };
+
+    if (once) {
+      const ok = await renderOnce();
+      if (!ok) process.exit(1);
+      return;
+    }
 
     while (true) {
       process.stdout.write('\x1Bc');
-      const ok = await printHiveShell(cwd, runId);
+      const ok = await renderOnce();
       if (!ok) process.exit(1);
       await sleep(intervalMs);
     }
@@ -677,9 +918,10 @@ export async function main() {
     console.log('  hive --goal "构建认证系统" --cwd /path --translate');
     console.log('  hive --plan plan.json --cwd /path');
     console.log('  hive status');
+    console.log('  hive steer');
     console.log('  hive workers');
     console.log('  hive score');
-    console.log('  hive watch');
+    console.log('  hive watch [--run-id <id>] [--once] [--interval-ms <ms>]');
     console.log('  hive compact');
     console.log('  hive restore');
     console.log('  hive runs');

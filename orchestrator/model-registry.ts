@@ -206,7 +206,7 @@ export class ModelRegistry {
   resolveProviderShorthand(shorthand: string, role?: string): string | undefined {
     const lower = shorthand.toLowerCase();
     const fingerprint: TaskFingerprint = {
-      role: (role as TaskFingerprint['role']) || 'general',
+      role: (role as TaskFingerprint['role']) || 'implementation',
       domains: ['typescript'],
       complexity: 'medium',
       needs_strict_boundary: false,

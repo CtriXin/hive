@@ -85,7 +85,7 @@ export function createDefaultCaller(): ModelCaller {
         PATH: process.env['PATH'] || '/usr/local/bin:/usr/bin:/bin',
         HOME: process.env['HOME'] || '',
       };
-      if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
+      if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl.replace(/\/v1\/?$/, '');
       if (apiKey) env.ANTHROPIC_AUTH_TOKEN = apiKey;
 
       const messages = query({

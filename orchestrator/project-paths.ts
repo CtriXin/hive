@@ -14,6 +14,15 @@ const __dirname = path.dirname(__filename);
  * Ensures the current process's node binary dir is at the front of PATH
  * to avoid .nvmrc / .node-version in child cwd pulling in an older node.
  */
+/**
+ * Normalize a base URL to strip any trailing `/v1` path segment
+ * that would be duplicated by the Anthropic SDK appending `/v1/messages`.
+ * Handles: `/v1`, `/v1/`, `/openapi/v1`, `/openai/v1/`, etc.
+ */
+function stripV1Suffix(url: string): string {
+  return url.replace(/\/v1\/?$/, '');
+}
+
 export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): Record<string, string> {
   const env: Record<string, string> = {};
   const canonicalModel = normalizeModelId(model);
@@ -59,15 +68,15 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${getModelProxyPort()}`;
     env.ANTHROPIC_AUTH_TOKEN = 'proxy-managed';
   } else if (needsMmsGateway && mmsBaseUrl) {
-    env.ANTHROPIC_BASE_URL = mmsBaseUrl;
+    env.ANTHROPIC_BASE_URL = stripV1Suffix(mmsBaseUrl);
     env.ANTHROPIC_AUTH_TOKEN = mmsToken || inheritedToken;
   } else if (isNonClaude && mmsBaseUrl) {
     // Domestic models without model proxy: route through MMS gateway
     // which handles protocol adaptation (bridge mode for kimi, etc.)
-    env.ANTHROPIC_BASE_URL = mmsBaseUrl;
+    env.ANTHROPIC_BASE_URL = stripV1Suffix(mmsBaseUrl);
     env.ANTHROPIC_AUTH_TOKEN = mmsToken || inheritedToken;
   } else if (baseUrl) {
-    env.ANTHROPIC_BASE_URL = baseUrl.replace(/\/v1\/?$/, '');
+    env.ANTHROPIC_BASE_URL = stripV1Suffix(baseUrl);
     env.ANTHROPIC_AUTH_TOKEN = apiKey || inheritedToken;
   } else {
     if (inheritedToken) {

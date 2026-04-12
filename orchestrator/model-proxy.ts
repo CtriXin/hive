@@ -26,6 +26,24 @@ export function isModelProxyRunning(): boolean {
   return proxyServer !== null && proxyPort > 0;
 }
 
+export function resolveProxyTargetUrl(baseUrl: string, requestPath: string): string {
+  const normalizedBase = baseUrl.replace(/\/$/, '');
+  const normalizedPath = requestPath.startsWith('/') ? requestPath : `/${requestPath}`;
+  const url = new URL(normalizedBase);
+  const basePath = url.pathname.replace(/\/$/, '');
+
+  let finalPath = normalizedPath;
+  if (basePath && basePath !== '/') {
+    finalPath = basePath.endsWith('/v1') && normalizedPath.startsWith('/v1/')
+      ? `${basePath}${normalizedPath.slice(3)}`
+      : `${basePath}${normalizedPath}`;
+  }
+
+  url.pathname = finalPath;
+  url.search = '';
+  return url.toString().replace(/\/$/, finalPath === '/' ? '/' : '');
+}
+
 function buildCaseMap(): void {
   caseMap.clear();
   const table = loadMmsRoutes();
@@ -213,8 +231,10 @@ export async function ensureModelProxy(): Promise<number> {
         parsed.model = mapping.correctName;
         const isStreaming = !!parsed.stream;
 
-        const targetUrl = mapping.baseUrl.replace(/\/$/, '')
-          + (req.url || '/v1/messages');
+        const targetUrl = resolveProxyTargetUrl(
+          mapping.baseUrl,
+          req.url || '/v1/messages',
+        );
 
         forwardRequest(
           targetUrl,

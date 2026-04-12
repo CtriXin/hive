@@ -74,7 +74,14 @@ vi.mock('../orchestrator/run-store.js', () => ({
 
 vi.mock('../orchestrator/hive-config.js', () => ({
   getBudgetStatus: vi.fn(() => null),
-  loadConfig: vi.fn(() => ({})),
+  loadConfig: vi.fn(() => ({
+    high_tier: 'upper-model',
+    default_worker: 'test-model',
+    fallback_worker: 'glm-5-turbo',
+    tiers: {
+      executor: { model: 'test-model', fallback: 'glm-5-turbo' },
+    },
+  })),
   recordSpending: vi.fn(() => null),
 }));
 
@@ -100,6 +107,7 @@ vi.mock('../orchestrator/project-policy.js', () => ({
     ],
   })),
   loadTaskVerificationRules: vi.fn(() => ({})),
+  suggestVerificationProfile: vi.fn(() => undefined),
 }));
 
 vi.mock('../orchestrator/advisory-score.js', () => ({
@@ -133,6 +141,22 @@ vi.mock('../orchestrator/model-registry.js', () => {
         avoid: [],
       };
     }
+    rankModelsForTask(input: any) {
+      const assigned = typeof input?.assigned_model === 'string' && input.assigned_model
+        ? input.assigned_model
+        : 'test-model';
+      return [
+        { model: assigned, final_score: 0.99, blocked_by: [] },
+        { model: 'peer-model', final_score: 0.95, blocked_by: [] },
+        { model: 'upper-model', final_score: 0.9, blocked_by: [] },
+        { model: 'glm-5-turbo', final_score: 0.85, blocked_by: [] },
+      ];
+    }
+    getSpeedTier(modelId: string) {
+      if (modelId === 'upper-model') return 'strong';
+      if (modelId === 'peer-model' || modelId === 'test-model') return 'balanced';
+      return 'fast';
+    }
     getClaudeTier(_tier: string) {
       return { cost_per_1k: 0.003 };
     }
@@ -146,6 +170,7 @@ import { dispatchBatch, spawnWorker } from '../orchestrator/dispatcher.js';
 import { runReview } from '../orchestrator/reviewer.js';
 import { runVerification, runVerificationSuite } from '../orchestrator/verifier.js';
 import { commitAndMergeWorktree } from '../orchestrator/worktree-manager.js';
+import { loadConfig } from '../orchestrator/hive-config.js';
 import { loadRunPlan, loadRunResult } from '../orchestrator/run-store.js';
 import { loadProjectVerificationPolicy } from '../orchestrator/project-policy.js';
 import { saveRoundScore } from '../orchestrator/score-history.js';
@@ -153,7 +178,7 @@ import { spawnSync } from 'child_process';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-const makeTask = (id: string): SubTask => ({
+const makeTask = (id: string, overrides: Partial<SubTask> = {}): SubTask => ({
   id,
   description: `Task ${id}`,
   category: 'api',
@@ -165,9 +190,14 @@ const makeTask = (id: string): SubTask => ({
   discuss_threshold: 0.7,
   review_scale: 'medium',
   acceptance_criteria: ['Code compiles', 'Tests pass'],
+  ...overrides,
 });
 
-const makeWorkerResult = (taskId: string, success: boolean): WorkerResult => ({
+const makeWorkerResult = (
+  taskId: string,
+  success: boolean,
+  overrides: Partial<WorkerResult> = {},
+): WorkerResult => ({
   taskId,
   model: 'test-model',
   worktreePath: `/tmp/worktree-${taskId}`,
@@ -180,9 +210,14 @@ const makeWorkerResult = (taskId: string, success: boolean): WorkerResult => ({
   token_usage: { input: 100, output: 50 },
   discuss_triggered: false,
   discuss_results: [],
+  ...overrides,
 });
 
-const makeReviewResult = (taskId: string, passed: boolean): ReviewResult => ({
+const makeReviewResult = (
+  taskId: string,
+  passed: boolean,
+  overrides: Partial<ReviewResult> = {},
+): ReviewResult => ({
   taskId,
   final_stage: 'cross-review',
   passed,
@@ -196,6 +231,7 @@ const makeReviewResult = (taskId: string, passed: boolean): ReviewResult => ({
   }],
   iterations: 1,
   duration_ms: 100,
+  ...overrides,
 });
 
 const mockPlan: TaskPlan = {
@@ -328,6 +364,14 @@ describe('executeRun() repair flow integration', () => {
     // Plan is pre-loaded (skip planning phase)
     vi.mocked(loadRunPlan).mockReturnValue(mockPlan);
     vi.mocked(loadRunResult).mockReturnValue(null);
+    vi.mocked(loadConfig).mockReturnValue({
+      high_tier: 'upper-model',
+      default_worker: 'test-model',
+      fallback_worker: 'glm-5-turbo',
+      tiers: {
+        executor: { model: 'test-model', fallback: 'glm-5-turbo' },
+      },
+    } as any);
     setupCommonMocks();
   });
 
@@ -458,6 +502,102 @@ describe('executeRun() repair flow integration', () => {
     expect(state.repair_history.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('review failure uses same-tier sibling model on first repair retry', async () => {
+    const spec = makeSpec({ max_rounds: 2, max_worker_retries: 2 });
+
+    mockVerificationSequence(
+      smokePass(),
+      smokePass(),
+    );
+    mockReviewSequence(
+      makeReviewResult('task-a', false),
+      makeReviewResult('task-a', true),
+    );
+    vi.mocked(spawnWorker).mockResolvedValueOnce(
+      makeWorkerResult('task-a', true, {
+        model: 'peer-model',
+        requested_model: 'test-model',
+      }),
+    );
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(spawnWorker).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-a',
+      model: 'peer-model',
+      assignedModel: 'test-model',
+    }));
+    expect(state.next_action?.kind).toBe('finalize');
+    expect(state.merged_task_ids).toContain('task-a');
+  });
+
+  it('review failure escalates to upper-tier model on second repair retry', async () => {
+    const spec = makeSpec({ max_rounds: 3, max_worker_retries: 2 });
+
+    mockVerificationSequence(
+      smokePass(),
+      smokePass(),
+      smokePass(),
+    );
+    mockReviewSequence(
+      makeReviewResult('task-a', false),
+      makeReviewResult('task-a', false),
+      makeReviewResult('task-a', true),
+    );
+    vi.mocked(spawnWorker)
+      .mockResolvedValueOnce(
+        makeWorkerResult('task-a', true, {
+          model: 'peer-model',
+          requested_model: 'test-model',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeWorkerResult('task-a', true, {
+          model: 'upper-model',
+          requested_model: 'test-model',
+        }),
+      );
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(vi.mocked(spawnWorker).mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      model: 'peer-model',
+      assignedModel: 'test-model',
+    }));
+    expect(vi.mocked(spawnWorker).mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      model: 'upper-model',
+      assignedModel: 'test-model',
+    }));
+    expect(state.next_action?.kind).toBe('finalize');
+    expect(state.merged_task_ids).toContain('task-a');
+  });
+
+  it('verification-only repair keeps the original model', async () => {
+    const spec = makeSpec({ max_rounds: 2 });
+
+    mockVerificationSequence(
+      smokeFail(),
+      smokePass(),
+    );
+    mockReviewSequence(
+      makeReviewResult('task-a', true),
+      makeReviewResult('task-a', true),
+    );
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(spawnWorker).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-a',
+      model: 'test-model',
+      assignedModel: 'test-model',
+    }));
+    expect(state.next_action?.kind).toBe('finalize');
+    expect(state.merged_task_ids).toContain('task-a');
+  });
+
   it('merge gating blocks when allow_auto_merge is false', async () => {
     const spec = makeSpec({ max_rounds: 2, allow_auto_merge: false });
 
@@ -557,5 +697,63 @@ describe('executeRun() repair flow integration', () => {
     expect(state.next_action?.task_ids).toEqual(['task-a']);
     expect(state.next_action?.reason).toContain('pending repair_task');
     expect(state.next_action?.reason).toContain('changed files outside estimated_files');
+  });
+
+  it('surfaces infra fault provider fallback context in review-driven repair reason', async () => {
+    const spec = makeSpec({ max_rounds: 1 });
+
+    vi.mocked(dispatchBatch).mockResolvedValue({
+      worker_results: [makeWorkerResult('task-a', true, {
+        model: 'peer-model',
+        provider: 'peer-provider',
+        requested_model: 'test-model',
+        requested_provider: 'primary-provider',
+        provider_failure_subtype: 'server_error',
+        provider_fallback_used: true,
+      })],
+      extra_stage_usages: [],
+    });
+
+    mockVerificationSequence(smokePass());
+    mockReviewSequence(makeReviewResult('task-a', false, {
+      failure_attribution: 'infra_fault',
+    }));
+
+    const initialState = makeInitialState(spec);
+    const { state, result } = await executeRun(spec, initialState);
+
+    expect(state.next_action?.kind).toBe('request_human');
+    expect(state.next_action?.reason).toContain('provider failure=server_error');
+    expect(state.next_action?.reason).toContain('test-model@primary-provider -> peer-model@peer-provider');
+    expect(result?.review_results[0]?.findings.some((finding) =>
+      finding.issue.includes('Infra fault context: test-model@primary-provider -> peer-model@peer-provider'),
+    )).toBe(true);
+  });
+
+  it('surfaces provider fallback context in verification repair reason', async () => {
+    const spec = makeSpec({ max_rounds: 1 });
+
+    vi.mocked(dispatchBatch).mockResolvedValue({
+      worker_results: [makeWorkerResult('task-a', true, {
+        model: 'peer-model',
+        provider: 'peer-provider',
+        requested_model: 'test-model',
+        requested_provider: 'primary-provider',
+        provider_failure_subtype: 'timeout',
+        provider_fallback_used: true,
+      })],
+      extra_stage_usages: [],
+    });
+
+    mockVerificationSequence(smokeFail());
+    mockReviewSequence(makeReviewResult('task-a', true));
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(state.next_action?.kind).toBe('request_human');
+    expect(state.next_action?.reason).toContain('provider failure=timeout');
+    expect(state.next_action?.reason).toContain('fallback used');
+    expect(state.next_action?.reason).toContain('test-model@primary-provider -> peer-model@peer-provider');
   });
 });

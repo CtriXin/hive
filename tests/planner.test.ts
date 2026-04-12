@@ -73,4 +73,10 @@ describe('planner', () => {
     expect(plan.tasks[0].depends_on).toEqual([]);
     expect(plan.execution_order).toEqual([['task-b']]);
   });
+
+  it('throws a descriptive error when planner json omits tasks array', () => {
+    expect(() => buildPlanFromClaudeOutput({
+      goal: 'broken planner output',
+    })).toThrow('Planner JSON missing required tasks array');
+  });
 });

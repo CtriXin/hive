@@ -2,12 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod';
 import { execSync } from 'child_process';
-import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult, StageTokenUsage, PlannerDiscussRoomRef, CollabStatusSnapshot } from '../orchestrator/types.js';
+import type { TaskPlan, TranslationResult, OrchestratorResult, PlanDiscussResult, StageTokenUsage, PlannerDiscussRoomRef, CollabStatusSnapshot, ExecutionMode } from '../orchestrator/types.js';
 import type { DiscussPlanDiag } from '../orchestrator/discuss-bridge.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from '../orchestrator/planner.js';
 import { translateToEnglish } from '../orchestrator/translator.js';
 import { reportResults } from '../orchestrator/reporter.js';
 import { spawnWorker, dispatchBatch } from '../orchestrator/dispatcher.js';
+import { resolveEffectiveMode } from '../orchestrator/mode-policy.js';
 import { reviewCascade } from '../orchestrator/reviewer.js';
 import { ModelRegistry } from '../orchestrator/model-registry.js';
 import { checkProviderHealth, getAllProviders, resolveProviderForModel, quickPing } from '../orchestrator/provider-resolver.js';
@@ -15,8 +16,10 @@ import { isMmsAvailable, loadMmsRoutes } from '../orchestrator/mms-routes-loader
 import { getBudgetStatus, getBudgetWarning, loadConfig, recordSpending, resolveTierModel, resolveFallback } from '../orchestrator/hive-config.js';
 import { saveRoundScore } from '../orchestrator/score-history.js';
 import { saveRunPlan, saveRunResult, saveRunSpec, saveRunState } from '../orchestrator/run-store.js';
+import { selectPromptPolicy } from '../orchestrator/prompt-policy.js';
 import { loadCompactPacket, loadLatestCompactRestore, loadWorkspaceCompactPacket } from '../orchestrator/compact-packet.js';
 import { executePlannerDiscuss } from '../orchestrator/planner-runner.js';
+import { loadWorkerStatusSnapshot, summarizeWorkerSnapshot } from '../orchestrator/worker-status-store.js';
 import {
   extractRunnableTaskPlan,
   LATEST_PLAN_ARTIFACT,
@@ -40,34 +43,101 @@ const server = new McpServer({
 
 // ── Planner context collection ──
 
-function collectFileTree(cwd: string, maxLines = 80): string {
+const DEFAULT_GOAL_ARTIFACT = path.join('.ai', 'mcp', 'latest-goal.md');
+const DEFAULT_FILE_TREE_LINES = 24;
+const DEFAULT_KEY_TYPES_LINES = 16;
+const LIGHT_FILE_TREE_LINES = 12;
+const LIGHT_KEY_TYPES_LINES = 8;
+const MAX_CONTEXT_BLOCK_CHARS = 1200;
+const LARGE_GOAL_THRESHOLD = 4000;
+
+function trimBlock(raw: string, maxChars: number = MAX_CONTEXT_BLOCK_CHARS): string {
+  const text = raw.trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars - 3)}...`;
+}
+
+function collectFileTree(cwd: string, maxLines = DEFAULT_FILE_TREE_LINES): string {
   try {
     const raw = execSync(
-      `find . -type f -name "*.ts" -o -name "*.js" -o -name "*.json" | grep -v node_modules | grep -v dist | grep -v .git | sort | head -${maxLines}`,
+      `rg --files -g '*.ts' -g '*.js' -g '*.json' -g '!node_modules' -g '!dist' -g '!.git' . | head -n ${maxLines}`,
       { cwd, encoding: 'utf-8', timeout: 5000 },
     );
-    return raw.trim();
+    return trimBlock(raw);
   } catch {
     return '(file tree unavailable)';
   }
 }
 
-function collectKeyTypes(cwd: string, maxLines = 50): string {
+function collectKeyTypes(cwd: string, maxLines = DEFAULT_KEY_TYPES_LINES): string {
   try {
     const raw = execSync(
-      `grep -rn "^export \\(interface\\|type\\|enum\\)" --include="*.ts" . | grep -v node_modules | grep -v dist | head -${maxLines}`,
+      `rg -n "^export (interface|type|enum)" --glob '*.ts' -g '!node_modules' -g '!dist' -g '!.git' . | head -n ${maxLines}`,
       { cwd, encoding: 'utf-8', timeout: 5000 },
     );
-    return raw.trim();
+    return trimBlock(raw);
   } catch {
     return '(type signatures unavailable)';
   }
 }
 
-function buildPlannerContext(cwd: string): string {
-  const fileTree = collectFileTree(cwd);
-  const keyTypes = collectKeyTypes(cwd);
-  return `\n## Codebase Context (auto-collected)\n### File tree\n\`\`\`\n${fileTree}\n\`\`\`\n### Exported types\n\`\`\`\n${keyTypes}\n\`\`\`\n`;
+function buildPlannerContext(cwd: string, goalLength: number): string {
+  const lightMode = goalLength >= LARGE_GOAL_THRESHOLD;
+  const fileTree = collectFileTree(cwd, lightMode ? LIGHT_FILE_TREE_LINES : DEFAULT_FILE_TREE_LINES);
+  const keyTypes = collectKeyTypes(cwd, lightMode ? LIGHT_KEY_TYPES_LINES : DEFAULT_KEY_TYPES_LINES);
+  return `\n## Codebase Context (auto-collected, ${lightMode ? 'light' : 'standard'})\n### File tree\n\`\`\`\n${fileTree}\n\`\`\`\n### Exported types\n\`\`\`\n${keyTypes}\n\`\`\`\n`;
+}
+
+interface ResolvedGoalInput {
+  goal: string;
+  source: 'inline' | 'goal_path' | 'latest-goal';
+  sourcePath?: string;
+}
+
+function validateGoalInputForExecution(goalInput: ResolvedGoalInput): void {
+  if (goalInput.source === 'inline' && goalInput.goal.length >= LARGE_GOAL_THRESHOLD) {
+    throw new Error(
+      `Large inline goal detected (${goalInput.goal.length} chars). Run capture_goal first, then call plan_tasks/run_goal without inline goal.`,
+    );
+  }
+}
+
+function resolveGoalInput(
+  effectiveCwd: string,
+  goalArg?: string,
+  goalPathArg?: string,
+): ResolvedGoalInput {
+  if (goalArg) {
+    return { goal: goalArg, source: 'inline' };
+  }
+  if (goalPathArg) {
+    const absPath = path.isAbsolute(goalPathArg) ? goalPathArg : path.join(effectiveCwd, goalPathArg);
+    if (!fs.existsSync(absPath)) {
+      throw new Error(`Goal file not found: ${goalPathArg}`);
+    }
+    return {
+      goal: fs.readFileSync(absPath, 'utf-8').trim(),
+      source: 'goal_path',
+      sourcePath: absPath,
+    };
+  }
+  const defaultPath = path.join(effectiveCwd, DEFAULT_GOAL_ARTIFACT);
+  if (!fs.existsSync(defaultPath)) {
+    throw new Error(`No goal provided. Pass goal, goal_path, or run capture_goal first (${DEFAULT_GOAL_ARTIFACT}).`);
+  }
+  return {
+    goal: fs.readFileSync(defaultPath, 'utf-8').trim(),
+    source: 'latest-goal',
+    sourcePath: defaultPath,
+  };
+}
+
+function persistInlineGoalArtifact(effectiveCwd: string, goal: string): string {
+  const goalDir = path.join(effectiveCwd, '.ai', 'mcp');
+  if (!fs.existsSync(goalDir)) fs.mkdirSync(goalDir, { recursive: true });
+  const goalPath = path.join(goalDir, 'latest-goal.md');
+  fs.writeFileSync(goalPath, goal, 'utf-8');
+  return goalPath;
 }
 
 function parseJsonBlock<T>(raw: string): T {
@@ -102,6 +172,30 @@ function parseJsonBlock<T>(raw: string): T {
   }
 
   throw new Error('Planner did not return valid JSON');
+}
+
+function startExecutePlanHeartbeat(
+  cwd: string,
+  runId: string,
+): () => void {
+  let lastLine = '';
+  const emit = () => {
+    const snapshot = loadWorkerStatusSnapshot(cwd, runId);
+    if (!snapshot) return;
+    const counts = summarizeWorkerSnapshot(snapshot);
+    const activeWorkers = snapshot.workers
+      .filter((worker) => ['starting', 'running', 'discussing'].includes(worker.status))
+      .map((worker) => `${worker.task_id}:${worker.status}`)
+      .slice(0, 3);
+    const line = `[execute_plan] run=${runId} workers active=${counts.active} completed=${counts.completed}/${counts.total} failed=${counts.failed}${activeWorkers.length ? ` focus=${activeWorkers.join(',')}` : ''}`;
+    if (line === lastLine) return;
+    lastLine = line;
+    server.sendLoggingMessage({ level: 'info', logger: 'hive', data: line });
+  };
+
+  const timer = setInterval(emit, 5000);
+  emit();
+  return () => clearInterval(timer);
 }
 
 // ── MCP execution snapshot (from hiveshell) ──
@@ -277,11 +371,13 @@ server.tool(
   },
   async ({ goal, cwd }) => {
     const effectiveCwd = cwd || process.cwd();
-    const goalDir = path.join(effectiveCwd, '.ai', 'mcp');
-    if (!fs.existsSync(goalDir)) fs.mkdirSync(goalDir, { recursive: true });
-    const goalPath = path.join(goalDir, 'latest-goal.md');
-    fs.writeFileSync(goalPath, goal, 'utf-8');
-    return { content: [{ type: 'text', text: `Goal saved to .ai/mcp/latest-goal.md (${goal.length} chars). Run plan_tasks to plan.` }] };
+    const goalPath = persistInlineGoalArtifact(effectiveCwd, goal);
+    return {
+      content: [{
+        type: 'text',
+        text: `Goal saved to ${relPath(effectiveCwd, goalPath)} (${goal.length} chars). Prefer plan_tasks/run_goal without inline goal to keep the host prompt thin.`,
+      }],
+    };
   },
 );
 
@@ -298,23 +394,17 @@ server.tool(
     const registry = new ModelRegistry();
     const effectiveCwd = cwd || process.cwd();
 
-    // Resolve goal: explicit arg > goal_path > latest-goal.md
-    let goal: string;
-    if (goalArg) {
-      goal = goalArg;
-    } else if (goal_path) {
-      const absPath = path.isAbsolute(goal_path) ? goal_path : path.join(effectiveCwd, goal_path);
-      if (!fs.existsSync(absPath)) {
-        return { content: [{ type: 'text', text: `Goal file not found: ${goal_path}` }], isError: true };
-      }
-      goal = fs.readFileSync(absPath, 'utf-8').trim();
-    } else {
-      const defaultPath = path.join(effectiveCwd, '.ai', 'mcp', 'latest-goal.md');
-      if (!fs.existsSync(defaultPath)) {
-        return { content: [{ type: 'text', text: 'No goal provided. Pass goal, goal_path, or run capture_goal first.' }], isError: true };
-      }
-      goal = fs.readFileSync(defaultPath, 'utf-8').trim();
+    let goalInput: ResolvedGoalInput;
+    try {
+      goalInput = resolveGoalInput(effectiveCwd, goalArg, goal_path);
+      validateGoalInputForExecution(goalInput);
+    } catch (err: any) {
+      return { content: [{ type: 'text', text: err.message }], isError: true };
     }
+    const goal = goalInput.goal;
+    const capturedGoalPath = goalInput.source === 'inline' && goal.length >= LARGE_GOAL_THRESHOLD
+      ? persistInlineGoalArtifact(effectiveCwd, goal)
+      : null;
     const config = loadConfig(effectiveCwd);
     const plannerModel = resolveTierModel(
       config.tiers.planner.model,
@@ -346,7 +436,7 @@ server.tool(
     }
 
     // 构建 Claude prompt（注入代码库上下文）
-    const plannerContext = buildPlannerContext(effectiveCwd);
+    const plannerContext = buildPlannerContext(effectiveCwd, goal.length);
     const claudePrompt = `${PLAN_PROMPT_TEMPLATE}${plannerContext}\nUser goal: ${englishGoal}`;
     let plannerOutput = '';
     let plan: TaskPlan | null = null;
@@ -370,6 +460,7 @@ server.tool(
       for (const task of plan.tasks) {
         task.assigned_model = registry.assignModel(task);
         task.assignment_reason = `Assigned by registry for ${task.complexity} ${task.category} task`;
+        task.prompt_policy = task.prompt_policy || selectPromptPolicy(task);
       }
     }
 
@@ -411,6 +502,11 @@ server.tool(
         discuss_diag: discussDiag,
       },
       translation: translationResult,
+      goal_source: goalInput.source,
+      goal_source_path: goalInput.sourcePath || capturedGoalPath || undefined,
+      goal_chars: goal.length,
+      planner_context_chars: plannerContext.length,
+      planner_prompt_chars: claudePrompt.length,
       planner_model: plannerModel,
       planner_prompt: plannerFallbackPrompt,
       planner_diagnostics: plannerDiagnostics,
@@ -447,11 +543,16 @@ server.tool(
           plannerError ? `- error: ${plannerError}` : '',
           `- diagnostics: ${relPath(effectiveCwd, artifactPath)}`,
         ].filter(Boolean).join('\n');
+    const sourceLine = `- goal source: ${goalInput.source}${goalInput.sourcePath ? ` (${relPath(effectiveCwd, goalInput.sourcePath)})` : capturedGoalPath ? ` (${relPath(effectiveCwd, capturedGoalPath)})` : ''}`;
+    const sizeLine = `- prompt budget: goal=${goal.length} chars | context=${plannerContext.length} chars | planner_prompt=${claudePrompt.length} chars`;
+    const inlineHint = capturedGoalPath
+      ? `- note: large inline goal was captured to ${relPath(effectiveCwd, capturedGoalPath)}; prefer capture_goal/goal_path next time`
+      : '';
 
     return {
       content: [{
         type: 'text',
-        text: summaryText,
+        text: [summaryText, sourceLine, sizeLine, inlineHint].filter(Boolean).join('\n'),
       }],
     };
   }
@@ -484,6 +585,15 @@ server.tool(
       }
       plan = runnablePlan;
     } else if (plan_path) {
+      if (plan_path.endsWith('.md')) {
+        return {
+          content: [{
+            type: 'text',
+            text: `execute_plan expects runnable JSON, not markdown plan notes (${plan_path}). Use .ai/mcp/${LATEST_PLAN_ARTIFACT} or run execute_plan with no args after plan_tasks.`,
+          }],
+          isError: true,
+        };
+      }
       const raw = fs.readFileSync(path.resolve(effectiveCwd, plan_path), 'utf-8');
       const parsed = JSON.parse(raw);
       const runnablePlan = extractRunnableTaskPlan(parsed);
@@ -524,10 +634,30 @@ server.tool(
     }
     const registry = new ModelRegistry();
     const config = loadConfig(plan.cwd);
-
-    const dispatchResult = await dispatchBatch(plan, registry, resume_plan_id, { recordBudget: false });
+    server.sendLoggingMessage({
+      level: 'info',
+      logger: 'hive',
+      data: `[execute_plan] run=${plan.id} start tasks=${plan.tasks.length} cwd=${plan.cwd}`,
+    });
+    const stopHeartbeat = startExecutePlanHeartbeat(plan.cwd, plan.id);
+    let dispatchResult;
+    try {
+      dispatchResult = await dispatchBatch(plan, registry, resume_plan_id, { recordBudget: false });
+    } finally {
+      stopHeartbeat();
+    }
+    server.sendLoggingMessage({
+      level: 'info',
+      logger: 'hive',
+      data: `[execute_plan] run=${plan.id} dispatch complete workers=${dispatchResult.worker_results.length}`,
+    });
 
     // 执行 review cascade
+    server.sendLoggingMessage({
+      level: 'info',
+      logger: 'hive',
+      data: `[execute_plan] run=${plan.id} review start count=${dispatchResult.worker_results.length}`,
+    });
     const reviewResults = await Promise.all(
       dispatchResult.worker_results.map((workerResult) => {
         const task = plan.tasks.find((item) => item.id === workerResult.taskId);
@@ -537,6 +667,11 @@ server.tool(
         return reviewCascade(workerResult, task, plan, registry);
       }),
     );
+    server.sendLoggingMessage({
+      level: 'info',
+      logger: 'hive',
+      data: `[execute_plan] run=${plan.id} review done passed=${reviewResults.filter((review) => review.passed).length}/${reviewResults.length}`,
+    });
 
     // Auto-merge: commit and merge passed worktrees
     const { commitAndMergeWorktree } = await import('../orchestrator/worktree-manager.js');
@@ -553,6 +688,11 @@ server.tool(
         mergeResults.push({ taskId: wr.taskId, merged: false, error: 'review not passed — worktree kept for inspection' });
       }
     }
+    server.sendLoggingMessage({
+      level: 'info',
+      logger: 'hive',
+      data: `[execute_plan] run=${plan.id} merge done merged=${mergeResults.filter((item) => item.merged).length}/${mergeResults.length}`,
+    });
 
     const orchestratorResult: OrchestratorResult = {
       plan,
@@ -651,6 +791,11 @@ server.tool(
     // Persist execution snapshot for run_status
     persistMcpExecutionSnapshot(plan, orchestratorResult);
     const reportPath = writeMcpTextArtifact(plan.cwd, 'execute-plan-report', report);
+    server.sendLoggingMessage({
+      level: 'info',
+      logger: 'hive',
+      data: `[execute_plan] run=${plan.id} done report=${relPath(plan.cwd, reportPath)}`,
+    });
     const compactPacket = loadCompactPacket(plan.cwd, plan.id);
     return {
       content: [{
@@ -677,8 +822,9 @@ server.tool(
     cwd: z.string().describe('Working directory').optional(),
     worktree: z.boolean().describe('Run in isolated git worktree').default(false),
     discuss_threshold: z.number().describe('Confidence threshold for discussion trigger').default(0.7),
+    benchmark_no_fallback: z.boolean().describe('Disable channel/model fallback and pin benchmark providers').default(false),
   },
-  async ({ task_id, prompt, model, provider, cwd, worktree, discuss_threshold }) => {
+  async ({ task_id, prompt, model, provider, cwd, worktree, discuss_threshold, benchmark_no_fallback }) => {
     if (!prompt || prompt.trim().length < 5) {
       return {
         content: [{ type: 'text', text: '## dispatch_single error\n\n**error**: prompt is empty or too short. Provide a full task description with context.' }],
@@ -688,11 +834,23 @@ server.tool(
 
     try {
       const runId = `dispatch-${task_id}-${Date.now()}`;
+      const benchmarkRoutingPolicy = benchmark_no_fallback
+        ? {
+            mode: 'fixed-provider' as const,
+            providerByFamily: {
+              gpt: 'openai',
+              non_gpt: 'anthropic',
+            },
+            disable_channel_fallback: true,
+            disable_model_fallback: true,
+          }
+        : undefined;
+
       // Preflight: quickPing before spawning
       let actualModel = model;
       let preflightFallback: string | null = null;
       const ping = await quickPing(model);
-      if (!ping.ok) {
+      if (!ping.ok && !benchmark_no_fallback) {
         const registry = new ModelRegistry();
         const config = loadConfig(cwd || process.cwd());
         const fb = resolveFallback(model, 'server_error', {
@@ -704,12 +862,16 @@ server.tool(
         console.log(`  🔄 Preflight: ${model} unhealthy (${ping.error}), using ${fb}`);
         preflightFallback = `${model} → ${fb} (${ping.error})`;
         actualModel = fb;
+      } else if (!ping.ok && benchmark_no_fallback) {
+        console.log(`  ⛔ Preflight failed in benchmark no-fallback mode: ${model} (${ping.error})`);
       }
 
       const result = await spawnWorker({
         taskId: task_id,
         model: actualModel,
         provider: provider || '',
+        benchmarkRoutingPolicy,
+        assignedModel: model,
         prompt,
         cwd: cwd || process.cwd(),
         worktree: worktree ?? false,
@@ -736,6 +898,10 @@ server.tool(
 
       const output = {
         ...result,
+        requested_model: model,
+        executed_model: result.model,
+        benchmark_no_fallback,
+        preflight_ping_ok: ping.ok,
         runId,
         preflight_fallback: preflightFallback,
       };
@@ -1127,18 +1293,45 @@ server.tool(
   'run_goal',
   'Run a full autonomous loop: plan → dispatch → review → verify → repair/replan → done.',
   {
-    goal: z.string().describe('Goal in Chinese or English'),
+    goal: z.string().describe('Goal in Chinese or English. Omit to read from .ai/mcp/latest-goal.md').optional(),
+    goal_path: z.string().describe('Path to a goal/brief file (alternative to inline goal)').optional(),
     cwd: z.string().describe('Working directory').optional(),
     mode: z.enum(['safe', 'balanced', 'aggressive']).default('safe'),
+    execution_mode: z.enum([
+      'quick', 'think', 'auto',
+      'record-only', 'clarify-first',
+      'auto-execute-small', 'execute-standard', 'execute-parallel',
+    ]).describe('Execution depth mode (auto-classified if not provided)').optional(),
+    lane: z.enum([
+      'record-only', 'clarify-first',
+      'auto-execute-small', 'execute-standard', 'execute-parallel',
+    ]).describe('Operator-facing lane name').optional(),
+    agent_count: z.number().describe('Agent count hint (never overrides dispatch_style)').optional(),
     max_rounds: z.number().describe('Max loop rounds').default(6),
     auto_merge: z.boolean().describe('Auto-merge passed worktrees').default(false),
   },
-  async ({ goal, cwd, mode, max_rounds, auto_merge }) => {
+  async ({ goal: goalArg, goal_path, cwd, mode, execution_mode, lane, agent_count, max_rounds, auto_merge }) => {
     const { runGoal } = await import('../orchestrator/driver.js');
     const effectiveCwd = cwd || process.cwd();
+    let goalInput: ResolvedGoalInput;
+    try {
+      goalInput = resolveGoalInput(effectiveCwd, goalArg, goal_path);
+      validateGoalInputForExecution(goalInput);
+    } catch (err: any) {
+      return { content: [{ type: 'text', text: `## run_goal error\n\n**error**: ${err.message}` }], isError: true };
+    }
+    const capturedGoalPath = goalInput.source === 'inline' && goalInput.goal.length >= LARGE_GOAL_THRESHOLD
+      ? persistInlineGoalArtifact(effectiveCwd, goalInput.goal)
+      : null;
+    server.sendLoggingMessage({
+      level: 'info',
+      logger: 'hive',
+      data: `[bootstrap] goal_source=${goalInput.source} goal_chars=${goalInput.goal.length}${capturedGoalPath ? ` captured=${relPath(effectiveCwd, capturedGoalPath)}` : ''}`,
+    });
     try {
       const execution = await runGoal({
-        goal, cwd: effectiveCwd, mode,
+        goal: goalInput.goal, cwd: effectiveCwd, mode,
+        execution_mode, lane, agent_count,
         maxRounds: max_rounds, allowAutoMerge: auto_merge,
         onProgress: (stage, detail) => {
           server.sendLoggingMessage({ level: 'info', logger: 'hive', data: `[${stage}] ${detail}` });
@@ -1162,6 +1355,8 @@ server.tool(
       text += `**Status**: ${state.status}\n`;
       text += `**Rounds**: ${state.round}/${spec.max_rounds}\n`;
       text += `**Mode**: ${spec.mode}\n`;
+      text += `**Goal Source**: ${goalInput.source}${goalInput.sourcePath ? ` (${relPath(effectiveCwd, goalInput.sourcePath)})` : capturedGoalPath ? ` (${relPath(effectiveCwd, capturedGoalPath)})` : ''}\n`;
+      text += `**Goal Chars**: ${goalInput.goal.length}\n`;
       if (planner_model) text += `**Planner**: ${planner_model}\n`;
       if (plan_discuss) text += `**Discuss**: ${plan_discuss.quality_gate} — ${plan_discuss.overall_assessment?.slice(0, 150)}\n`;
       if (plan_discuss_collab?.card) {
@@ -1189,6 +1384,9 @@ server.tool(
       }
       text += `### Next Action\n**${state.next_action?.kind}**: ${state.next_action?.reason}\n\n`;
       if (state.final_summary) text += `### Summary\n${state.final_summary}\n`;
+      if (capturedGoalPath) {
+        text += `\n### Host Prompt Note\nLarge inline goal was captured to \`${relPath(effectiveCwd, capturedGoalPath)}\`; prefer capture_goal/goal_path next time to keep the host prompt thin.\n`;
+      }
       return { content: [{ type: 'text', text }] };
     } catch (err: any) {
       return { content: [{ type: 'text', text: `## run_goal error\n\n**error**: ${err.message}` }], isError: true };
@@ -1250,7 +1448,11 @@ server.tool(
       const { readLoopProgress } = await import('../orchestrator/loop-progress-store.js');
       const progress = readLoopProgress(effectiveCwd, run_id);
       let text = `## Run: ${run_id}\n\n`;
-      text += `**Status**: ${state.status}\n**Goal**: ${spec.goal}\n**Mode**: ${spec.mode}\n`;
+      const effectiveMode = resolveEffectiveMode(spec, state);
+      const modeLabel = effectiveMode.overridden
+        ? `${effectiveMode.mode} (steered from ${spec.execution_mode ?? 'auto'})`
+        : effectiveMode.mode;
+      text += `**Status**: ${state.status}\n**Goal**: ${spec.goal}\n**Mode**: ${modeLabel}\n`;
       text += `**Rounds**: ${state.round}/${spec.max_rounds}\n`;
       if (progress) {
         text += `**Phase**: ${progress.phase} — ${progress.reason}\n`;
@@ -1304,6 +1506,97 @@ server.tool(
       if (taskVerificationSummary) {
         text += `\n### Task Verification\n${taskVerificationSummary}\n`;
       }
+      // Phase 8B: Steering visibility
+      if (state.steering) {
+        const s = state.steering;
+        if (s.paused) text += `\n**Steering**: PAUSED ⏸️\n`;
+        if (s.last_applied) {
+          text += `\n**Last Steering**: ${s.last_applied.action_type} → ${s.last_applied.outcome}\n`;
+        }
+        if (s.last_rejected) {
+          text += `\n**Last Rejected**: ${s.last_rejected.action_type} — ${s.last_rejected.reason}\n`;
+        }
+        const pendingActions = (await import('../orchestrator/steering-store.js')).getPendingSteeringActions(effectiveCwd, run_id);
+        if (pendingActions.length > 0) {
+          text += `\n**Pending Steering** (${pendingActions.length}):\n`;
+          for (const a of pendingActions) {
+            text += `- \`${a.action_type}\`${a.task_id ? ` → ${a.task_id}` : ''} (requested ${a.requested_at})\n`;
+          }
+        }
+      }
+      // Phase 9A: Operator summary — same surface as CLI hive status
+      const runIdLocal = run_id;
+      const { loadProviderHealth } = await import('../orchestrator/watch-loader.js');
+      const providerHealth = loadProviderHealth(effectiveCwd, run_id);
+      const { generateRunSummary } = await import('../orchestrator/operator-summary.js');
+      const summary = generateRunSummary({
+        runId: runIdLocal, spec, state, progress, plan, providerHealth,
+      });
+      text += `\n### Operator Summary\n`;
+      text += `**Overall**: ${summary.overall_state} | round ${summary.round}${summary.max_rounds ? `/${summary.max_rounds}` : ''}\n`;
+      if (summary.top_successes.length > 0) {
+        text += `**Completed**: ${summary.top_successes.map((s: any) => s.task_id).join(', ')}\n`;
+      }
+      if (summary.top_failures.length > 0) {
+        text += `**Failed**: ${summary.top_failures.map((f: any) => `${f.task_id} (${f.failure_class})`).join(', ')}\n`;
+      }
+      if (summary.primary_blocker) {
+        text += `**Blocker**: ${summary.primary_blocker.description}\n`;
+      }
+
+      // Phase 9B: Quick commands
+      const { generateOperatorHints } = await import('../orchestrator/operator-hints.js');
+      const hints = generateOperatorHints({ spec, state, providerHealth });
+      if (hints.hints.length > 0) {
+        text += `\n### Next Actions\n`;
+        for (const hint of hints.hints.slice(0, 3)) {
+          const icon = hint.priority === 'high' ? '‼️' : hint.priority === 'medium' ? '▶️' : '💡';
+          text += `- ${icon} [${hint.priority}] ${hint.description}\n`;
+        }
+        const { suggestNextCommands } = await import('../orchestrator/operator-commands.js');
+        const topHint = hints.hints[0];
+        const cmdCtx = {
+          run_id: runIdLocal,
+          topHintAction: topHint?.action,
+          taskId: topHint?.task_id,
+          hasSteering: ((state.steering?.pending_actions || []).length) > 0,
+          hasFailures: summary.top_failures.length > 0,
+        };
+        const cmds = suggestNextCommands(summary.overall_state, cmdCtx);
+        if (cmds.length > 0) {
+          text += `\n### Quick Commands\n`;
+          for (const cmd of cmds.slice(0, 4)) {
+            text += `- \`${cmd.command}\` — ${cmd.label}\n`;
+          }
+        }
+      }
+
+      // Phase 10A: Collaboration summary
+      const { loadSteeringStore } = await import('../orchestrator/steering-store.js');
+      const steeringStore = loadSteeringStore(effectiveCwd, run_id);
+      const { generateCollaborationSummary } = await import('../orchestrator/collab-summary.js');
+      const collabSummary = generateCollaborationSummary({
+        runId: runIdLocal, state, spec,
+        steeringActions: steeringStore?.actions || [],
+        reviewResults: result?.review_results,
+        providerHealth,
+      });
+      if (collabSummary.active_cues > 0 || collabSummary.blocker_categories.length > 0) {
+        text += `\n### Collaboration\n`;
+        const dist = collabSummary.cue_distribution;
+        const parts: string[] = [];
+        if (dist.needs_human > 0) parts.push(`human:${dist.needs_human}`);
+        if (dist.blocked > 0) parts.push(`blocked:${dist.blocked}`);
+        if (dist.needs_review > 0) parts.push(`review:${dist.needs_review}`);
+        if (dist.watch > 0) parts.push(`watch:${dist.watch}`);
+        if (dist.ready > 0) parts.push(`ready:${dist.ready}`);
+        text += `- Cues: ${parts.join(' | ')}\n`;
+        for (const item of collabSummary.top_attention_items.slice(0, 3)) {
+          text += `- ${item.task_id}: ${item.reason}\n`;
+        }
+        text += `- Handoff: ${collabSummary.handoff_ready ? 'ready' : 'not_ready'}\n`;
+      }
+
       text += `\n### Next Action\n**${state.next_action?.kind}**: ${state.next_action?.reason}\n`;
       return { content: [{ type: 'text', text }] };
     }
@@ -1316,6 +1609,65 @@ server.tool(
       text += `| ${run.id} | ${run.state?.status || '?'} | ${run.spec?.goal?.slice(0, 60) || '(no goal)'} |\n`;
     }
     return { content: [{ type: 'text', text }] };
+  },
+);
+
+// ── Phase 8B: Steering submission tool ──
+
+server.tool(
+  'submit_steering',
+  'Submit a human steering action to an active run. Actions are applied at the next safe point in the driver loop.',
+  {
+    run_id: z.string().describe('Run ID to steer'),
+    action_type: z.enum([
+      'pause_run', 'resume_run', 'retry_task', 'skip_task',
+      'escalate_mode', 'downgrade_mode', 'request_replan',
+      'force_discuss', 'mark_requires_human', 'inject_steering_note',
+    ]).describe('Type of steering action'),
+    task_id: z.string().describe('Target task ID (for task-level actions)').optional(),
+    target_mode: z.string().describe('Target execution mode (for escalate/downgrade)').optional(),
+    reason: z.string().describe('Why this steering is needed').optional(),
+    note: z.string().describe('Free-text instruction (for inject_steering_note)').optional(),
+    cwd: z.string().describe('Working directory').optional(),
+  },
+  async ({ run_id, action_type, task_id, target_mode, reason, note, cwd }) => {
+    const { submitSteeringAction, isDuplicateAction } = await import('../orchestrator/steering-store.js');
+    const { loadRunSpec, loadRunState } = await import('../orchestrator/run-store.js');
+    const { validateSteeringAction } = await import('../orchestrator/steering-actions.js');
+    const effectiveCwd = cwd || process.cwd();
+
+    const spec = loadRunSpec(effectiveCwd, run_id);
+    const state = loadRunState(effectiveCwd, run_id);
+    if (!spec || !state) {
+      return { content: [{ type: 'text', text: `## submit_steering error\n\nRun not found: ${run_id}` }], isError: true };
+    }
+
+    // Check for duplicates
+    if (isDuplicateAction(effectiveCwd, run_id, action_type, task_id)) {
+      return { content: [{ type: 'text', text: `## submit_steering\n\n⚠️ Duplicate action suppressed: ${action_type}${task_id ? ` for ${task_id}` : ''}. A similar action was submitted within the last 30s.` }] };
+    }
+
+    const action = submitSteeringAction(effectiveCwd, run_id, {
+      run_id,
+      task_id,
+      action_type: action_type as any,
+      scope: task_id ? 'task' : 'run',
+      payload: { target_mode: target_mode as ExecutionMode | undefined, note, reason },
+      requested_by: 'mcp',
+    });
+
+    // Pre-validate and report
+    const validation = validateSteeringAction(action, spec, state);
+    const statusLine = validation.allowed
+      ? `✅ Accepted — will be applied at next safe point`
+      : `⚠️ Submitted but may be rejected: ${validation.reason}`;
+
+    return {
+      content: [{
+        type: 'text',
+        text: `## Steering Submitted\n\n- **Action**: \`${action.action_type}\`\n- **ID**: \`${action.action_id}\`\n- **Scope**: ${action.scope}${task_id ? ` → ${task_id}` : ''}\n- **Status**: ${statusLine}\n- **Requested**: ${action.requested_at}`,
+      }],
+    };
   },
 );
 

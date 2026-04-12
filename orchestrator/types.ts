@@ -57,6 +57,38 @@ export interface TaskPlan {
   created_at: string; // ISO timestamp
 }
 
+export type ExecutionContract = 'implementation' | 'observe_only' | 'reconcile_if_needed';
+export type TaskExecutionContract = ExecutionContract;
+
+/** Operator-facing execution lane — high-level intent */
+export type LaneName =
+  | 'record-only'       // just record, no execution
+  | 'clarify-first'     // not enough info, ask first
+  | 'auto-execute-small' // single agent, no discuss, minimal validation
+  | 'execute-standard'  // single agent + review (default)
+  | 'execute-parallel'; // multi-agent parallel
+
+/**
+ * ExecutionMode — operator-facing depth / autonomy mode
+ * Includes legacy (quick/think/auto) and new lane names.
+ */
+export type ExecutionMode =
+  | 'quick' | 'think' | 'auto'
+  | LaneName;
+
+export interface ModeContract {
+  planning_depth: 'skip' | 'minimal' | 'full';
+  dispatch_style: 'skip' | 'single' | 'parallel' | 'full-orchestration';
+  review_intensity: 'skip' | 'light' | 'standard' | 'full-cascade';
+  verification_scope: 'skip' | 'minimal' | 'standard' | 'full-suite';
+  discuss_gate: 'disabled' | 'standard' | 'enforced';
+  max_rounds_override?: number; // mode-specific cap (0 = no override)
+  allow_auto_merge: boolean;
+  allow_repair: boolean;
+  allow_replan: boolean;
+  explain_label: string; // human-readable one-liner
+}
+
 export interface SubTask {
   id: string; // "task-a", "task-b"
   description: string; // Self-contained instruction
@@ -70,6 +102,8 @@ export interface SubTask {
   discuss_threshold: number; // 0-1, below this → trigger discuss
   depends_on: string[]; // Task IDs
   review_scale: 'light' | 'medium' | 'heavy' | 'heavy+' | 'auto';
+  prompt_policy?: PromptPolicySelection;
+  execution_contract?: TaskExecutionContract;
 }
 
 export type PromptPolicyFragmentId =
@@ -86,6 +120,16 @@ export interface PromptPolicySelection {
 }
 
 // ── Worker ──
+
+export interface BenchmarkRoutingPolicy {
+  mode: 'fixed-provider';
+  providerByFamily: {
+    gpt: string;
+    non_gpt: string;
+  };
+  disable_channel_fallback?: boolean;
+  disable_model_fallback?: boolean;
+}
 
 export interface WorkerConfig {
   taskId: string;
@@ -105,12 +149,19 @@ export interface WorkerConfig {
   taskDescription?: string;
   fromBranch?: string;
   promptPolicy?: PromptPolicySelection;
+  benchmarkRoutingPolicy?: BenchmarkRoutingPolicy;
   onWorkerDiscussSnapshot?: (snapshot: CollabStatusSnapshot) => void | Promise<void>;
+  execution_contract?: TaskExecutionContract;
+  /** Phase 8A: Provider health store path for resilience tracking */
+  providerHealthDir?: string;
 }
 
 export interface WorkerResult {
   taskId: string;
   model: string;
+  provider?: string;
+  requested_model?: string;
+  requested_provider?: string;
   worktreePath: string;
   branch: string; // Git branch name
   sessionId: string;
@@ -124,6 +175,12 @@ export interface WorkerResult {
   prompt_policy_version?: string;
   prompt_fragments?: PromptPolicyFragmentId[];
   worker_discuss_collab?: CollabStatusSnapshot;
+  /** Inherited from task at dispatch time for failure classification */
+  execution_contract?: TaskExecutionContract;
+  /** Phase 8A: Provider failure details if worker failed due to provider issue */
+  provider_failure_subtype?: ProviderFailureSubtype;
+  /** Phase 8A: Whether a provider fallback was used for this worker */
+  provider_fallback_used?: boolean;
 }
 
 export interface WorkerMessage {
@@ -162,6 +219,11 @@ export interface WorkerStatusEntry {
   changed_files_count?: number;
   success?: boolean;
   error?: string;
+  prompt_policy_version?: string;
+  prompt_fragments?: PromptPolicyFragmentId[];
+  execution_contract?: TaskExecutionContract;
+  provider_failure_subtype?: ProviderFailureSubtype;
+  provider_fallback_used?: boolean;
   transcript_path?: string;
   collab?: CollabStatusSnapshot;
   discuss_conclusion?: {
@@ -204,10 +266,181 @@ export interface WorkerTranscriptEntry {
   content: string;
 }
 
+// ── Phase 1A: Task Context Pack ──
+
+export interface TaskContextSource {
+  from_task: string;
+  summary: string;
+  key_outputs: string[];
+  decision_trace: string[];
+}
+
+export interface TaskContextPack {
+  generated_at: string;
+  run_id: string;
+  plan_id: string;
+  task_id: string;
+  task_objective: string;
+  round: number;
+  is_repair: boolean;
+  selected_files: string[];
+  verification_profile?: string;
+  prompt_fragments?: PromptPolicyFragmentId[];
+  prompt_policy_version?: string;
+  goal_snippets?: string[];
+  upstream_context: ContextPacket[];
+  assigned_model?: string;
+  assigned_provider?: string;
+  execution_contract?: TaskExecutionContract;
+  repair_context?: {
+    previous_error?: string;
+    previous_changed_files?: string[];
+    review_findings?: Array<{ severity: FindingSeverity; file: string; line?: number; issue: string }>;
+    verification_failures?: Array<{ type: string; message: string; command?: string }>;
+    repair_guidance?: string[];
+  };
+}
+
+export interface DispatchContextRecord {
+  run_id: string;
+  plan_id: string;
+  task_id: string;
+  round: number;
+  is_repair: boolean;
+  injected_context_ids: string[];
+  selected_file_count: number;
+  goal_snippet_count: number;
+  upstream_context_count: number;
+  prompt_policy_version?: string;
+  generated_at: string;
+}
+
+// ── Phase 2A: Transition Log ──
+
+export interface RunTransitionRecord {
+  id: string;
+  timestamp: string;
+  run_id: string;
+  task_id?: string;
+  from_state: string;
+  to_state: string;
+  reason: string;
+  failure_class?: FailureClass;
+  retry_count?: number;
+  replan_count?: number;
+  round: number;
+}
+
+/** Alias for TaskRunRecord used in forensics and state maps */
+export type TaskStateRecord = TaskRunRecord;
+
+// ── Phase 4A: Routing Enforcement ──
+
+export type RoutingOverridePolicy =
+  | 'high_confidence_score'
+  | 'provider_cooldown'
+  | 'repair_round_boost'
+  | 'fallback_best_available'
+  | 'conservative_keep'
+  | 'suggest_only';
+
+export interface RoutingEnforcementResult {
+  planner_assigned_model: string;
+  router_selected_model: string;
+  effective_model: string;
+  override_applied: boolean;
+  override_reason: string;
+  policy: RoutingOverridePolicy;
+}
+
+export type DiscussEnforcementAction = 'none' | 'reroute' | 'escalate' | 'block' | 'suggest_only';
+export type DispatchEffectivePath = 'direct' | 'rerouted' | 'escalated' | 'blocked';
+
+// ── Phase 6A: Cross-Run Learning ──
+
+export type LessonKind =
+  | 'failure_pattern'      // task type X tends to fail with failure class Y
+  | 'verification_profile'  // task type X works better with verification profile Y
+  | 'mode_escalation'       // task type X is more likely to need mode escalation
+  | 'provider_risk'         // provider/model combo shows elevated failure rate
+  | 'repair_strategy'       // repair type X succeeds more with strategy Y
+  | 'rule_recommendation';  // task pattern X benefits from rule Y
+
+export type LessonConfidence = 'low' | 'medium' | 'high';
+
+export interface LessonEvidence {
+  source_run_id: string;
+  source_artifact: 'failure_class' | 'transition_log' | 'forensics_pack' | 'verification_outcome' | 'review_outcome';
+  signal: string; // brief description of the specific signal
+  weight: number; // contribution to this lesson (0-1)
+}
+
+export interface Lesson {
+  id: string; // 'lesson-<hash>'
+  kind: LessonKind;
+  /** Pattern this lesson applies to (e.g. category, file pattern prefix) */
+  pattern: string;
+  /** What the system should do differently based on this lesson */
+  recommendation: string;
+  /** Why this recommendation was made */
+  reason: string;
+  confidence: LessonConfidence;
+  /** Evidence sources that led to this lesson */
+  evidence: LessonEvidence[];
+  /** How many distinct runs support this lesson */
+  supporting_runs: number;
+  /** How many observations (transitions, failures, verifications) support this */
+  observation_count: number;
+  /** When this lesson was first created */
+  created_at: string; // ISO
+  /** When this lesson was last updated with new evidence */
+  updated_at: string; // ISO
+  /** Whether this lesson is currently active (can be disabled by user) */
+  active: boolean;
+}
+
+export interface LessonStore {
+  lessons: Lesson[];
+  generated_at: string; // ISO
+}
+
+export type RuleSelectionBasis =
+  | 'explicit_config'    // user explicitly specified
+  | 'project_policy'     // from .hive/project.md
+  | 'learning_auto_pick' // auto-selected by lesson-based rules
+  | 'learning_suggest'   // suggested by learning, not auto-applied
+  | 'fallback';          // default profile used due to no signal
+
+export interface RuleSelectionResult {
+  /** The rule/profile that was selected or recommended */
+  selected_rule?: string;
+  /** How confident we are (0-1) */
+  confidence: number;
+  /** Why this rule was chosen */
+  selection_reason: string;
+  /** How this rule was chosen */
+  basis: RuleSelectionBasis;
+  /** Evidence summary supporting the selection */
+  evidence_summary: string[];
+  /** Whether this was auto-applied or just a suggestion */
+  auto_applied: boolean;
+  /** Lessons that influenced this selection */
+  relevant_lessons: string[];
+}
+
+export interface DiscussEnforcementResult {
+  discuss_required: boolean;
+  enforcement_action: DiscussEnforcementAction;
+  effective_path: DispatchEffectivePath;
+  dispatch_blocked: boolean;
+  escalation_target: string;
+}
+
 // ── Autonomous Run Loop ──
 
 export type RunMode = 'safe' | 'balanced' | 'aggressive';
 export type RunStatus =
+  | 'init'
   | 'planning'
   | 'executing'
   | 'verifying'
@@ -237,6 +470,101 @@ export type VerificationFailureClass =
   | 'review_fail'
   | 'infra_fail'
   | 'unknown';
+
+// ── Phase 2A: Failure Classification ──
+
+export type FailureClass =
+  | 'context'
+  | 'tool'
+  | 'provider'
+  | 'build'
+  | 'test'
+  | 'lint'
+  | 'verification'
+  | 'merge'
+  | 'policy'
+  | 'review'
+  | 'planner'
+  | 'scope'
+  | 'no_op'
+  | 'budget'
+  | 'unknown';
+
+// ── Phase 8A: Provider Failure Taxonomy ──
+
+/**
+ * Fine-grained provider failure subtype.
+ * Used for retry/backoff/cooldown decisions — not mixed with discuss/review/build logic.
+ */
+export type ProviderFailureSubtype =
+  | 'rate_limit'            // 429, overloaded, throttled
+  | 'timeout'               // Connection or request timeout
+  | 'transient_network'     // ECONNREFUSED, ECONNRESET, DNS failure
+  | 'server_error'          // 5xx from provider
+  | 'auth_failure'          // 401/403, invalid key, expired token
+  | 'quota_exhausted'       // Provider-side quota/credits depleted
+  | 'provider_unavailable'  // Provider gateway down, MMS route missing
+  | 'unknown_provider_failure';
+
+/**
+ * Circuit breaker state for a single provider.
+ * healthy → degraded → open → probing → healthy (or open again)
+ */
+export type CircuitBreakerState = 'healthy' | 'degraded' | 'open' | 'probing';
+
+/**
+ * Resilience decision recorded for each provider failure event.
+ * Must be explainable: why retry/backoff/fallback/cooldown was chosen.
+ */
+export interface ProviderResilienceDecision {
+  provider: string;
+  failure_subtype: ProviderFailureSubtype;
+  action: 'immediate_retry' | 'bounded_retry' | 'backoff_retry' | 'fallback' | 'cooldown' | 'block';
+  action_reason: string;
+  /** Whether the task dispatch was affected (model changed, delayed, blocked) */
+  dispatch_affected: boolean;
+  /** If fallback was used, which provider was selected instead */
+  fallback_provider?: string;
+  /** Backoff delay in ms that was or would be applied */
+  backoff_ms: number;
+  /** Attempt number within this failure episode (1-based) */
+  attempt: number;
+  timestamp: number;
+}
+
+/**
+ * Extended provider health state (replaces simple cooldown counter).
+ * Persisted to .ai/runs/<run-id>/provider-health.json
+ */
+export interface ProviderHealthState {
+  /** Circuit breaker state */
+  breaker: CircuitBreakerState;
+  /** Subtype of the most recent failure */
+  last_failure_subtype?: ProviderFailureSubtype;
+  /** Last time this provider state changed */
+  updated_at?: string;
+  /** Consecutive failure count (reset on success) */
+  consecutive_failures: number;
+  /** Total failures in current breaker cycle */
+  cycle_failures: number;
+  /** Epoch ms of last failure */
+  last_failure_at: number;
+  /** Epoch ms of last success (provider was usable) */
+  last_success_at: number;
+  /** Epoch ms when breaker opened (for cooldown expiry calculation) */
+  opened_at?: number;
+  /** Probing attempt count since entering probing state */
+  probe_count: number;
+}
+
+/**
+ * Durable provider health store data.
+ */
+export interface ProviderHealthStoreData {
+  providers: Record<string, ProviderHealthState>;
+  decisions: ProviderResilienceDecision[];
+  updated_at: string;
+}
 
 export type NextActionKind =
   | 'execute'
@@ -275,6 +603,12 @@ export interface VerificationResult {
   stderr_tail: string;
   duration_ms: number;
   failure_class?: VerificationFailureClass;
+  provider_failure_subtype?: ProviderFailureSubtype;
+  provider_fallback_used?: boolean;
+  requested_model?: string;
+  requested_provider?: string;
+  actual_model?: string;
+  actual_provider?: string;
 }
 
 export interface NextAction {
@@ -293,6 +627,9 @@ export interface TaskRunRecord {
   worker_success: boolean;
   review_passed: boolean;
   last_error?: string;
+  retry_count: number;
+  failure_class?: FailureClass;
+  terminal_reason?: string;
 }
 
 export interface RepairHistoryEntry {
@@ -327,6 +664,12 @@ export interface RunSpec {
   origin_cwd?: string;
   task_cwd?: string;
   mode: RunMode;
+  /** Phase 5A: Operator-facing execution mode */
+  execution_mode?: ExecutionMode;
+  /** Operator-facing lane name (display only) */
+  lane?: LaneName;
+  /** Agent count hint (never overrides dispatch_style from contract) */
+  agent_count?: number;
   done_conditions: DoneCondition[];
   max_rounds: number;
   max_worker_retries: number;
@@ -358,12 +701,18 @@ export interface RunState {
   next_action?: NextAction;
   final_summary?: string;
   updated_at: string;
-  /**
-   * Task-scoped smoke verification results from the latest execution/repair round.
-   * Key: taskId, Value: true if smoke passed, false if failed.
-   * Used by repair path and Phase 4 next_action decisions.
-   */
+  /** Phase 2A: persisted transition log */
+  transition_log?: RunTransitionRecord[];
+  /** Task-scoped smoke verification results from the latest execution/repair round.
+   * Key: taskId, Value: true if smoke passed, false if failed. */
   _smokeResults?: Record<string, boolean>;
+  /** Phase 8B: human steering state */
+  steering?: RunStateSteering;
+  /** Phase 5A.1: mode escalation history */
+  mode_escalation_history?: Array<{ from: ExecutionMode; to: ExecutionMode; reason: string; round: number }>;
+  /** Runtime mode override set by steering escalate/downgrade actions.
+   *  Supersedes spec.execution_mode for display and decision purposes within this run. */
+  runtime_mode_override?: ExecutionMode;
 }
 
 // ── Context Recycling ──
@@ -436,6 +785,12 @@ export interface ReviewResult {
   token_stages?: StageTokenUsage[];
   external_review_collab?: CollabStatusSnapshot;
   authority?: ReviewAuthorityMetadata;
+  provider_failure_subtype?: ProviderFailureSubtype;
+  provider_fallback_used?: boolean;
+  requested_model?: string;
+  requested_provider?: string;
+  actual_model?: string;
+  actual_provider?: string;
   failure_attribution?: ReviewFailureAttribution;
   prompt_fault_confidence?: number;
   recommended_fragments?: PromptPolicyFragmentId[];
@@ -726,6 +1081,159 @@ export interface RunRuntimeHooks {
   beforeReview?: RunHook;
   afterReview?: RunHook;
   afterRun?: RunHook;
+}
+
+// ── Phase 7A: Project Memory + Cross-Session Recall ──
+
+export type MemoryCategory =
+  | 'recurring_failure'    // repeated failure pattern across runs
+  | 'effective_repair'     // repair tactic that worked repeatedly
+  | 'stable_preference'    // rule/profile/model combo that works well
+  | 'risky_area'           // fragile file / common regression zone
+  | 'routing_tendency';    // mode/routing pattern with evidence
+
+export type MemorySourceKind =
+  | 'failure_class'
+  | 'forensics_pack'
+  | 'transition_log'
+  | 'verification_outcome'
+  | 'review_outcome'
+  | 'lesson';
+
+export interface MemoryEvidence {
+  source_run_id: string;
+  source_artifact: MemorySourceKind;
+  signal: string; // brief description of the specific signal
+  artifact_path?: string; // pointer to run artifact
+  weight: number; // 0-1, recency-weighted
+}
+
+export interface ProjectMemoryEntry {
+  memory_id: string; // 'mem-<hash>'
+  category: MemoryCategory;
+  /** Short, human-readable summary of this memory */
+  summary: string;
+  /** Detailed explanation of what this memory captures */
+  detail: string;
+  /** Evidence supporting this memory */
+  evidence: MemoryEvidence[];
+  /** Source run IDs that contributed to this memory */
+  source_run_ids: string[];
+  /** Source artifact paths for traceability */
+  source_artifacts: string[];
+  /** Confidence in this memory (0-1) */
+  confidence: number;
+  /** When this memory was first created */
+  created_at: string; // ISO
+  /** When this memory was last updated with new evidence */
+  updated_at: string; // ISO
+  /** Recency decay factor: 1.0 = fresh, decays over time */
+  recency: number;
+  /** Whether this memory is still considered active */
+  active: boolean;
+  /** Stale marker — set when memory is too old or evidence decayed */
+  stale: boolean;
+}
+
+export interface ProjectMemoryStore {
+  project_id: string; // repo basename or explicit project id
+  memories: ProjectMemoryEntry[];
+  generated_at: string; // ISO
+}
+
+export interface MemoryRecallInput {
+  /** Current goal being worked on */
+  goal: string;
+  /** Task type / category if known */
+  task_type?: string;
+  /** Files the task may touch */
+  touched_files?: string[];
+  /** Failure class if this is a repair context */
+  failure_class?: FailureClass;
+  /** Current execution mode */
+  execution_mode?: ExecutionMode;
+}
+
+export interface MemoryRecallResult {
+  /** Relevant memories, sorted by relevance */
+  memories: Array<{
+    entry: ProjectMemoryEntry;
+    relevance_score: number; // 0-1, how relevant to current context
+    why_relevant: string; // brief explanation
+  }>;
+  /** Total memories considered before filtering */
+  total_candidates: number;
+  /** Why these were selected */
+  selection_reason: string;
+}
+
+// ── Phase 8B: Human Steering Surface ──
+
+/** Steering action types — machine-readable control-plane input */
+export type SteeringActionType =
+  | 'pause_run'
+  | 'resume_run'
+  | 'retry_task'
+  | 'skip_task'
+  | 'escalate_mode'
+  | 'downgrade_mode'
+  | 'request_replan'
+  | 'force_discuss'
+  | 'mark_requires_human'
+  | 'inject_steering_note';
+
+/** Where the action applies */
+export type SteeringScope = 'run' | 'task';
+
+/** Status of a steering action through its lifecycle */
+export type SteeringActionStatus =
+  | 'pending'       // submitted, not yet processed
+  | 'applied'       // accepted and applied at safe point
+  | 'rejected'      // refused by validator
+  | 'suppressed'    // duplicate of already-processed action; ignored for idempotency;
+  | 'expired';      // run reached terminal state before action could apply
+
+/** Payload varies by action_type */
+export interface SteeringActionPayload {
+  /** Target execution_mode for escalate_mode / downgrade_mode */
+  target_mode?: ExecutionMode;
+  /** Target task_id for task-level actions */
+  task_id?: string;
+  /** Free-text instruction for inject_steering_note */
+  note?: string;
+  /** Reason provided by the operator */
+  reason?: string;
+  /** Additional structured data */
+  extra?: Record<string, unknown>;
+}
+
+/** A single steering action request */
+export interface SteeringAction {
+  action_id: string; // `steer-<hash>`
+  run_id: string;
+  task_id?: string; // set for task-level actions
+  action_type: SteeringActionType;
+  scope: SteeringScope;
+  payload: SteeringActionPayload;
+  requested_by: string; // 'human' | 'mcp' | 'cli' | 'auto'
+  requested_at: string; // ISO timestamp
+  status: SteeringActionStatus;
+  /** Epoch ms when action was applied (or rejected) */
+  applied_at?: number;
+  /** Why rejected, or effect summary when applied */
+  outcome?: string;
+}
+
+/** Phase 8B: steering state attached to RunState */
+export interface RunStateSteering {
+  /** Whether the run is currently paused by human request */
+  paused: boolean;
+  /** Pending steering actions waiting for safe-point application */
+  pending_actions: string[]; // action_ids
+  /** Most recently applied action summary */
+  last_applied?: { action_id: string; action_type: string; outcome: string; applied_at: number };
+  /** Most recently rejected action summary */
+  last_rejected?: { action_id: string; action_type: string; reason: string; applied_at: number };
 }
 
 // ── Score History (hiveshell) ──

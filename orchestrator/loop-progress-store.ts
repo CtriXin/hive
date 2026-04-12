@@ -14,7 +14,8 @@ export type LoopPhase =
   | 'repairing'
   | 'replanning'
   | 'done'
-  | 'blocked';
+  | 'blocked'
+  | 'paused';
 
 export interface LoopProgress {
   run_id: string;

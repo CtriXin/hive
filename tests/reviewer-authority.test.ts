@@ -152,6 +152,9 @@ describe('reviewer authority path', () => {
     expect(result.authority?.synthesized_by).toBe('gpt-5.4');
     expect(result.authority?.synthesis_strategy).toBe('model');
     expect(result.authority?.disagreement_flags).toContain('conclusion_opposite');
+    expect(result.failure_attribution).toBe('unknown');
+    expect(result.prompt_fault_confidence).toBe(0);
+    expect(result.recommended_fragments).toEqual([]);
     expect(result.passed).toBe(false);
     expect(result.findings.at(-1)?.issue).toContain('gpt-5.4 synthesis');
   });
@@ -227,7 +230,76 @@ describe('reviewer authority path', () => {
     expect(result.verdict).toBe('PASS');
     expect(result.authority?.synthesized_by).toBe('gpt-5.4');
     expect(result.authority?.synthesis_strategy).toBe('model');
+    expect(result.failure_attribution).toBe('unknown');
+    expect(result.prompt_fault_confidence).toBe(0);
+    expect(result.recommended_fragments).toEqual([]);
     expect(result.findings.at(-1)?.issue).toContain('higher-confidence pass accepted');
+  });
+
+  it('skips synthesis when pair reaches high-confidence pass consensus', async () => {
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: true,
+          confidence: 0.91,
+          flagged_issues: [],
+          summary: 'primary review pass',
+        }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          passed: true,
+          confidence: 0.89,
+          flagged_issues: [],
+          summary: 'challenger review pass',
+        }),
+        tokenUsage: { input: 12, output: 6 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-consensus-pass',
+      description: 'Consensus pass without synthesis',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-consensus-pass',
+      goal: 'test pair consensus skips synthesis',
+      tasks: [task],
+      execution_order: [['task-consensus-pass']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-consensus-pass',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/authority-test',
+      branch: 'worker-task-consensus-pass',
+      sessionId: 'worker-task-consensus-pass',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.passed).toBe(true);
+    expect(result.verdict).toBe('PASS');
+    expect(result.authority?.mode).toBe('single');
+    expect(result.authority?.synthesized_by).toBeUndefined();
+    expect(result.authority?.synthesis_strategy).toBeUndefined();
+    expect(result.authority?.disagreement_flags || []).toEqual([]);
+    expect(result.token_stages?.some((stage) => stage.stage === 'authority-synthesis:task-consensus-pass')).toBe(false);
   });
 
   it('marks heuristic fallback honestly when synthesis model output is unusable', async () => {
@@ -300,6 +372,9 @@ describe('reviewer authority path', () => {
     expect(result.passed).toBe(false);
     expect(result.authority?.synthesized_by).toBeUndefined();
     expect(result.authority?.synthesis_strategy).toBe('heuristic');
+    expect(result.failure_attribution).toBe('unknown');
+    expect(result.prompt_fault_confidence).toBe(0);
+    expect(result.recommended_fragments).toEqual([]);
     expect(result.findings.at(-1)?.issue).toContain('heuristic synthesis');
     expect(result.token_stages?.some((stage) =>
       stage.stage === 'authority-synthesis:task-c'
@@ -377,6 +452,9 @@ describe('reviewer authority path', () => {
     expect(result.authority?.synthesized_by).toBeUndefined();
     expect(result.authority?.synthesis_strategy).toBeUndefined();
     expect(result.authority?.synthesis_attempted_by).toBe('gpt-5.4');
+    expect(result.failure_attribution).toBe('unknown');
+    expect(result.prompt_fault_confidence).toBe(0);
+    expect(result.recommended_fragments).toEqual([]);
     expect(result.findings[0]?.issue).toContain('fail_closed policy');
     expect(result.findings[0]?.severity).toBe('red');
     expect(result.token_stages?.some((stage) =>
@@ -466,6 +544,9 @@ describe('reviewer authority path', () => {
     expect(result.authority?.disagreement_flags).toContain('deterministic_vs_opinion');
     // Synthesis must happen — model synthesis resolves the conflict
     expect(result.authority?.synthesized_by).toBe('gpt-5.4');
+    expect(result.failure_attribution).toBe('unknown');
+    expect(result.prompt_fault_confidence).toBe(0);
+    expect(result.recommended_fragments).toEqual([]);
   });
 
   it('repair path preserves deterministic signal from original smoke failure', async () => {
@@ -952,5 +1033,147 @@ describe('reviewer authority path', () => {
     expect(result.authority?.disagreement_flags).toContain('deterministic_vs_opinion');
     // Synthesis overrides to REJECT — smoke failure trumps reviewer pass
     expect(result.passed).toBe(false);
+  });
+
+  it('passes observe_only tasks with empty diff under authority review', async () => {
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-observe',
+      description: 'Read and verify planner artifacts, then record findings',
+      category: 'docs',
+      complexity: 'low',
+      estimated_files: ['docs/hiveshell/MAIN_AGENT_PROGRESS_RECEIPTS.md'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+      acceptance_criteria: ['Record findings without editing project files'],
+      execution_contract: 'observe_only',
+    };
+    const plan: TaskPlan = {
+      id: 'plan-observe',
+      goal: 'review only',
+      tasks: [task],
+      execution_order: [['task-observe']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-observe',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/authority-test',
+      branch: 'worker-task-observe',
+      sessionId: 'worker-task-observe',
+      output: [],
+      changedFiles: [],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 5, output: 2 },
+      discuss_triggered: false,
+      discuss_results: [],
+      execution_contract: 'observe_only',
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.passed).toBe(true);
+    expect(result.findings).toEqual([]);
+    expect(result.authority?.source).toBe('authority-layer');
+    expect(queryModelTextMock).not.toHaveBeenCalled();
+  });
+
+  it('passes reconcile_if_needed empty diff under legacy cascade', async () => {
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      enabled: false,
+    };
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-sync',
+      description: '同步 runOfficialProxy.mjs 行为，如无需改动则说明原因',
+      category: 'maintenance',
+      complexity: 'low',
+      estimated_files: ['scripts/runOfficialProxy.mjs'],
+      depends_on: [],
+      assigned_model: 'kimi-k2.5',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+      acceptance_criteria: ['If already correct, leave files unchanged and explain why'],
+      execution_contract: 'reconcile_if_needed',
+    };
+    const plan: TaskPlan = {
+      id: 'plan-sync',
+      goal: 'reconcile only if needed',
+      tasks: [task],
+      execution_order: [['task-sync']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-sync',
+      model: 'kimi-k2.5',
+      worktreePath: '/tmp/authority-test',
+      branch: 'worker-task-sync',
+      sessionId: 'worker-task-sync',
+      output: [],
+      changedFiles: [],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 5, output: 2 },
+      discuss_triggered: false,
+      discuss_results: [],
+      execution_contract: 'reconcile_if_needed',
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.passed).toBe(true);
+    expect(result.findings).toEqual([]);
+    expect(result.authority?.source).toBe('legacy-cascade');
+    expect(queryModelTextMock).not.toHaveBeenCalled();
+  });
+
+  it('fails observe_only tasks that unexpectedly modify files', async () => {
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-audit',
+      description: 'Audit config only; do not modify files',
+      category: 'docs',
+      complexity: 'low',
+      estimated_files: ['config/model-profiles.json'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+      acceptance_criteria: ['No file changes are allowed'],
+      execution_contract: 'observe_only',
+    };
+    const plan: TaskPlan = {
+      id: 'plan-audit',
+      goal: 'audit only',
+      tasks: [task],
+      execution_order: [['task-audit']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-audit',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/authority-test',
+      branch: 'worker-task-audit',
+      sessionId: 'worker-task-audit',
+      output: [],
+      changedFiles: ['config/model-profiles.json'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 5, output: 2 },
+      discuss_triggered: false,
+      discuss_results: [],
+      execution_contract: 'observe_only',
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.passed).toBe(false);
+    expect(result.findings[0]?.issue).toContain('forbids file edits');
+    expect(result.authority?.source).toBe('authority-layer');
+    expect(queryModelTextMock).not.toHaveBeenCalled();
   });
 });

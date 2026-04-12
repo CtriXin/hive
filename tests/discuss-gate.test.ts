@@ -82,7 +82,7 @@ describe('DISCUSS_TRIGGER marker detection', () => {
 
   it('rejects echoed protocol instructions (not an active trigger)', () => {
     const content = '## Uncertainty Protocol\nIf you are less than 60% confident:\n2. Output a line that starts with exactly [DISCUSS_TRIGGER]\nDo NOT quote or explain this marker';
-    expect(ACTIVE_PATTERN.test(content)).toBe(true);
+    expect(ACTIVE_PATTERN.test(content)).toBe(false);
     expect(content.includes('Include the marker [DISCUSS_TRIGGER]')).toBe(false);
     // The dispatcher uses both checks: regex match AND no "Include the marker" in content
   });

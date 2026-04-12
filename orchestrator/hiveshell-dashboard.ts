@@ -1,9 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import type {
+  ExecutionMode,
   HumanBridgeRef,
   MindkeeperRoomRef,
   OrchestratorResult,
+  ProviderHealthStoreData,
   RunScoreHistory,
   RunSpec,
   RunState,
@@ -12,6 +14,7 @@ import type {
 } from './types.js';
 import type { AdvisoryScoreHistory } from './advisory-score.js';
 import type { LoopProgress } from './loop-progress-store.js';
+import type { SteeringStore } from './steering-store.js';
 import {
   formatAdvisoryParticipant,
   loadAdvisoryScoreHistory,
@@ -24,6 +27,16 @@ import { loadRunScoreHistory } from './score-history.js';
 import { readLoopProgress } from './loop-progress-store.js';
 import { listWorkerStatusSnapshots, loadWorkerStatusSnapshot, summarizeWorkerSnapshot } from './worker-status-store.js';
 import { pickWorkerSurfaceSummary } from './worker-surface-summary.js';
+import { loadSteeringStore } from './steering-store.js';
+import { resolveEffectiveMode } from './mode-policy.js';
+import { deriveTaskCues, groupCuesByCategory, cueIcon, cueLabel, type TaskCollabCue } from './collab-cues.js';
+import {
+  extractLatestProviderRoute,
+  formatProviderDecision,
+  formatProviderRoute,
+  latestProviderDecision,
+  summarizeProviderHealth,
+} from './provider-surface.js';
 
 interface MindkeeperCheckpointPayload {
   repo: string;
@@ -85,6 +98,9 @@ export interface HiveShellDashboardData {
   mindkeeperCheckpointInput: MindkeeperCheckpointPayload | null;
   mindkeeperCheckpointResult: MindkeeperCheckpointResult | null;
   humanBridgeState: HumanBridgeStateArtifact | null;
+  // Phase 8C: Live watch surface
+  providerHealth: ProviderHealthStoreData | null;
+  steeringStore: SteeringStore | null;
 }
 
 interface MergeBlockerSummary {
@@ -200,8 +216,13 @@ function renderWorkers(snapshot: WorkerStatusSnapshot | null, limit = 8): string
     const discussConclusionText = worker.discuss_conclusion
       ? ` [${worker.discuss_conclusion.quality_gate}] ${truncate(worker.discuss_conclusion.conclusion, 60)}`
       : '';
+    const routeText = worker.provider_fallback_used
+      ? ` fallback=${worker.assigned_model}->${worker.active_model}`
+      : worker.provider_failure_subtype
+        ? ` fail=${worker.provider_failure_subtype}`
+        : '';
     const summary = pickWorkerSurfaceSummary(worker.task_summary, worker.last_message) || '-';
-    return `- ${worker.task_id} [${worker.status}] ${model}${changeText}${discussText}${discussConclusionText} | ${truncate(summary, 90)}`;
+    return `- ${worker.task_id} [${worker.status}] ${model}${changeText}${discussText}${routeText}${discussConclusionText} | ${truncate(summary, 90)}`;
   });
 }
 
@@ -316,6 +337,105 @@ function renderHumanBridge(data: HiveShellDashboardData): string[] {
   return lines;
 }
 
+// Phase 8C: Steering visibility
+function renderSteering(data: HiveShellDashboardData): string[] {
+  const store = data.steeringStore;
+  if (!store || store.actions.length === 0) {
+    return ['- no steering actions'];
+  }
+
+  const state = data.state;
+  const isPaused = state?.steering?.paused ?? false;
+  const pending = store.actions.filter((a) => a.status === 'pending');
+  const applied = store.actions.filter((a) => a.status === 'applied').reverse();
+  const rejected = store.actions.filter((a) => a.status === 'rejected').reverse();
+
+  const lines: string[] = [];
+  if (isPaused) lines.push('\u23F8\uFE0F run PAUSED');
+  if (pending.length > 0) lines.push(`pending: ${pending.length} action(s)`);
+
+  if (applied[0]) {
+    lines.push(`applied: ${applied[0].action_type} | ${truncate(applied[0].outcome, 80)}`);
+  }
+  if (rejected[0]) {
+    lines.push(`rejected: ${rejected[0].action_type} | ${truncate(rejected[0].outcome, 80)}`);
+  }
+
+  const recent = store.actions.slice(-4);
+  for (const a of recent) {
+    const icon = a.status === 'applied' ? '\u2705' : a.status === 'rejected' ? '\u26D4' : a.status === 'suppressed' ? '\uD83D\uDD07' : '\u23F3';
+    lines.push(`${icon} ${a.action_type}${a.task_id ? ` \u2192 ${a.task_id}` : ''} [${a.status}]`);
+  }
+
+  return lines;
+}
+
+// Phase 8C: Provider health visibility
+function renderProviderHealth(data: HiveShellDashboardData): string[] {
+  const healthData = data.providerHealth;
+  if (!healthData || Object.keys(healthData.providers).length === 0) {
+    return ['- no provider health data'];
+  }
+
+  const entries = Object.entries(healthData.providers);
+  const lines: string[] = [];
+  lines.push(summarizeProviderHealth(healthData) || `${entries.length} total`);
+
+  const unhealthy = entries.filter(([, s]) => s.breaker !== 'healthy');
+  if (unhealthy.length > 0) {
+    for (const [provider, state] of unhealthy) {
+      const icon = state.breaker === 'degraded' ? '\uD83D\uDFE1' : state.breaker === 'open' ? '\uD83D\uDD34' : '\uD83D\uDFE0';
+      lines.push(`${icon} ${provider}: ${state.breaker}${state.last_failure_subtype ? ` (${state.last_failure_subtype})` : ''}`);
+    }
+  }
+  const latestDecision = formatProviderDecision(latestProviderDecision(healthData));
+  if (latestDecision) {
+    lines.push(`latest resilience: ${latestDecision}`);
+  }
+
+  const latestRoute = formatProviderRoute(
+    extractLatestProviderRoute({
+      reviewResults: data.result?.review_results,
+      providerHealth: healthData,
+    }),
+  );
+  if (latestRoute) {
+    lines.push(`latest route: ${latestRoute}`);
+  }
+
+  return lines;
+}
+
+// Phase 8C: Mode escalation visibility
+function renderModeEscalation(data: HiveShellDashboardData): string[] {
+  const history = data.state?.mode_escalation_history;
+  if (!history || history.length === 0) {
+    return ['- no mode escalation'];
+  }
+
+  return history.map(
+    (e) => `round ${e.round}: ${e.from} \u2192 ${e.to} | ${truncate(e.reason, 90)}`,
+  );
+}
+
+// Phase 8C / 8D: Current mode display with effective mode resolver
+function renderCurrentMode(data: HiveShellDashboardData): string[] {
+  const spec = data.spec;
+  const state = data.state;
+  const effective = spec && state ? resolveEffectiveMode(spec, state) : null;
+  const normalizedMode = effective?.normalized ?? 'execute-standard';
+  const rawMode = effective?.mode ?? (spec?.execution_mode ?? 'auto') as ExecutionMode;
+  const escalated = (state?.mode_escalation_history?.length ?? 0) > 0;
+  const overrideLabel = effective?.overridden ? ` (steered from ${rawMode})` : rawMode !== normalizedMode ? ` (normalized from ${rawMode})` : '';
+  const lines = [`- mode: ${normalizedMode}${overrideLabel}${escalated ? ' [ESCALATED]' : ''}`];
+
+  if (spec?.lane) {
+    lines.push(`- lane: ${spec.lane}`);
+  }
+
+  return lines;
+}
+
 function renderOverview(data: HiveShellDashboardData): string[] {
   const spec = data.spec;
   const state = data.state;
@@ -416,6 +536,49 @@ function renderCollab(data: HiveShellDashboardData): string[] {
   return lines;
 }
 
+// Phase 10A: Collaboration cues surface
+function renderCollabCues(data: HiveShellDashboardData): string[] {
+  const taskStates = data.state?.task_states;
+  if (!taskStates || Object.keys(taskStates).length === 0) {
+    return ['- no task states yet'];
+  }
+
+  const steeringActions = data.steeringStore?.actions || [];
+  const cues = deriveTaskCues({
+    taskStates,
+    steeringActions,
+    nextAction: data.state?.next_action,
+    providerHealth: data.providerHealth,
+  });
+
+  const groups = groupCuesByCategory(cues);
+  const activeCues = cues.filter((c) => c.cue !== 'ready' && c.cue !== 'passive');
+
+  if (activeCues.length === 0 && groups.ready.length === 0) {
+    return ['- no active collaboration signals'];
+  }
+
+  const lines: string[] = [];
+
+  // Cue distribution
+  const distParts: string[] = [];
+  for (const cue of ['needs_human', 'blocked', 'needs_review', 'watch', 'ready'] as const) {
+    if (groups[cue].length > 0) {
+      distParts.push(`${cueIcon(cue)} ${cueLabel(cue)}:${groups[cue].length}`);
+    }
+  }
+  if (distParts.length > 0) {
+    lines.push(`- cues: ${distParts.join(' | ')}`);
+  }
+
+  // Top attention items
+  for (const cue of activeCues.slice(0, 5)) {
+    lines.push(`- ${cueIcon(cue.cue)} ${cue.task_id}: ${truncate(cue.reason, 96)}`);
+  }
+
+  return lines.length > 0 ? lines : ['- no active collaboration signals'];
+}
+
 function renderArtifacts(cwd: string, runId: string): string[] {
   const dir = runDir(cwd, runId);
   const files = [
@@ -484,6 +647,9 @@ export function loadHiveShellDashboard(
     mindkeeperCheckpointInput: readJson<MindkeeperCheckpointPayload>(path.join(dir, 'mindkeeper-checkpoint-input.json')),
     mindkeeperCheckpointResult: readJson<MindkeeperCheckpointResult>(path.join(dir, 'mindkeeper-checkpoint-result.json')),
     humanBridgeState: readJson<HumanBridgeStateArtifact>(path.join(dir, 'human-bridge-state.json')),
+    // Phase 8C: Live watch surface
+    providerHealth: readJson<ProviderHealthStoreData>(path.join(dir, 'provider-health.json')),
+    steeringStore: loadSteeringStore(cwd, resolvedRunId),
   };
 }
 
@@ -496,12 +662,17 @@ export function renderHiveShellDashboard(
       `updated: ${new Date().toISOString()}`,
     ]),
     section('Run Overview', renderOverview(data)),
+    section('Mode', renderCurrentMode(data)),
     section('Collab', renderCollab(data)),
+    section('Collab Cues', renderCollabCues(data)),
     section('Advisory', renderAdvisory(data)),
     section('Authority', renderAuthority(data)),
     section('Score Trend', renderScoreTrend(data.scoreHistory)),
     section('Workers', renderWorkers(data.workerSnapshot)),
     section('Merge Blockers', renderMergeBlockers(data)),
+    section('Steering', renderSteering(data)),
+    section('Provider Health', renderProviderHealth(data)),
+    section('Mode Escalation', renderModeEscalation(data)),
     section('Human Bridge', renderHumanBridge(data)),
     section('Mindkeeper', renderMindkeeper(data)),
     section('Recent Events', renderRecentEvents(data.cwd, data.runId)),

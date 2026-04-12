@@ -35,6 +35,11 @@ export interface WorkerStatusUpdate {
   success?: boolean;
   error?: string;
   event_message?: string;
+  prompt_policy_version?: string;
+  prompt_fragments?: WorkerStatusEntry['prompt_fragments'];
+  execution_contract?: WorkerStatusEntry['execution_contract'];
+  provider_failure_subtype?: WorkerStatusEntry['provider_failure_subtype'];
+  provider_fallback_used?: WorkerStatusEntry['provider_fallback_used'];
   collab?: CollabStatusSnapshot;
   discuss_conclusion?: {
     quality_gate: 'pass' | 'warn' | 'fail' | 'fallback';
@@ -308,6 +313,11 @@ export function updateWorkerStatus(
       : shouldClearError
         ? undefined
         : previous?.error,
+    prompt_policy_version: update.prompt_policy_version || previous?.prompt_policy_version,
+    prompt_fragments: update.prompt_fragments || previous?.prompt_fragments,
+    execution_contract: update.execution_contract || previous?.execution_contract,
+    provider_failure_subtype: update.provider_failure_subtype || previous?.provider_failure_subtype,
+    provider_fallback_used: update.provider_fallback_used ?? previous?.provider_fallback_used,
     transcript_path: previous?.transcript_path || buildWorkerTranscriptPath(runId, update.task_id),
     collab: cloneCollabSnapshot(update.collab) || cloneCollabSnapshot(previous?.collab),
     discuss_conclusion: update.discuss_conclusion || previous?.discuss_conclusion,

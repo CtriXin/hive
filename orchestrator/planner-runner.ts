@@ -10,6 +10,8 @@ import type {
   CollabLifecycleEvent,
   CollabStatusSnapshot,
   PlanningBrief,
+  ProjectMemoryStore,
+  MemoryRecallInput,
 } from './types.js';
 import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from './planner.js';
 import { translateToEnglish } from './translator.js';
@@ -34,6 +36,14 @@ const PLANNER_CONTEXT_EXCLUDED_GLOBS = [
   '.ai/**',
   '.sessions/**',
 ] as const;
+
+const PLANNER_FILE_TREE_MAX_LINES = 60;
+const PLANNER_TYPE_SEARCH_MAX_LINES = 35;
+const PLANNER_CONTEXT_SECTION_CHAR_LIMIT = 1200;
+export const PLANNER_CONTEXT_TOTAL_CHAR_LIMIT = 4200;
+const CLAUDE_PLANNER_TIMEOUT_MS = 120_000;
+const DOMESTIC_PLANNER_TIMEOUT_MS = 45_000;
+const DISCUSS_SYNTHESIS_TIMEOUT_MS = 20_000;
 
 export function buildPlannerFileTreeCommand(maxLines = 80): string {
   const includeGlobs = ['*.ts', '*.js', '*.json']
@@ -78,11 +88,37 @@ function collectKeyTypes(cwd: string, maxLines = 50): string {
   }
 }
 
+function truncatePlannerContextSection(text: string, limit: number, label: string): string {
+  const normalized = text.trim() || `(${label} unavailable)`;
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  const suffix = `\n... [${label} truncated]`;
+  const head = normalized.slice(0, Math.max(0, limit - suffix.length));
+  return `${head}${suffix}`;
+}
+
 export function buildPlannerContext(cwd: string): string {
-  const fileTree = collectFileTree(cwd);
-  const keyTypes = collectKeyTypes(cwd);
-  const taskRules = describeTaskVerificationRules(cwd);
-  return `\n## Codebase Context (auto-collected)\n### File tree\n\`\`\`\n${fileTree}\n\`\`\`\n### Exported types\n\`\`\`\n${keyTypes}\n\`\`\`\n### Task verification rules\n${taskRules}\n`;
+  const fileTree = truncatePlannerContextSection(
+    collectFileTree(cwd, PLANNER_FILE_TREE_MAX_LINES),
+    PLANNER_CONTEXT_SECTION_CHAR_LIMIT,
+    'file tree',
+  );
+  const keyTypes = truncatePlannerContextSection(
+    collectKeyTypes(cwd, PLANNER_TYPE_SEARCH_MAX_LINES),
+    PLANNER_CONTEXT_SECTION_CHAR_LIMIT,
+    'exported types',
+  );
+  const taskRules = truncatePlannerContextSection(
+    describeTaskVerificationRules(cwd),
+    PLANNER_CONTEXT_SECTION_CHAR_LIMIT,
+    'task verification rules',
+  );
+  return truncatePlannerContextSection(
+    `\n## Codebase Context (auto-collected)\n### File tree\n\`\`\`\n${fileTree}\n\`\`\`\n### Exported types\n\`\`\`\n${keyTypes}\n\`\`\`\n### Task verification rules\n${taskRules}\n`,
+    PLANNER_CONTEXT_TOTAL_CHAR_LIMIT,
+    'planner context',
+  );
 }
 
 export function parseJsonBlock<T>(raw: string): T {
@@ -151,6 +187,30 @@ export interface PlannerRunDiagnostics extends Record<string, unknown> {
   exitError: string | null;
   toolUseDetected: boolean;
   toolUseNames: string[];
+}
+
+function normalizePlannerMessages(result: { messages?: unknown }): any[] {
+  return Array.isArray(result?.messages) ? result.messages : [];
+}
+
+function buildPlannerPrompt(prompt: string, modelId: string): string {
+  if (modelId.startsWith('claude-')) {
+    return prompt;
+  }
+  return [
+    prompt,
+    '',
+    '## Planner Output Contract',
+    'Return exactly one JSON object in your first reply.',
+    'Do not use tools, do not inspect files, do not emit markdown fences, and do not ask follow-up questions.',
+    'If the context looks insufficient, still produce the best-effort task JSON using only the provided context.',
+  ].join('\n');
+}
+
+function getPlannerTimeoutMs(modelId: string): number {
+  return modelId.startsWith('claude-')
+    ? CLAUDE_PLANNER_TIMEOUT_MS
+    : DOMESTIC_PLANNER_TIMEOUT_MS;
 }
 
 class PlannerRunError extends Error {
@@ -498,16 +558,40 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
 
   // Non-Claude models should return JSON directly without tool use.
   // Claude models may benefit from reading files before planning.
-  const maxTurns = agentModel.startsWith('claude-') ? 8 : 2;
+  const maxTurns = agentModel.startsWith('claude-') ? 8 : 1;
+  const plannerPrompt = buildPlannerPrompt(prompt, agentModel);
+  const timeoutMs = getPlannerTimeoutMs(agentModel);
   const result = await safeQuery({
-    prompt,
+    prompt: plannerPrompt,
     options: { cwd, maxTurns, env, model: agentModel },
+    timeoutMs,
   });
 
-  const text = extractTextFromMessages(result.messages);
-  const tokenUsage = extractTokenUsage(result.messages);
-  const toolUseNames = collectPlannerToolUseNames(result.messages);
-  const messages = result.messages.map((m: any, i: number) => {
+  const normalizedMessages = normalizePlannerMessages(result);
+  if (!Array.isArray(result?.messages)) {
+    throw new PlannerRunError(
+      'Planner transport returned malformed result: messages array missing',
+      '',
+      {
+        modelId,
+        agentModel,
+        resolvedBaseUrl,
+        providerResolveFailed,
+        maxTurns,
+        messageCount: 0,
+        rawLength: 0,
+        messages: [],
+        exitError: result?.exitError?.message || null,
+        toolUseDetected: false,
+        toolUseNames: [],
+      },
+    );
+  }
+
+  const text = extractTextFromMessages(normalizedMessages);
+  const tokenUsage = extractTokenUsage(normalizedMessages);
+  const toolUseNames = collectPlannerToolUseNames(normalizedMessages);
+  const messages = normalizedMessages.map((m: any, i: number) => {
     const type = m.type || '?';
     let preview = '';
     if (type === 'assistant') {
@@ -532,7 +616,7 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
       resolvedBaseUrl,
       providerResolveFailed,
       maxTurns,
-      messageCount: result.messages.length,
+      messageCount: normalizedMessages.length,
       rawLength: text.length,
       messages,
       exitError: result.exitError?.message || null,
@@ -617,6 +701,7 @@ export async function synthesizeAgentBusReplies(
     const result = await safeQuery({
       prompt: synthPrompt,
       options: { cwd: process.cwd(), maxTurns: 1, env, model: discussTierModel },
+      timeoutMs: DISCUSS_SYNTHESIS_TIMEOUT_MS,
     });
     const text = extractTextFromMessages(result.messages);
     const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -832,6 +917,7 @@ export async function planGoal(
   goal: string,
   cwd: string,
   hooks: PlanGoalHooks = {},
+  options?: { projectMemory?: ProjectMemoryStore | null },
 ): Promise<PlanGoalResult> {
   const registry = new ModelRegistry();
   const config = loadConfig(cwd);
@@ -867,7 +953,25 @@ export async function planGoal(
     const { buildLessonContext } = await import('./lesson-extractor.js');
     lessonContext = buildLessonContext();
   } catch { /* lessons unavailable — proceed without */ }
-  const claudePrompt = `${PLAN_PROMPT_TEMPLATE}${plannerContext}${lessonContext}\nUser goal: ${englishGoal}`;
+
+  // Phase 7A: Recall project memory for current goal
+  let memoryContext = '';
+  try {
+    const { recallProjectMemories, formatMemoryRecall } = await import('./memory-recall.js');
+    const recallInput: MemoryRecallInput = { goal };
+    const recall = recallProjectMemories(options?.projectMemory ?? null, recallInput, { topN: 3 });
+    memoryContext = formatMemoryRecall(recall);
+  } catch { /* memory unavailable — proceed without */ }
+
+  // GBrain: Recall user profile for current goal (best-effort, top 2 only)
+  let userProfileContext = '';
+  try {
+    const { recallUserProfile, formatUserProfileRecall } = await import('./user-profile-recall.js');
+    const userRecall = recallUserProfile(goal, { topN: 2 });
+    userProfileContext = formatUserProfileRecall(userRecall);
+  } catch { /* user profile unavailable — proceed without */ }
+
+  const claudePrompt = `${PLAN_PROMPT_TEMPLATE}${plannerContext}${lessonContext}${memoryContext}${userProfileContext}\nUser goal: ${englishGoal}`;
 
   let plan: TaskPlan | null = null;
   let plannerRawOutput = '';

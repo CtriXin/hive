@@ -1,6 +1,7 @@
 import type { TaskPlan, SubTask, Complexity } from './types.js';
 import { loadTaskVerificationRules, suggestVerificationProfile } from './project-policy.js';
 import { loadConfig } from './hive-config.js';
+import { selectPromptPolicy } from './prompt-policy.js';
 
 // Complexity 枚举必须是 4 级：low / medium / medium-high / high
 export const PLAN_PROMPT_TEMPLATE = `
@@ -104,8 +105,21 @@ export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): Task
   const runtimeCwd = cwd || process.cwd();
   const rules = loadTaskVerificationRules(runtimeCwd);
   const config = loadConfig(runtimeCwd);
+  const rawGoal = typeof claudeOutput?.goal === 'string' && claudeOutput.goal.trim()
+    ? claudeOutput.goal.trim()
+    : undefined;
+  const rawTasks = claudeOutput?.tasks;
 
-  const rawTasks: SubTask[] = claudeOutput.tasks.map((task: any) => {
+  if (!Array.isArray(rawTasks)) {
+    const keys = claudeOutput && typeof claudeOutput === 'object'
+      ? Object.keys(claudeOutput).slice(0, 8).join(', ')
+      : typeof claudeOutput;
+    throw new Error(
+      `Planner JSON missing required tasks array${keys ? ` (received keys/type: ${keys})` : ''}.`,
+    );
+  }
+
+  const normalizedTasks: SubTask[] = rawTasks.map((task: any) => {
     if (!validComplexities.includes(task.complexity)) {
       throw new Error(`Invalid complexity: ${task.complexity}. Must be one of: ${validComplexities.join(', ')}`);
     }
@@ -137,13 +151,18 @@ export function buildPlanFromClaudeOutput(claudeOutput: any, cwd?: string): Task
       ...partialTask,
       assigned_model: assignedModel,
       assignment_reason: assignmentReason,
+      prompt_policy: selectPromptPolicy({
+        ...partialTask,
+        assigned_model: assignedModel,
+        assignment_reason: assignmentReason,
+      } as SubTask),
     };
   });
-  const tasks = sanitizeExecutableTasks(rawTasks);
+  const tasks = sanitizeExecutableTasks(normalizedTasks);
 
   const plan: TaskPlan = {
     id: `plan-${Date.now()}`,
-    goal: claudeOutput.goal,
+    goal: rawGoal || '(planner goal omitted)',
     cwd: process.cwd(),
     tasks,
     execution_order: buildExecutionOrder(tasks),

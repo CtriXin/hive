@@ -3,6 +3,8 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import type {
   DoneCondition,
+  ExecutionMode,
+  LaneName,
   NextAction,
   OrchestratorResult,
   PlanDiscussResult,
@@ -19,6 +21,7 @@ import type {
   TaskPlan,
   TaskRunRecord,
   TaskRunStatus,
+  TaskExecutionContract,
   TokenBreakdown,
   VerificationResult,
   WorkerResult,
@@ -45,10 +48,34 @@ import { maybeRunExternalReviewSlot } from './review-room-handler.js';
 import { allRequiredChecksPassed, runVerification, runVerificationSuite } from './verifier.js';
 import { commitAndMergeWorktree } from './worktree-manager.js';
 import { loadProjectVerificationPolicy, loadTaskVerificationRules, type TaskVerificationRule } from './project-policy.js';
+import { selectRuleForTask } from './rule-selector.js';
+import { selectPromptPolicy } from './prompt-policy.js';
+import { loadLessonStore, refreshLessonStore, loadAllTransitionLogs, loadTaskStates, extractLessons } from './lesson-store.js';
+import type { LessonStore } from './types.js';
+import { initProjectMemory, loadProjectMemory, saveProjectMemory, refreshMemoryFreshness } from './project-memory-store.js';
+import { extractProjectMemories } from './memory-extractor.js';
+import { recallProjectMemories, formatMemoryRecall } from './memory-recall.js';
 import { getBudgetStatus, loadConfig, recordSpending } from './hive-config.js';
 import { writeLoopProgress, readLoopProgress, type LoopPhase, type LoopProgress } from './loop-progress-store.js';
 import { saveRoundScore } from './score-history.js';
 import { loadWorkerStatusSnapshot, updateWorkerStatus } from './worker-status-store.js';
+import {
+  getModeContract,
+  inferExecutionMode,
+  normalizeExecutionMode,
+  resolveEffectiveMode,
+  type InferModeOptions,
+} from './mode-policy.js';
+import {
+  getPendingSteeringActions,
+  updateSteeringStatus,
+  isDuplicateAction,
+  submitSteeringAction,
+  loadSteeringStore,
+  type SteeringStore,
+} from './steering-store.js';
+import type { SteeringAction } from './types.js';
+import { validateSteeringAction, applySteeringAction } from './steering-actions.js';
 
 // ── Options & Result ──
 
@@ -56,6 +83,12 @@ export interface CreateRunOptions {
   goal: string;
   cwd: string;
   mode?: RunMode;
+  /** Phase 5A: Operator-facing execution mode */
+  execution_mode?: ExecutionMode;
+  /** Operator-facing lane name (auto-derived if not provided) */
+  lane?: LaneName;
+  /** Agent count hint (never overrides dispatch_style) */
+  agent_count?: number;
   doneConditions?: DoneCondition[];
   maxRounds?: number;
   maxWorkerRetries?: number;
@@ -91,6 +124,18 @@ interface MergePassResult {
 // Module-level variable to preserve planner discuss conclusion across emitProgress calls
 let plannerDiscussConclusion: LoopProgress['planner_discuss_conclusion'] | undefined;
 
+// ── Phase 6A: Lesson helpers ──
+
+function refreshLessonsFromHistory(cwd: string, taskRules: Record<string, TaskVerificationRule>): import('./types.js').Lesson[] {
+  const store = refreshLessonStore(cwd, taskRules);
+  return store.lessons;
+}
+
+function extractFreshLessons(cwd: string, taskRules: Record<string, TaskVerificationRule>): import('./types.js').Lesson[] {
+  const transitionLogs = loadAllTransitionLogs(cwd);
+  return extractLessons(transitionLogs, {}, taskRules);
+}
+
 // ── Helpers ──
 
 function makeRunId(): string {
@@ -119,25 +164,6 @@ function makeNextAction(
   return { kind, reason, task_ids: taskIds, instructions };
 }
 
-function makeMaxRoundsEscalation(
-  state: RunState,
-  maxRounds: number,
-): NextAction {
-  const pendingAction = state.next_action;
-  if (!pendingAction || pendingAction.kind === 'request_human') {
-    return makeNextAction(
-      'request_human',
-      `Max rounds reached (${maxRounds}). Status: ${state.status}.`,
-    );
-  }
-
-  return makeNextAction(
-    'request_human',
-    `Max rounds reached (${maxRounds}) while pending ${pendingAction.kind}: ${pendingAction.reason}`,
-    pendingAction.task_ids,
-    pendingAction.instructions,
-  );
-}
 
 function isTerminalStatus(status: RunState['status']): boolean {
   return status === 'done' || status === 'blocked';
@@ -160,6 +186,21 @@ function setLoopPhase(
 function dedupe(values: string[]): string[] {
   return [...new Set(values)];
 }
+
+const BUILD_BASELINE_GOAL_PATTERNS = [
+  /\bcompile errors?\b/i,
+  /\btypescript compile\b/i,
+  /\bbuild clean\b/i,
+  /\bbaseline repair\b/i,
+  /\brestore .*build\b/i,
+  /\bbuild baseline\b/i,
+  /编译错误/,
+  /构建错误/,
+  /恢复.*build/,
+  /基线修复/,
+];
+
+const PHASE_HEARTBEAT_MS = 15_000;
 
 const FAILED_TASK_STATUSES = new Set<TaskRunStatus>([
   'worker_failed',
@@ -184,6 +225,23 @@ function normalizeRepoPath(file: string): string {
 function trimTail(text: string, limit = 4000): string {
   if (!text) return '';
   return text.length <= limit ? text : text.slice(-limit);
+}
+
+async function runWithHeartbeat<T>(
+  run: () => Promise<T>,
+  onHeartbeat: (elapsedMs: number) => void,
+  intervalMs = PHASE_HEARTBEAT_MS,
+): Promise<T> {
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    onHeartbeat(Date.now() - startedAt);
+  }, intervalMs);
+  (timer as any).unref?.();
+  try {
+    return await run();
+  } finally {
+    clearInterval(timer);
+  }
 }
 
 export function summarizeAuthorityReview(review: ReviewResult): string {
@@ -228,6 +286,10 @@ export function mergeWorkerTaskSummary(existingSummary: string | undefined, auth
   return `${existingSummary} || ${authoritySummary}`;
 }
 
+function taskExecutionContract(plan: TaskPlan, taskId: string): TaskExecutionContract {
+  return plan.tasks.find((task) => task.id === taskId)?.execution_contract || 'implementation';
+}
+
 function ensureTaskState(
   state: RunState,
   taskId: string,
@@ -243,6 +305,7 @@ function ensureTaskState(
     merged: false,
     worker_success: false,
     review_passed: false,
+    retry_count: 0,
   };
   state.task_states[taskId] = created;
   return created;
@@ -266,7 +329,7 @@ function updateTaskStatesFromWorkers(
     if (!worker.success) {
       record.status = 'worker_failed';
       record.last_error = worker.output.find((msg) => msg.type === 'error')?.content;
-    } else if (worker.changedFiles.length === 0) {
+    } else if (worker.changedFiles.length === 0 && worker.execution_contract === 'implementation') {
       record.status = 'no_op';
       record.last_error = 'Worker reported success but produced no file changes.';
     }
@@ -275,6 +338,7 @@ function updateTaskStatesFromWorkers(
 
 function updateTaskStatesFromReviews(
   state: RunState,
+  plan: TaskPlan,
   reviewResults: ReviewResult[],
 ): void {
   for (const review of reviewResults) {
@@ -285,7 +349,7 @@ function updateTaskStatesFromReviews(
       record.status = 'verified';
       record.last_error = undefined;
     } else if (!review.passed) {
-      if (record.worker_success && record.changed_files.length === 0) {
+      if (record.worker_success && record.changed_files.length === 0 && taskExecutionContract(plan, review.taskId) === 'implementation') {
         record.status = 'no_op';
         record.last_error = 'No-op task: worker reported success but changed no files.';
       } else {
@@ -297,7 +361,11 @@ function updateTaskStatesFromReviews(
 }
 
 function countNoOpTasks(workerResults: WorkerResult[]): number {
-  return workerResults.filter((worker) => worker.success && worker.changedFiles.length === 0).length;
+  return workerResults.filter((worker) =>
+    worker.success
+    && worker.changedFiles.length === 0
+    && worker.execution_contract === 'implementation'
+  ).length;
 }
 
 function markMergedTasks(
@@ -372,19 +440,56 @@ function dedupeConditions(conditions: DoneCondition[]): DoneCondition[] {
 function getTaskRule(
   task: SubTask | undefined,
   taskRules: Record<string, TaskVerificationRule>,
-): TaskVerificationRule | null {
-  if (!task?.verification_profile) return null;
-  return taskRules[task.verification_profile] || null;
+  options?: { lessons?: import('./types.js').Lesson[] },
+): { rule: TaskVerificationRule | null; selection: import('./types.js').RuleSelectionResult } {
+  if (!task) {
+    return {
+      rule: null,
+      selection: {
+        confidence: 0,
+        selection_reason: 'No task provided for rule selection.',
+        basis: 'fallback' as const,
+        evidence_summary: ['Task is undefined'],
+        auto_applied: false,
+        relevant_lessons: [],
+      },
+    };
+  }
+
+  // Explicit config always wins
+  if (task.verification_profile) {
+    return {
+      rule: taskRules[task.verification_profile] || null,
+      selection: {
+        selected_rule: task.verification_profile,
+        confidence: 1,
+        selection_reason: `Explicit verification_profile "${task.verification_profile}" specified.`,
+        basis: 'explicit_config' as const,
+        evidence_summary: [`Task defines verification_profile="${task.verification_profile}"`],
+        auto_applied: true,
+        relevant_lessons: [],
+      },
+    };
+  }
+
+  // Try learning-based selection
+  const ruleResult = selectRuleForTask(task, taskRules, { lessons: options?.lessons });
+  const matchedRule = ruleResult.selected_rule ? taskRules[ruleResult.selected_rule] : null;
+  return {
+    rule: matchedRule,
+    selection: ruleResult,
+  };
 }
 
 function getTaskVerificationConditions(
   baseConditions: DoneCondition[],
   task: SubTask | undefined,
   taskRules: Record<string, TaskVerificationRule>,
-): DoneCondition[] {
-  const taskRule = getTaskRule(task, taskRules);
-  const taskConditions = taskRule?.done_conditions || [];
-  return dedupeConditions([...baseConditions, ...taskConditions]);
+  lessons?: import('./types.js').Lesson[],
+): { conditions: DoneCondition[]; selection: import('./types.js').RuleSelectionResult } {
+  const { rule, selection } = getTaskRule(task, taskRules, { lessons });
+  const taskConditions = rule?.done_conditions || [];
+  return { conditions: dedupeConditions([...baseConditions, ...taskConditions]), selection };
 }
 
 function mergeVerificationResults(
@@ -424,8 +529,39 @@ function markTaskVerificationFailure(
     || results.find((result) => !result.passed);
   record.status = 'verification_failed';
   record.last_error = failed
-    ? `${failed.target.label}: ${failed.failure_class || failed.stderr_tail || 'verification failed'}`
+    ? summarizeVerificationFailure(failed)
     : 'verification failed';
+}
+
+function summarizeVerificationFailure(result: VerificationResult): string {
+  const parts = [result.target.label];
+  if (result.provider_failure_subtype) {
+    parts.push(`provider failure=${result.provider_failure_subtype}`);
+  }
+  if (result.provider_fallback_used) {
+    parts.push('fallback used');
+  }
+  if (result.requested_provider || result.actual_provider) {
+    const requested = formatVerificationModelRef(result.requested_model, result.requested_provider);
+    const actual = formatVerificationModelRef(result.actual_model, result.actual_provider);
+    if (requested && actual && requested !== actual) {
+      parts.push(`route ${requested} -> ${actual}`);
+    } else if (actual) {
+      parts.push(`route ${actual}`);
+    } else if (requested) {
+      parts.push(`route ${requested}`);
+    }
+  }
+  const detail = result.failure_class || result.stderr_tail || 'verification failed';
+  parts.push(detail);
+  return parts.join(': ');
+}
+
+function formatVerificationModelRef(model?: string, provider?: string): string | null {
+  if (model && provider) return `${model}@${provider}`;
+  if (model) return model;
+  if (provider) return provider;
+  return null;
 }
 
 function summarizeCollabStatus(snapshot: CollabStatusSnapshot): string {
@@ -511,14 +647,63 @@ export function inferDefaultDoneConditions(cwd: string): DoneCondition[] {
   return conditions;
 }
 
+function shouldPreflightBuildBaseline(goal: string): boolean {
+  return BUILD_BASELINE_GOAL_PATTERNS.some((pattern) => pattern.test(goal));
+}
+
+function preflightBuildConditions(conditions: DoneCondition[]): DoneCondition[] {
+  return conditions.filter((condition) =>
+    condition.type === 'build' && condition.must_pass,
+  );
+}
+
+function maybeShortCircuitSatisfiedBaseline(
+  spec: RunSpec,
+  state: RunState,
+): { shortCircuited: boolean; verificationResults: VerificationResult[] } {
+  if (!shouldPreflightBuildBaseline(spec.goal)) {
+    return { shortCircuited: false, verificationResults: [] };
+  }
+
+  const buildChecks = preflightBuildConditions(spec.done_conditions);
+  if (buildChecks.length === 0) {
+    return { shortCircuited: false, verificationResults: [] };
+  }
+
+  const results = runVerificationSuite(buildChecks, spec.cwd);
+  const buildPassed = allRequiredChecksPassed(results);
+  if (!buildPassed) {
+    return { shortCircuited: false, verificationResults: results };
+  }
+
+  state.verification_results = results;
+  state.status = 'done';
+  state.next_action = makeNextAction(
+    'finalize',
+    'Preflight satisfied: build baseline already clean; skipping planning and dispatch.',
+  );
+  state.final_summary = 'Preflight satisfied: build baseline already clean; no planner or worker dispatch needed.';
+  return { shortCircuited: true, verificationResults: results };
+}
+
 // ── Spec & State Factories ──
 
 export function createRunSpec(options: CreateRunOptions): RunSpec {
+  const executionMode = inferExecutionMode({
+    goal: options.goal,
+    explicit: options.execution_mode,
+    cwd: options.cwd,
+  });
+  const normalizedMode = normalizeExecutionMode(executionMode);
+  const lane = options.lane ?? deriveLaneFromMode(normalizedMode);
   return {
     id: makeRunId(),
     goal: options.goal,
     cwd: options.cwd,
     mode: options.mode || 'safe',
+    execution_mode: normalizedMode,
+    lane,
+    agent_count: options.agent_count,
     done_conditions:
       options.doneConditions || inferDefaultDoneConditions(options.cwd),
     max_rounds: options.maxRounds ?? 6,
@@ -528,6 +713,14 @@ export function createRunSpec(options: CreateRunOptions): RunSpec {
     stop_on_high_risk: options.stopOnHighRisk ?? true,
     created_at: new Date().toISOString(),
   };
+}
+
+/** Derive display lane name from resolved execution mode */
+function deriveLaneFromMode(mode: ExecutionMode): LaneName | undefined {
+  if (mode === 'auto-execute-small' || mode === 'quick') return 'auto-execute-small';
+  if (mode === 'execute-standard' || mode === 'auto') return 'execute-standard';
+  if (mode === 'execute-parallel' || mode === 'think') return 'execute-parallel';
+  return undefined;
 }
 
 export function initialNextAction(): NextAction {
@@ -542,7 +735,7 @@ export function createInitialRunState(spec: RunSpec): RunState {
   const budgetStatus = getBudgetStatus(loadConfig(spec.cwd));
   return {
     run_id: spec.id,
-    status: 'planning',
+    status: 'init',
     round: 0,
     completed_task_ids: [],
     failed_task_ids: [],
@@ -605,6 +798,7 @@ export async function resumeRun(
 function buildRepairPrompt(
   task: SubTask,
   findings: ReviewFinding[],
+  replacementNote?: string,
 ): string {
   const isNoOpRepair = findings.some((finding) =>
     finding.issue.toLowerCase().includes('no file changes')
@@ -634,6 +828,7 @@ function buildRepairPrompt(
     '### Instructions',
     'Fix all the issues listed above. Do not change unrelated code.',
     'Focus on the specific files and lines mentioned.',
+    ...(replacementNote ? [replacementNote] : []),
     ...(isNoOpRepair
       ? [
         'Your previous attempt produced no file changes.',
@@ -647,6 +842,103 @@ function buildRepairPrompt(
   ].join('\n');
 }
 
+type ReviewReplacementStrategy = 'original' | 'same-tier' | 'upper-tier';
+
+interface ReviewReplacementDecision {
+  modelId: string;
+  strategy: ReviewReplacementStrategy;
+  note?: string;
+}
+
+function speedTierRank(tier: ReturnType<ModelRegistry['getSpeedTier']>): number {
+  if (tier === 'fast') return 1;
+  if (tier === 'balanced') return 2;
+  if (tier === 'strong') return 3;
+  return 0;
+}
+
+function dedupeModelIds(modelIds: Array<string | undefined>): string[] {
+  return [...new Set(modelIds.filter((modelId): modelId is string => Boolean(modelId)))];
+}
+
+function pickReviewReplacementModel(
+  task: SubTask,
+  previousWorkerResult: WorkerResult | undefined,
+  registry: ModelRegistry,
+  retryCount: number,
+  cwd: string,
+): ReviewReplacementDecision {
+  const config = loadConfig(cwd);
+  const previousActualModel = previousWorkerResult?.model || task.assigned_model;
+  const previousRequestedModel = previousWorkerResult?.requested_model || task.assigned_model;
+  const previousTier = registry.getSpeedTier(previousActualModel);
+  const excluded = new Set(
+    [previousActualModel, previousRequestedModel, task.assigned_model].filter(Boolean),
+  );
+  const rankedCandidates = registry
+    .rankModelsForTask(task)
+    .filter((candidate) => !candidate.blocked_by?.length && !candidate.model.startsWith('claude-'));
+  const availableCandidates = rankedCandidates.filter((candidate) => !excluded.has(candidate.model));
+
+  if (availableCandidates.length === 0) {
+    return {
+      modelId: task.assigned_model,
+      strategy: 'original',
+      note: 'No alternate domestic executor candidate available; keeping the original model.',
+    };
+  }
+
+  if (retryCount === 0) {
+    const sameTierCandidate = availableCandidates.find((candidate) =>
+      previousTier !== 'unknown' && registry.getSpeedTier(candidate.model) === previousTier,
+    );
+    if (sameTierCandidate) {
+      return {
+        modelId: sameTierCandidate.model,
+        strategy: 'same-tier',
+        note: `Previous review failed under "${previousActualModel}". Retry with same-tier sibling "${sameTierCandidate.model}".`,
+      };
+    }
+
+    return {
+      modelId: availableCandidates[0].model,
+      strategy: 'same-tier',
+      note: `No same-tier sibling was available for "${previousActualModel}". Using best-ranked domestic replacement "${availableCandidates[0].model}".`,
+    };
+  }
+
+  const configuredUpperTier = dedupeModelIds([
+    config.high_tier,
+    config.default_worker,
+    config.fallback_worker,
+    config.tiers?.executor?.model,
+    config.tiers?.executor?.fallback,
+  ])
+    .filter((modelId) => !excluded.has(modelId) && !modelId.startsWith('claude-'));
+  const strongerTierCandidates = availableCandidates.filter((candidate) =>
+    speedTierRank(registry.getSpeedTier(candidate.model)) > speedTierRank(previousTier),
+  );
+  const upperTierCandidates = dedupeModelIds([
+    ...configuredUpperTier,
+    ...strongerTierCandidates.map((candidate) => candidate.model),
+    ...availableCandidates.map((candidate) => candidate.model),
+  ]);
+
+  if (upperTierCandidates.length > 0) {
+    return {
+      modelId: upperTierCandidates[0],
+      strategy: 'upper-tier',
+      note: `Review still failed after same-tier repair. Escalating from "${previousActualModel}" to upper-tier model "${upperTierCandidates[0]}".`,
+    };
+  }
+
+  return {
+    modelId: task.assigned_model,
+    strategy: 'original',
+    note: 'No upper-tier replacement candidate was available; keeping the original model.',
+  };
+}
+
 /**
  * Repair round: re-dispatch failed tasks with fresh worktrees.
  * Does NOT reuse old sessionId — each repair is a clean, isolated environment.
@@ -656,10 +948,11 @@ async function runRepairRound(
   state: RunState,
   plan: TaskPlan,
   failedReviews: ReviewResult[],
-  _previousWorkerResults: WorkerResult[],
+  previousWorkerResults: WorkerResult[],
   registry: ModelRegistry,
   inheritedSmokeResults: Record<string, boolean>,
   taskRules: Record<string, TaskVerificationRule>,
+  lessons: import('./types.js').Lesson[],
   hooks?: {
     onRecoverySnapshot?: (taskId: string, snapshot: CollabStatusSnapshot) => void | Promise<void>;
   },
@@ -675,6 +968,7 @@ async function runRepairRound(
   for (const review of failedReviews) {
     const task = plan.tasks.find((t) => t.id === review.taskId);
     if (!task) continue;
+    const previousWorkerResult = previousWorkerResults.find((item) => item.taskId === task.id);
 
     // Check retry budget
     const retryCount = state.retry_counts[task.id] || 0;
@@ -705,27 +999,44 @@ async function runRepairRound(
         await hooks?.onRecoverySnapshot?.(task.id, snapshot);
       },
     });
-    const repairPrompt = buildRepairPrompt(task, recovery.findings);
-    const modelCap = registry.get(task.assigned_model);
+    const isReviewFailure = state.task_states[task.id]?.status === 'review_failed';
+    const replacement = isReviewFailure
+      ? pickReviewReplacementModel(task, previousWorkerResult, registry, retryCount, spec.cwd)
+      : {
+        modelId: task.assigned_model,
+        strategy: 'original' as const,
+        note: undefined,
+      };
+    const repairPrompt = buildRepairPrompt(task, recovery.findings, replacement.note);
+    const repairModel = replacement.modelId;
+    const modelCap = registry.get(repairModel) || registry.get(task.assigned_model);
+    const repairNotePrefix = replacement.strategy === 'original'
+      ? undefined
+      : `review replacement via ${replacement.strategy} model ${repairModel}`;
 
     // Fresh worktree, no sessionId — clean isolation for each repair attempt
     const workerResult = await spawnWorker({
       taskId: task.id,
-      model: task.assigned_model,
-      provider: modelCap?.provider || task.assigned_model,
+      model: repairModel,
+      provider: modelCap?.provider || repairModel,
       prompt: repairPrompt,
       cwd: plan.cwd,
       worktree: true,
       contextInputs: [],
       discussThreshold: task.discuss_threshold,
       maxTurns: 25,
+      assignedModel: task.assigned_model,
+      runId: spec.id,
+      planId: plan.id,
+      round: state.round,
+      taskDescription: task.description,
     });
 
     repairWorkerResults.push(workerResult);
 
     if (workerResult.success) {
       // Re-run real smoke verification on the repair worktree
-      const taskConditions = getTaskVerificationConditions(spec.done_conditions, task, taskRules);
+      const { conditions: taskConditions } = getTaskVerificationConditions(spec.done_conditions, task, taskRules, lessons);
       const smokeCheckResults = smokeVerifyWorktree(taskConditions, workerResult);
       recordTaskVerificationResults(state, workerResult.taskId, smokeCheckResults);
       markTaskVerificationFailure(state, workerResult.taskId, smokeCheckResults);
@@ -747,7 +1058,9 @@ async function runRepairRound(
         round: state.round,
         findings_count: review.findings.length,
         outcome: reviewResult.passed ? 'fixed' : 'failed',
-        note: reviewResult.passed ? 'repair review passed' : 'repair review still failing',
+        note: reviewResult.passed
+          ? `${repairNotePrefix ? `${repairNotePrefix}; ` : ''}repair review passed`
+          : `${repairNotePrefix ? `${repairNotePrefix}; ` : ''}repair review still failing`,
       });
     } else {
       repairReviewResults.push({
@@ -763,7 +1076,9 @@ async function runRepairRound(
         round: state.round,
         findings_count: review.findings.length,
         outcome: 'failed',
-        note: 'worker repair execution failed',
+        note: repairNotePrefix
+          ? `${repairNotePrefix}; worker repair execution failed`
+          : 'worker repair execution failed',
       });
     }
   }
@@ -793,7 +1108,253 @@ function smokeVerifyWorktree(
   );
   if (smokeChecks.length === 0) return [];
 
-  return smokeChecks.map((c) => runVerification(c, workerResult.worktreePath));
+  return smokeChecks.map((c) => ({
+    ...runVerification(c, workerResult.worktreePath),
+    provider_failure_subtype: workerResult.provider_failure_subtype,
+    provider_fallback_used: workerResult.provider_fallback_used,
+    requested_model: workerResult.requested_model,
+    requested_provider: workerResult.requested_provider,
+    actual_model: workerResult.model,
+    actual_provider: workerResult.provider,
+  }));
+}
+
+function shouldSurfaceInfraFault(review: ReviewResult): boolean {
+  if (review.failure_attribution === 'infra_fault') {
+    return true;
+  }
+  return review.findings.some((finding) => /\binfra(?:_| )fault\b/i.test(finding.issue));
+}
+
+function hasProviderFailureContext(worker: WorkerResult): boolean {
+  return Boolean(
+    worker.provider_failure_subtype
+    || worker.provider_fallback_used
+    || worker.requested_model
+    || worker.requested_provider,
+  );
+}
+
+function buildInfraFaultSummary(worker: WorkerResult): string {
+  const requested = formatVerificationModelRef(worker.requested_model, worker.requested_provider);
+  const actual = formatVerificationModelRef(worker.model, worker.provider);
+  const route = requested && actual && requested !== actual
+    ? `${requested} -> ${actual}`
+    : actual || requested || worker.model;
+  const details = [route];
+  if (worker.provider_failure_subtype) {
+    details.push(`provider failure=${worker.provider_failure_subtype}`);
+  }
+  if (worker.provider_fallback_used) {
+    details.push('fallback used');
+  }
+  return `Infra fault context: ${details.join(', ')}`;
+}
+
+function mergeInfraFaultIntoReview(
+  review: ReviewResult,
+  worker: WorkerResult | undefined,
+): ReviewResult {
+  if (!worker || !shouldSurfaceInfraFault(review) || !hasProviderFailureContext(worker)) {
+    return review;
+  }
+  const summary = buildInfraFaultSummary(worker);
+  const findings = review.findings.some((finding) => finding.issue === summary)
+    ? review.findings
+    : [
+      ...review.findings,
+      {
+        id: review.findings.length + 1,
+        severity: 'yellow' as const,
+        lens: 'infra',
+        file: 'worker-dispatch',
+        issue: summary,
+        decision: 'flag' as const,
+        decision_reason: 'Attached from worker provider fallback metadata',
+      },
+    ];
+  return {
+    ...review,
+    findings,
+  };
+}
+
+function mergeInfraFaultsIntoReviews(
+  workerResults: WorkerResult[],
+  reviewResults: ReviewResult[],
+): ReviewResult[] {
+  return reviewResults.map((review) => mergeInfraFaultIntoReview(
+    review,
+    workerResults.find((worker) => worker.taskId === review.taskId),
+  ));
+}
+
+function inferWorkerInfraFault(worker: WorkerResult): ReviewResult | null {
+  if (worker.success || !hasProviderFailureContext(worker)) {
+    return null;
+  }
+  const summary = buildInfraFaultSummary(worker);
+  return {
+    taskId: worker.taskId,
+    final_stage: 'cross-review',
+    passed: false,
+    findings: [{
+      id: 1,
+      severity: 'yellow',
+      lens: 'infra',
+      file: 'worker-dispatch',
+      issue: summary,
+      decision: 'flag',
+      decision_reason: 'Synthesized from worker provider failure metadata',
+    }],
+    iterations: 0,
+    duration_ms: 0,
+    failure_attribution: 'infra_fault',
+  };
+}
+
+function buildWorkerInfraFaultMap(workerResults: WorkerResult[]): Map<string, ReviewResult> {
+  const map = new Map<string, ReviewResult>();
+  for (const worker of workerResults) {
+    const synthesized = inferWorkerInfraFault(worker);
+    if (synthesized) {
+      map.set(worker.taskId, synthesized);
+    }
+  }
+  return map;
+}
+
+function getRepairReviewsWithInfraFaults(
+  requestedTaskIds: Set<string>,
+  currentState: RunState,
+  latestResult: OrchestratorResult,
+): ReviewResult[] {
+  const repairTargets = new Map<string, ReviewResult>();
+  const workerInfraFaults = buildWorkerInfraFaultMap(latestResult.worker_results);
+  for (const review of latestResult.review_results.filter((r) => !r.passed)) {
+    repairTargets.set(review.taskId, review);
+  }
+  for (const [taskId, review] of workerInfraFaults.entries()) {
+    if (!repairTargets.has(taskId)) {
+      repairTargets.set(taskId, review);
+    }
+  }
+  for (const taskId of requestedTaskIds) {
+    if (repairTargets.has(taskId)) continue;
+    const taskState = currentState.task_states[taskId];
+    repairTargets.set(taskId, {
+      taskId,
+      final_stage: 'cross-review',
+      passed: false,
+      findings: [{
+        id: 1,
+        severity: 'red',
+        lens: 'verification',
+        file: 'task-verification',
+        issue: taskState?.last_error || 'Task-scoped verification failed.',
+        decision: 'flag',
+        decision_reason: 'Synthesized from verification failure state',
+      }],
+      iterations: 0,
+      duration_ms: 0,
+    });
+  }
+  return [...repairTargets.values()];
+}
+
+function enrichResultInfraFaultMetadata(result: OrchestratorResult): OrchestratorResult {
+  return {
+    ...result,
+    review_results: mergeInfraFaultsIntoReviews(result.worker_results, result.review_results),
+  };
+}
+
+function makeInfraFaultReason(
+  taskIds: string[],
+  result: OrchestratorResult,
+  fallbackReason: string,
+): string {
+  const summaries = taskIds
+    .map((taskId) => result.review_results.find((review) => review.taskId === taskId))
+    .flatMap((review) => review?.findings || [])
+    .filter((finding) => finding.file === 'worker-dispatch' && finding.issue.startsWith('Infra fault context:'))
+    .map((finding) => finding.issue.replace('Infra fault context: ', ''));
+  if (summaries.length === 0) {
+    return fallbackReason;
+  }
+  return `${fallbackReason} (${summaries.join('; ')})`;
+}
+
+function makeReviewFailureReason(
+  taskIds: string[],
+  result: OrchestratorResult,
+  fallbackReason: string,
+): string {
+  const infraTasks = result.review_results
+    .filter((review) => taskIds.includes(review.taskId) && shouldSurfaceInfraFault(review))
+    .map((review) => review.taskId);
+  if (infraTasks.length === 0) {
+    return fallbackReason;
+  }
+  return makeInfraFaultReason(infraTasks, result, fallbackReason);
+}
+
+function makeVerificationRepairReason(
+  taskIds: string[],
+  state: RunState,
+  fallbackReason: string,
+): string {
+  const infraDetails = taskIds
+    .flatMap((taskId) => state.task_verification_results[taskId] || [])
+    .filter((result) => !result.passed && result.provider_failure_subtype)
+    .map((result) => summarizeVerificationFailure(result));
+  if (infraDetails.length === 0) {
+    return fallbackReason;
+  }
+  return `${fallbackReason} (${infraDetails.join('; ')})`;
+}
+
+function makeMergeBlockedReason(
+  taskIds: string[],
+  result: OrchestratorResult,
+  fallbackReason: string,
+): string {
+  const infraTasks = taskIds.filter((taskId) =>
+    result.worker_results.some((worker) => worker.taskId === taskId && hasProviderFailureContext(worker)),
+  );
+  if (infraTasks.length === 0) {
+    return fallbackReason;
+  }
+  return makeInfraFaultReason(infraTasks, result, fallbackReason);
+}
+
+function makeMaxRoundsReason(state: RunState, maxRounds: number): string {
+  const pendingAction = state.next_action;
+  if (!pendingAction || pendingAction.kind === 'request_human') {
+    return `Max rounds reached (${maxRounds}). Status: ${state.status}.`;
+  }
+
+  return `Max rounds reached (${maxRounds}) while pending ${pendingAction.kind}: ${pendingAction.reason}`;
+}
+
+function makeMaxRoundsEscalation(
+  state: RunState,
+  maxRounds: number,
+): NextAction {
+  const pendingAction = state.next_action;
+  if (!pendingAction || pendingAction.kind === 'request_human') {
+    return makeNextAction(
+      'request_human',
+      makeMaxRoundsReason(state, maxRounds),
+    );
+  }
+
+  return makeNextAction(
+    'request_human',
+    makeMaxRoundsReason(state, maxRounds),
+    pendingAction.task_ids,
+    pendingAction.instructions,
+  );
 }
 
 // ── Per-task progressive merge ──
@@ -1090,6 +1651,16 @@ function suiteScopedConditions(conditions: DoneCondition[]): DoneCondition[] {
   );
 }
 
+/**
+ * For minimal verification modes, exclude full-suite conditions.
+ * Only keep build checks (scope 'both' or 'build') as minimal gates.
+ */
+export function minimalSuiteConditions(conditions: DoneCondition[]): DoneCondition[] {
+  return conditions.filter((condition) =>
+    condition.scope === 'both' || condition.type === 'build',
+  );
+}
+
 function runPolicyHooks(
   hooks: PolicyHook[],
   cwd: string,
@@ -1116,6 +1687,92 @@ function runPolicyHooks(
       round,
     };
   });
+}
+
+// ── Phase 8B: Steering at safe point ──
+
+interface SteeringProcessResult {
+  breakLoop: boolean;
+  overrideAction?: { kind: NextAction['kind']; reason: string; taskIds: string[]; instructions?: string };
+}
+
+function processSteeringAtSafePoint(
+  spec: RunSpec,
+  state: RunState,
+): SteeringProcessResult {
+  if (!state.steering) {
+    state.steering = { paused: false, pending_actions: [] };
+  }
+
+  // Check if paused — block further processing
+  if (state.steering.paused) {
+    return { breakLoop: true };
+  }
+
+  const pending = getPendingSteeringActions(spec.cwd, spec.id);
+  if (pending.length === 0) {
+    return { breakLoop: false };
+  }
+
+  let breakLoop = false;
+  let overrideAction: SteeringProcessResult['overrideAction'];
+
+  for (const action of pending) {
+    // Suppress duplicates (exclude current action to avoid self-suppression)
+    if (isDuplicateAction(spec.cwd, spec.id, action.action_type, action.task_id, undefined, action.action_id)) {
+      updateSteeringStatus(spec.cwd, spec.id, action.action_id, 'suppressed', 'Duplicate action suppressed');
+      continue;
+    }
+
+    const validation = validateSteeringAction(action, spec, state);
+    if (!validation.allowed) {
+      updateSteeringStatus(spec.cwd, spec.id, action.action_id, 'rejected', validation.reason);
+      state.steering!.last_rejected = {
+        action_id: action.action_id,
+        action_type: action.action_type,
+        reason: validation.reason!,
+        applied_at: Date.now(),
+      };
+      console.log(`  ⛔ Steering rejected: ${action.action_type} — ${validation.reason}`);
+      continue;
+    }
+
+    const applyResult = applySteeringAction(action, state, spec);
+    if (applyResult.applied) {
+      updateSteeringStatus(spec.cwd, spec.id, action.action_id, 'applied', applyResult.effect);
+      console.log(`  ✅ Steering applied: ${action.action_type} → ${applyResult.effect}`);
+
+      if (action.action_type === 'pause_run') {
+        breakLoop = true;
+      }
+      if (applyResult.nextActionKind) {
+        overrideAction = {
+          kind: applyResult.nextActionKind as NextAction['kind'],
+          reason: `Human steering: ${action.action_type}`,
+          taskIds: action.task_id ? [action.task_id] : [],
+          instructions: action.payload.reason,
+        };
+      }
+      if (action.action_type === 'retry_task' && action.task_id) {
+        overrideAction = {
+          kind: 'repair_task',
+          reason: `Human steering: retry task ${action.task_id}`,
+          taskIds: [action.task_id],
+          instructions: action.payload.reason,
+        };
+      }
+      if (action.action_type === 'mark_requires_human') {
+        state.status = 'partial';
+        state.next_action = makeNextAction(
+          'request_human',
+          `Human intervention requested: ${action.payload.reason || 'operator flagged run'}`,
+        );
+        breakLoop = true;
+      }
+    }
+  }
+
+  return { breakLoop, overrideAction };
 }
 
 // ── Main execution loop ──
@@ -1162,6 +1819,16 @@ export async function executeRun(
   const registry = new ModelRegistry();
   const projectPolicy = loadProjectVerificationPolicy(spec.cwd);
   const taskRules = loadTaskVerificationRules(spec.cwd);
+  // Phase 6A: Load cross-run lessons
+  const lessonStore = loadLessonStore(spec.cwd);
+  const lessons = lessonStore?.lessons
+    ? refreshLessonsFromHistory(spec.cwd, taskRules)
+    : extractFreshLessons(spec.cwd, taskRules);
+
+  // Phase 7A: Initialize and extract project memory
+  const projectMemory = initProjectMemory(spec.cwd);
+  extractProjectMemories(spec.cwd, projectMemory);
+  saveProjectMemory(spec.cwd, projectMemory);
   const preMergeHooks = projectPolicy?.hooks.filter((hook) => hook.stage === 'pre_merge') || [];
   const postVerifyHooks = projectPolicy?.hooks.filter((hook) => hook.stage === 'post_verify') || [];
 
@@ -1176,6 +1843,31 @@ export async function executeRun(
     return { spec, state: currentState, plan, result: loadRunResult(spec.cwd, spec.id) ?? undefined };
   }
 
+  // ── Phase 5A.2 / 8D: Early-exit lanes (effective mode with runtime override) ──
+  const effective = resolveEffectiveMode(spec, currentState);
+  const { normalized: normalizedMode, contract: modeContract } = effective;
+  if (effective.overridden) {
+    console.log(`  🔀 Effective mode: ${effective.mode} (${effective.source}, was ${spec.execution_mode})`);
+  }
+
+  if (normalizedMode === 'record-only') {
+    currentState.status = 'done';
+    currentState.next_action = makeNextAction('finalize', `Record-only: goal recorded without execution — ${spec.goal}`);
+    currentState.final_summary = `Record-only: goal recorded without execution — ${spec.goal}`;
+    saveRunState(spec.cwd, currentState);
+    emitProgress('done', `Record-only: goal recorded without execution`);
+    return { spec, state: currentState, plan: null };
+  }
+
+  if (normalizedMode === 'clarify-first') {
+    currentState.status = 'blocked';
+    currentState.next_action = makeNextAction('request_human', `Clarify-first: goal requires clarification before execution — ${spec.goal}`);
+    currentState.final_summary = `Clarify-first: waiting for user clarification — ${spec.goal}`;
+    saveRunState(spec.cwd, currentState);
+    emitProgress('blocked', `Clarify-first: waiting for user clarification`);
+    return { spec, state: currentState, plan: null };
+  }
+
   // ── Loop: keep going until terminal or budget exhausted ──
   while (
     currentState.round < spec.max_rounds &&
@@ -1185,6 +1877,21 @@ export async function executeRun(
     if (blockIfBudgetExhausted(spec, currentState)) {
       break;
     }
+
+    // ── Phase 8B: Process pending steering actions at safe point ──
+    const steeringResult = processSteeringAtSafePoint(spec, currentState);
+    if (steeringResult.breakLoop) {
+      break;
+    }
+    if (steeringResult.overrideAction) {
+      currentState.next_action = makeNextAction(
+        steeringResult.overrideAction.kind,
+        steeringResult.overrideAction.reason,
+        steeringResult.overrideAction.taskIds,
+        steeringResult.overrideAction.instructions,
+      );
+    }
+
     currentState.round += 1;
     const action = currentState.next_action?.kind || 'execute';
     let roundExtraStages: StageTokenUsage[] = [];
@@ -1195,6 +1902,15 @@ export async function executeRun(
 
     // ── Phase 1: Planning (first round or replan) ──
     if (action === 'execute' && !plan) {
+      if (currentState.round === 1) {
+        const preflight = maybeShortCircuitSatisfiedBaseline(spec, currentState);
+        if (preflight.shortCircuited) {
+          saveRunState(spec.cwd, currentState);
+          emitProgress('done', 'Preflight satisfied: build baseline already clean');
+          break;
+        }
+      }
+
       setLoopPhase(
         spec.cwd,
         currentState,
@@ -1204,18 +1920,23 @@ export async function executeRun(
       );
       emitProgress('planning', 'Generating plan via LLM planner...');
 
-      const planning = await planGoal(spec.goal, spec.cwd, {
-        onPlannerDiscussSnapshot: (snapshot) => {
-          planDiscussCollab = snapshot;
-          activeCollabSnapshot = snapshot;
-          const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
-          emitProgress(
-            'discussing',
-            `Planner discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
-            {},
-          );
+      const planning = await runWithHeartbeat(
+        () => planGoal(spec.goal, spec.cwd, {
+          onPlannerDiscussSnapshot: (snapshot) => {
+            planDiscussCollab = snapshot;
+            activeCollabSnapshot = snapshot;
+            const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+            emitProgress(
+              'discussing',
+              `Planner discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+              {},
+            );
+          },
+        }, { projectMemory }),
+        (elapsedMs) => {
+          emitProgress('planning', `Generating plan via LLM planner... (still running ${Math.floor(elapsedMs / 1000)}s)`);
         },
-      });
+      );
       if (!planning.plan) {
         currentState.status = 'blocked';
         currentState.next_action = makeNextAction(
@@ -1249,6 +1970,9 @@ export async function executeRun(
       plannerDiagnostics = planning.planner_diagnostics;
       persistPlannerAdvisoryScores(spec.cwd, spec.id, planDiscussRoom, planDiscuss);
       persistPlannerDiscussConclusion(spec.cwd, spec.id, planDiscuss);
+      for (const task of plan.tasks) {
+        task.prompt_policy = task.prompt_policy || selectPromptPolicy(task);
+      }
       emitProgress('executing', `Plan ready: ${plan.tasks.length} tasks via ${plannerModel || 'auto'}${planDiscuss ? ` | discuss: ${planDiscuss.quality_gate}` : ''}`);
       seedTaskStatesFromPlan(currentState, plan);
       currentState.current_plan_id = plan.id;
@@ -1256,6 +1980,23 @@ export async function executeRun(
     }
 
     if (action === 'replan') {
+      // Phase 5A.2: Mode contract check — some lanes forbid replan
+      if (!modeContract.allow_replan) {
+        console.log(`  ⏭️  ${normalizedMode}: replan not allowed by mode contract, requesting human`);
+        const passedReviews = latestResult!.review_results.filter((r) => r.passed).length;
+        const failedReviews = latestResult!.review_results.length - passedReviews;
+        const mergeText = currentState.merged_task_ids.length > 0
+          ? `; merged: ${currentState.merged_task_ids.join(', ')}` : '';
+        currentState.status = 'partial';
+        currentState.next_action = makeNextAction(
+          'request_human',
+          `${normalizedMode}: replan disabled by mode contract. Failed tasks need attention.`,
+        );
+        currentState.final_summary = `${passedReviews}/${latestResult!.review_results.length} reviews passed; ${failedReviews} failed; replan disabled${mergeText}.`;
+        saveRunState(spec.cwd, currentState);
+        break;
+      }
+
       if (currentState.replan_count >= spec.max_replans) {
         currentState.status = 'partial';
         currentState.next_action = makeNextAction(
@@ -1297,18 +2038,23 @@ export async function executeRun(
         'Please create a revised plan that addresses the remaining failures only.',
       ].join('\n');
 
-      const planning = await planGoal(replanGoal, spec.cwd, {
-        onPlannerDiscussSnapshot: (snapshot) => {
-          planDiscussCollab = snapshot;
-          activeCollabSnapshot = snapshot;
-          const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
-          emitProgress(
-            'discussing',
-            `Planner discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
-            {},
-          );
+      const planning = await runWithHeartbeat(
+        () => planGoal(replanGoal, spec.cwd, {
+          onPlannerDiscussSnapshot: (snapshot) => {
+            planDiscussCollab = snapshot;
+            activeCollabSnapshot = snapshot;
+            const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+            emitProgress(
+              'discussing',
+              `Planner discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+              {},
+            );
+          },
+        }, { projectMemory }),
+        (elapsedMs) => {
+          emitProgress('replanning', `Replanning remaining work... (still running ${Math.floor(elapsedMs / 1000)}s)`);
         },
-      });
+      );
       if (!planning.plan) {
         currentState.status = 'blocked';
         currentState.next_action = makeNextAction(
@@ -1350,6 +2096,23 @@ export async function executeRun(
     let mergePassResult: MergePassResult = { mergedTaskIds: [], blocked: [] };
 
     if (action === 'repair_task' && latestResult) {
+      // Phase 5A.2: Mode contract check — some lanes forbid repair
+      if (!modeContract.allow_repair) {
+        console.log(`  ⏭️  ${normalizedMode}: repair not allowed by mode contract, requesting human`);
+        const passedReviews = latestResult.review_results.filter((r) => r.passed).length;
+        const failedReviews = latestResult.review_results.length - passedReviews;
+        const mergeText = currentState.merged_task_ids.length > 0
+          ? `; merged: ${currentState.merged_task_ids.join(', ')}` : '';
+        currentState.status = 'partial';
+        currentState.next_action = makeNextAction(
+          'request_human',
+          `${normalizedMode}: repair disabled by mode contract. Failed tasks need attention.`,
+        );
+        currentState.final_summary = `${passedReviews}/${latestResult.review_results.length} reviews passed; ${failedReviews} failed; repair disabled${mergeText}.`;
+        saveRunState(spec.cwd, currentState);
+        break;
+      }
+
       const requestedTaskIds = new Set(currentState.next_action?.task_ids || []);
       emitProgress('repairing', `Repairing ${Math.max(1, requestedTaskIds.size)} failed task(s)...`);
       setLoopPhase(
@@ -1360,64 +2123,50 @@ export async function executeRun(
         `Repairing ${Math.max(1, requestedTaskIds.size)} failed task(s)...`,
         [...requestedTaskIds],
       );
-      const repairTargets = new Map<string, ReviewResult>();
-      for (const review of latestResult.review_results.filter((r) => !r.passed)) {
-        repairTargets.set(review.taskId, review);
-      }
-      for (const taskId of requestedTaskIds) {
-        if (repairTargets.has(taskId)) continue;
-        const taskState = currentState.task_states[taskId];
-        repairTargets.set(taskId, {
-          taskId,
-          final_stage: 'cross-review',
-          passed: false,
-          findings: [{
-            id: 1,
-            severity: 'red',
-            lens: 'verification',
-            file: 'task-verification',
-            issue: taskState?.last_error || 'Task-scoped verification failed.',
-            decision: 'flag',
-            decision_reason: 'Synthesized from verification failure state',
-          }],
-          iterations: 0,
-          duration_ms: 0,
-        });
-      }
-      const failedReviews = [...repairTargets.values()];
+      const failedReviews = getRepairReviewsWithInfraFaults(
+        requestedTaskIds,
+        currentState,
+        latestResult,
+      );
       // Carry forward original smoke results for review escalation
       const inheritedSmokeResults = currentState._smokeResults ?? {};
-      const repair = await runRepairRound(
-        spec,
-        currentState,
-        plan,
-        failedReviews,
-        latestResult.worker_results,
-        registry,
-        inheritedSmokeResults,
-        taskRules,
-        {
-          onRecoverySnapshot: async (taskId, snapshot) => {
-            activeCollabSnapshot = snapshot;
-            const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
-            emitProgress(
-              'repairing',
-              `Recovery advisory ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
-              {
+      const repair = await runWithHeartbeat(
+        () => runRepairRound(
+          spec,
+          currentState,
+          plan!,
+          failedReviews,
+          latestResult!.worker_results,
+          registry,
+          inheritedSmokeResults,
+          taskRules,
+          lessons,
+          {
+            onRecoverySnapshot: async (taskId, snapshot) => {
+              activeCollabSnapshot = snapshot;
+              const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+              emitProgress(
+                'repairing',
+                `Recovery advisory ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+                {
+                  collab: snapshot,
+                  focus_task_id: taskId,
+                },
+              );
+              updateWorkerStatus(spec.cwd, spec.id, {
+                task_id: taskId,
+                status: 'discussing',
+                plan_id: plan!.id,
+                round: currentState.round,
+                task_summary: summarizeCollabStatus(snapshot),
+                last_message: snapshot.card.next,
                 collab: snapshot,
-                focus_task_id: taskId,
-              },
-            );
-            updateWorkerStatus(spec.cwd, spec.id, {
-              task_id: taskId,
-              status: 'discussing',
-              plan_id: plan!.id,
-              round: currentState.round,
-              task_summary: summarizeCollabStatus(snapshot),
-              last_message: snapshot.card.next,
-              collab: snapshot,
-            });
+              });
+            },
           },
+        ),
+        (elapsedMs) => {
+          emitProgress('repairing', `Repairing failed task(s)... (still running ${Math.floor(elapsedMs / 1000)}s)`);
         },
       );
 
@@ -1482,22 +2231,28 @@ export async function executeRun(
       );
 
       emitProgress('executing', `Dispatching ${plan.tasks.length} task(s): ${plan.tasks.map(t => `${t.id}→${t.assigned_model}`).join(', ')}`);
-      const dispatchResult = await dispatchBatch(plan, registry, {
-        runId: spec.id,
-        round: currentState.round,
-        onWorkerDiscussSnapshot: async (snapshot) => {
-          activeCollabSnapshot = snapshot;
-          const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
-          emitProgress(
-            'discussing',
-            `Worker discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
-            {
-              collab: snapshot,
-              focus_task_id: snapshot.card.focus_task_id,
-            },
-          );
+      const dispatchResult = await runWithHeartbeat(
+        () => dispatchBatch(plan!, registry, {
+          runId: spec.id,
+          round: currentState.round,
+          executionMode: normalizedMode,
+          onWorkerDiscussSnapshot: async (snapshot) => {
+            activeCollabSnapshot = snapshot;
+            const replyLabel = snapshot.card.replies === 1 ? 'reply' : 'replies';
+            emitProgress(
+              'discussing',
+              `Worker discuss ${snapshot.card.status}: ${snapshot.card.replies} ${replyLabel}`,
+              {
+                collab: snapshot,
+                focus_task_id: snapshot.card.focus_task_id,
+              },
+            );
+          },
+        }, { recordBudget: false }),
+        (elapsedMs) => {
+          emitProgress('executing', `Dispatching ${plan!.tasks.length} task(s)... (still running ${Math.floor(elapsedMs / 1000)}s)`);
         },
-      }, { recordBudget: false });
+      );
       workerResults = dispatchResult.worker_results;
       const succeeded = workerResults.filter(w => w.success).length;
       emitProgress('reviewing', `Workers done: ${succeeded}/${workerResults.length} succeeded`);
@@ -1508,7 +2263,7 @@ export async function executeRun(
       for (const wr of workerResults) {
         if (!wr.success || !wr.worktreePath) continue;
         const task = plan!.tasks.find((t) => t.id === wr.taskId);
-        const taskConditions = getTaskVerificationConditions(spec.done_conditions, task, taskRules);
+        const { conditions: taskConditions } = getTaskVerificationConditions(spec.done_conditions, task, taskRules, lessons);
         const results = smokeVerifyWorktree(taskConditions, wr);
         recordTaskVerificationResults(currentState, wr.taskId, results);
         markTaskVerificationFailure(currentState, wr.taskId, results);
@@ -1627,7 +2382,7 @@ export async function executeRun(
 
     // Update completed/failed tracking
     updateTaskStatesFromWorkers(currentState, workerResults);
-    updateTaskStatesFromReviews(currentState, reviewResults);
+    updateTaskStatesFromReviews(currentState, plan, reviewResults);
     markMergeBlockedTasks(currentState, mergePassResult.blocked);
 
     currentState.completed_task_ids = workerResults
@@ -1661,23 +2416,30 @@ export async function executeRun(
       'Running merged-code verification...',
       currentState.merged_task_ids,
     );
+    // Respect mode contract verification_scope: minimal modes skip full-suite tests
+    const effectiveConditions = modeContract.verification_scope === 'minimal'
+      ? minimalSuiteConditions(spec.done_conditions)
+      : suiteScopedConditions(spec.done_conditions);
     const suiteResults = runVerificationSuite(
-      suiteScopedConditions(spec.done_conditions),
+      effectiveConditions,
       spec.cwd,
     );
     const taskSuiteResults: VerificationResult[] = [];
-    for (const taskId of currentState.merged_task_ids) {
-      const task = plan.tasks.find((item) => item.id === taskId);
-      const taskRule = getTaskRule(task, taskRules);
-      if (!taskRule || taskRule.done_conditions.length === 0) continue;
+    // Skip task-level suite verification for minimal verification modes
+    if (modeContract.verification_scope !== 'minimal') {
+      for (const taskId of currentState.merged_task_ids) {
+        const task = plan.tasks.find((item) => item.id === taskId);
+        const { rule: taskRule } = getTaskRule(task, taskRules, { lessons });
+        if (!taskRule || taskRule.done_conditions.length === 0) continue;
 
-      const scopedRuleConditions = suiteScopedConditions(taskRule.done_conditions);
-      if (scopedRuleConditions.length === 0) continue;
+        const scopedRuleConditions = suiteScopedConditions(taskRule.done_conditions);
+        if (scopedRuleConditions.length === 0) continue;
 
-      const results = runVerificationSuite(scopedRuleConditions, spec.cwd);
-      recordTaskVerificationResults(currentState, taskId, results);
-      markTaskVerificationFailure(currentState, taskId, results);
-      taskSuiteResults.push(...results);
+        const results = runVerificationSuite(scopedRuleConditions, spec.cwd);
+        recordTaskVerificationResults(currentState, taskId, results);
+        markTaskVerificationFailure(currentState, taskId, results);
+        taskSuiteResults.push(...results);
+      }
     }
     currentState.verification_results = [...suiteResults, ...taskSuiteResults];
     const postVerifyResults = runPolicyHooks(postVerifyHooks, spec.cwd, currentState.round);
@@ -1700,7 +2462,7 @@ export async function executeRun(
     currentState.budget_status = budgetStatus;
     currentState.budget_warning = budgetStatus?.warning ?? null;
     const totalCost = aggregateRoundCosts(currentState.round_cost_history);
-    const orchestratorResult: OrchestratorResult = {
+    const orchestratorResult = enrichResultInfraFaultMetadata({
       plan,
       worker_results: workerResults,
       review_results: reviewResults,
@@ -1714,8 +2476,9 @@ export async function executeRun(
       budget_status: budgetStatus,
       budget_warning: budgetStatus?.warning ?? null,
       task_verification_results: currentState.task_verification_results,
-    };
+    });
     latestResult = orchestratorResult;
+    reviewResults = orchestratorResult.review_results;
     saveRunResult(spec.cwd, spec.id, orchestratorResult);
 
     // ── Phase 4: Decide next action ──
@@ -1732,7 +2495,27 @@ export async function executeRun(
       .filter((item) => item.kind !== 'scope_violation')
       .map((item) => item.taskId);
 
-    if (allReviewsPassed && allSmokeChecksPassed && suiteVerificationPassed && mergeBlockedTaskIds.length === 0) {
+    // For minimal verification modes, only minimal-scoped checks are blocking.
+    // Out-of-scope suite failures (e.g., npm test, lint) are advisory and ignored.
+    const minimalCheckKeys = new Set(
+      minimalSuiteConditions(spec.done_conditions).map(conditionKey),
+    );
+    const minimalSuiteChecksPassed = suiteResults
+      .filter((r) => minimalCheckKeys.has(conditionKey(r.target)))
+      .every((r) => !r.target.must_pass || r.passed);
+
+    // Smoke checks are advisory for minimal modes (worktree builds often fail
+    // due to pre-existing errors unrelated to the worker's changes).
+    const smokeChecksAdvisory = modeContract.verification_scope === 'minimal'
+      && allReviewsPassed;
+
+    // Suite verification non-blocking when all minimal required checks passed.
+    // Out-of-scope failures (scope:suite) are advisory for minimal modes.
+    const suiteVerificationNonBlocking = modeContract.verification_scope === 'minimal'
+      && allReviewsPassed
+      && minimalSuiteChecksPassed;
+
+    if (allReviewsPassed && (allSmokeChecksPassed || smokeChecksAdvisory) && (suiteVerificationPassed || suiteVerificationNonBlocking) && mergeBlockedTaskIds.length === 0) {
       currentState.status = 'done';
       currentState.next_action = makeNextAction(
         'finalize',
@@ -1757,17 +2540,25 @@ export async function executeRun(
       currentState.status = 'partial';
       currentState.next_action = makeNextAction(
         'request_human',
-        `${otherMergeBlockedTaskIds.length} task(s) were blocked during auto-merge: ${mergePassResult.blocked.map((item) => `${item.taskId}=${item.kind}`).join(', ')}`,
+        makeMergeBlockedReason(
+          otherMergeBlockedTaskIds,
+          orchestratorResult,
+          `${otherMergeBlockedTaskIds.length} task(s) were blocked during auto-merge: ${mergePassResult.blocked.map((item) => `${item.taskId}=${item.kind}`).join(', ')}`,
+        ),
         otherMergeBlockedTaskIds,
       );
     } else if (allReviewsPassed && !allSmokeChecksPassed) {
       currentState.status = 'partial';
       currentState.next_action = makeNextAction(
         'repair_task',
-        `${smokeFailedTaskIds.length} task(s) failed task-scoped verification. Attempting repair.`
-          + (currentState.merged_task_ids.length > 0
-            ? ` (${currentState.merged_task_ids.length} passed task(s) already merged)`
-            : ''),
+        makeVerificationRepairReason(
+          smokeFailedTaskIds,
+          currentState,
+          `${smokeFailedTaskIds.length} task(s) failed task-scoped verification. Attempting repair.`
+            + (currentState.merged_task_ids.length > 0
+              ? ` (${currentState.merged_task_ids.length} passed task(s) already merged)`
+              : ''),
+        ),
         smokeFailedTaskIds,
       );
     } else if (!allReviewsPassed) {
@@ -1778,13 +2569,17 @@ export async function executeRun(
       currentState.status = 'partial';
       currentState.next_action = makeNextAction(
         'repair_task',
-        `${failedTaskIds.length} task(s) failed review. Attempting repair.`
-          + (noOpFailedTaskIds.length > 0
-            ? ` (${noOpFailedTaskIds.length} no-op task(s) detected)`
-            : '')
-          + (currentState.merged_task_ids.length > 0
-            ? ` (${currentState.merged_task_ids.length} passed task(s) already merged)`
-            : ''),
+        makeReviewFailureReason(
+          failedTaskIds,
+          orchestratorResult,
+          `${failedTaskIds.length} task(s) failed review. Attempting immediate review replacement/repair.`
+            + (noOpFailedTaskIds.length > 0
+              ? ` (${noOpFailedTaskIds.length} no-op task(s) detected)`
+              : '')
+            + (currentState.merged_task_ids.length > 0
+              ? ` (${currentState.merged_task_ids.length} passed task(s) already merged)`
+              : ''),
+        ),
         failedTaskIds,
       );
     } else {
@@ -1799,9 +2594,12 @@ export async function executeRun(
       );
     }
 
+    // For minimal modes, suite is "passed" when full checks pass OR when
+    // minimal required checks pass with no out-of-scope failures.
+    const effectiveSuitePassed = suiteVerificationPassed || suiteVerificationNonBlocking;
     currentState.final_summary = summarizeOutcome(
       orchestratorResult,
-      suiteVerificationPassed,
+      effectiveSuitePassed,
       currentState.merged_task_ids,
       mergeBlockedTaskIds,
     );
@@ -1832,8 +2630,20 @@ export async function executeRun(
     saveRunState(spec.cwd, currentState);
   }
 
-  const finalPhase: LoopPhase = isTerminalStatus(currentState.status) ? 'done' : 'blocked';
-  emitProgress(finalPhase, currentState.final_summary || currentState.status);
+  // Determine final phase: respect paused state distinctly from blocked
+  let finalPhase: LoopPhase;
+  let finalReason: string;
+  if (currentState.steering?.paused) {
+    finalPhase = 'paused';
+    finalReason = 'Run paused by human steering';
+  } else if (isTerminalStatus(currentState.status)) {
+    finalPhase = 'done';
+    finalReason = currentState.final_summary || currentState.status;
+  } else {
+    finalPhase = 'blocked';
+    finalReason = currentState.final_summary || currentState.status;
+  }
+  emitProgress(finalPhase, finalReason);
 
   return {
     spec,

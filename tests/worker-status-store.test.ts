@@ -79,6 +79,7 @@ describe('worker-status-store', () => {
     expect(snapshot!.workers[0].session_id).toBe('worker-task-a-1');
     expect(snapshot!.workers[0].changed_files_count).toBe(3);
     expect(snapshot!.workers[0].success).toBe(true);
+    expect(snapshot!.workers[0].prompt_policy_version).toBeUndefined();
   });
 
   it('writes append-only event history', () => {
@@ -150,6 +151,11 @@ describe('worker-status-store', () => {
       task_description: 'Draft the worker adapter',
       task_summary: 'Writing transcript adapter',
       session_id: 'worker-task-a-2',
+      prompt_policy_version: 'v2',
+      prompt_fragments: ['strict_file_boundary', 'acceptance_checklist'],
+      execution_contract: 'reconcile_if_needed',
+      provider_failure_subtype: 'timeout',
+      provider_fallback_used: true,
       event_message: 'Started',
     });
     appendWorkerTranscriptEntry(TMP_DIR, RUN_ID, {
@@ -165,6 +171,11 @@ describe('worker-status-store', () => {
     expect(worker).not.toBeNull();
     expect(worker!.agent_id).toBe(buildWorkerAgentId(RUN_ID, 'task-a'));
     expect(worker!.task_summary).toBe('Writing transcript adapter');
+    expect(worker!.prompt_policy_version).toBe('v2');
+    expect(worker!.prompt_fragments).toEqual(['strict_file_boundary', 'acceptance_checklist']);
+    expect(worker!.execution_contract).toBe('reconcile_if_needed');
+    expect(worker!.provider_failure_subtype).toBe('timeout');
+    expect(worker!.provider_fallback_used).toBe(true);
     expect(worker!.transcript_path).toContain('.ai/runs/run-worker-123/workers/task-a.transcript.jsonl');
 
     const transcriptByTask = loadWorkerTranscript(TMP_DIR, RUN_ID, 'task-a');

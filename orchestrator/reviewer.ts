@@ -9,6 +9,7 @@ import { runA2aReview } from './a2a-bridge.js';
 import { ModelRegistry, type LegacyModelView } from './model-registry.js';
 import { buildTaskFingerprint } from './task-fingerprint.js';
 import { loadReviewAuthorityPolicy, type ReviewAuthorityPolicy } from './authority-policy.js';
+import { allowsEmptyDiff, forbidsFileDiff, getTaskExecutionContract } from './task-contract.js';
 import { detectReviewDisagreement, type CommitteeMemberReview } from './disagreement-detector.js';
 import {
   loadReviewPolicy, looksLikeInfrastructureFailure, classifyReviewError,
@@ -21,6 +22,217 @@ import {
 
 interface CrossReviewWithTokens extends CrossReviewResult {
   tokenUsage: { input: number; output: number };
+}
+
+const DEFAULT_REVIEW_METADATA = {
+  failure_attribution: 'unknown' as const,
+  prompt_fault_confidence: 0,
+  recommended_fragments: [] as import('./types.js').PromptPolicyFragmentId[],
+};
+
+function withReviewMetadata(
+  result: ReviewResult,
+  metadata?: Partial<Pick<CrossReviewResult, 'failure_attribution' | 'prompt_fault_confidence' | 'recommended_fragments'>>,
+): ReviewResult {
+  result.failure_attribution = metadata?.failure_attribution ?? result.failure_attribution ?? DEFAULT_REVIEW_METADATA.failure_attribution;
+  result.prompt_fault_confidence = metadata?.prompt_fault_confidence ?? result.prompt_fault_confidence ?? DEFAULT_REVIEW_METADATA.prompt_fault_confidence;
+  result.recommended_fragments = metadata?.recommended_fragments ?? result.recommended_fragments ?? DEFAULT_REVIEW_METADATA.recommended_fragments;
+  return result;
+}
+
+function attachReviewRoutingMetadata(
+  result: ReviewResult,
+  workerResult: WorkerResult,
+): ReviewResult {
+  result.provider_failure_subtype = workerResult.provider_failure_subtype;
+  result.provider_fallback_used = workerResult.provider_fallback_used;
+  result.requested_model = workerResult.requested_model;
+  result.requested_provider = workerResult.requested_provider;
+  result.actual_model = workerResult.model;
+  result.actual_provider = workerResult.provider;
+  return result;
+}
+
+function formatRouteRef(model?: string, provider?: string): string {
+  if (model && provider) return `${model}@${provider}`;
+  return model || provider || '-';
+}
+
+function logReviewRoute(label: string, review: ReviewResult): void {
+  if (!review.provider_fallback_used && !review.provider_failure_subtype) {
+    return;
+  }
+  const requested = formatRouteRef(review.requested_model, review.requested_provider);
+  const actual = formatRouteRef(review.actual_model, review.actual_provider);
+  const suffix = review.provider_failure_subtype ? ` | ${review.provider_failure_subtype}` : '';
+  console.log(`    [route] ${label}: ${requested} -> ${actual}${review.provider_fallback_used ? ' [fallback]' : ''}${suffix}`);
+}
+
+function finalizeAndLogReviewResult(
+  workerResult: WorkerResult,
+  task: SubTask,
+  plan: TaskPlan,
+  registry: ModelRegistry,
+  fingerprint: ReturnType<typeof buildTaskFingerprint>,
+  result: ReviewResult,
+  tokenStages: StageTokenUsage[],
+  opts: { skipScoreUpdate?: boolean; infraFailure?: boolean } = {},
+): ReviewResult {
+  const finalized = finalizeReviewResult(
+    workerResult,
+    task,
+    plan,
+    registry,
+    fingerprint,
+    result,
+    tokenStages,
+    opts,
+  );
+  logReviewRoute(task.id, finalized);
+  return finalized;
+}
+
+function logReviewStageFallback(stage: string, fromModel: string, toModel: string, subtype?: string): void {
+  const suffix = subtype ? ` | ${subtype}` : '';
+  console.log(`    [route] ${stage}: ${fromModel} -> ${toModel} [fallback]${suffix}`);
+}
+
+function logReviewStagePrimary(stage: string, model: string, provider?: string): void {
+  console.log(`    [route] ${stage}: ${formatRouteRef(model, provider)}`);
+}
+
+function logAuthoritySynthesisStage(model: string, provider?: string): void {
+  console.log(`    [route] authority-synthesis: ${formatRouteRef(model, provider)}`);
+}
+
+function logAuthoritySynthesisFallback(fromModel: string, toModel: string, provider?: string, subtype?: string): void {
+  const suffix = subtype ? ` | ${subtype}` : '';
+  console.log(`    [route] authority-synthesis: ${fromModel} -> ${formatRouteRef(toModel, provider)} [fallback]${suffix}`);
+}
+
+function logAuthoritySynthesisHeuristic(reason: string): void {
+  console.log(`    [route] authority-synthesis: heuristic | ${reason}`);
+}
+
+function logAuthoritySynthesisFailClosed(model: string, subtype?: string): void {
+  const suffix = subtype ? ` | ${subtype}` : '';
+  console.log(`    [route] authority-synthesis: ${model} [fail_closed]${suffix}`);
+}
+
+function classifyRouteSubtype(err: unknown): string | undefined {
+  try {
+    return classifyReviewError(err as any);
+  } catch {
+    return undefined;
+  }
+}
+
+function latestWorkerRouteRef(workerResult: WorkerResult): string {
+  return formatRouteRef(workerResult.model, workerResult.provider);
+}
+
+function requestedWorkerRouteRef(workerResult: WorkerResult): string {
+  return formatRouteRef(workerResult.requested_model, workerResult.requested_provider);
+}
+
+function logReviewReturnRoute(taskId: string, review: CrossReviewWithTokens): void {
+  const suffix = review.reviewer_model ? ` reviewer=${review.reviewer_model}` : '';
+  console.log(`    [route] ${taskId} review-complete${suffix}`);
+}
+
+function logWorkerReviewInput(workerResult: WorkerResult): void {
+  if (!workerResult.provider_fallback_used && !workerResult.provider_failure_subtype) {
+    return;
+  }
+  const requested = requestedWorkerRouteRef(workerResult);
+  const actual = latestWorkerRouteRef(workerResult);
+  const suffix = workerResult.provider_failure_subtype ? ` | ${workerResult.provider_failure_subtype}` : '';
+  console.log(`    [route] worker: ${requested} -> ${actual}${workerResult.provider_fallback_used ? ' [fallback]' : ''}${suffix}`);
+}
+
+function logReviewFallbackChoice(stage: string, fromModel: string, toModel: string, toProvider?: string, subtype?: string): void {
+  const suffix = subtype ? ` | ${subtype}` : '';
+  console.log(`    [route] ${stage}: ${fromModel} -> ${formatRouteRef(toModel, toProvider)} [fallback]${suffix}`);
+}
+
+function logReviewPrimaryChoice(stage: string, model: string, provider?: string): void {
+  console.log(`    [route] ${stage}: ${formatRouteRef(model, provider)}`);
+}
+
+function logReviewFailure(stage: string, model: string, subtype?: string): void {
+  const suffix = subtype ? ` | ${subtype}` : '';
+  console.log(`    [route] ${stage}: ${model} [failed]${suffix}`);
+}
+
+function logCrossReviewRoute(workerResult: WorkerResult, reviewerModel: string, reviewerProvider: string | undefined): void {
+  logWorkerReviewInput(workerResult);
+  logReviewPrimaryChoice('cross-review', reviewerModel, reviewerProvider);
+}
+
+function logCrossReviewFallback(reviewerModel: string, fallbackModel: string, fallbackProvider: string | undefined, err: unknown): void {
+  logReviewFallbackChoice('cross-review', reviewerModel, fallbackModel, fallbackProvider, classifyRouteSubtype(err));
+}
+
+function logArbitrationRoute(model: string): void {
+  logReviewPrimaryChoice('arbitration', model);
+}
+
+function logFinalReviewRoute(model: string): void {
+  logReviewPrimaryChoice('final-review', model);
+}
+
+function logArbitrationFallback(fromModel: string, toModel: string, provider: string | undefined, err: unknown): void {
+  logReviewFallbackChoice('arbitration', fromModel, toModel, provider, classifyRouteSubtype(err));
+}
+
+function logFinalReviewFallback(fromModel: string, toModel: string, provider: string | undefined, err: unknown): void {
+  logReviewFallbackChoice('final-review', fromModel, toModel, provider, classifyRouteSubtype(err));
+}
+
+function logArbitrationFailure(model: string, err: unknown): void {
+  logReviewFailure('arbitration', model, classifyRouteSubtype(err));
+}
+
+function logFinalReviewFailure(model: string, err: unknown): void {
+  logReviewFailure('final-review', model, classifyRouteSubtype(err));
+}
+
+function logAuthoritySynthesisPrimary(model: string, provider?: string): void {
+  logAuthoritySynthesisStage(model, provider);
+}
+
+function logAuthoritySynthesisFallbackChoice(fromModel: string, toModel: string, provider: string | undefined, err: unknown): void {
+  logAuthoritySynthesisFallback(fromModel, toModel, provider, classifyRouteSubtype(err));
+}
+
+function logAuthoritySynthesisFailurePolicy(model: string, err: unknown): void {
+  logAuthoritySynthesisFailClosed(model, classifyRouteSubtype(err));
+}
+
+function logAuthoritySynthesisHeuristicFallback(err: unknown): void {
+  logAuthoritySynthesisHeuristic(classifyRouteSubtype(err) || 'fallback');
+}
+
+function finalizeReviewWithOneLog(
+  workerResult: WorkerResult,
+  task: SubTask,
+  plan: TaskPlan,
+  registry: ModelRegistry,
+  fingerprint: ReturnType<typeof buildTaskFingerprint>,
+  result: ReviewResult,
+  tokenStages: StageTokenUsage[],
+  opts: { skipScoreUpdate?: boolean; infraFailure?: boolean } = {},
+): ReviewResult {
+  return finalizeAndLogReviewResult(
+    workerResult,
+    task,
+    plan,
+    registry,
+    fingerprint,
+    result,
+    tokenStages,
+    opts,
+  );
 }
 
 function crossReviewToFindings(result: CrossReviewWithTokens): ReviewFinding[] {
@@ -90,6 +302,7 @@ function shouldEscalateCommittee(
   if (
     policy.escalate_on.includes('high_complexity')
     && (task.complexity === 'medium-high' || task.complexity === 'high')
+    && !primaryReview.passed
   ) {
     return true;
   }
@@ -347,6 +560,7 @@ async function runAuthoritySynthesis(
     'review',
   );
   let synthesisProvider = normalizeProviderId(fallbackRegistry.getModel(synthesisModel));
+  logAuthoritySynthesisPrimary(synthesisModel, synthesisProvider);
   let qr;
 
   const prompt = `You are the final synthesis reviewer for a committee-based code review.
@@ -418,6 +632,7 @@ Rules:
       );
       synthesisModel = fallbackModel;
       synthesisProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
+      logAuthoritySynthesisFallbackChoice(primaryReview.model, fallbackModel, synthesisProvider, err);
       qr = await queryModelText(
         prompt,
         workerResult.worktreePath,
@@ -430,8 +645,10 @@ Rules:
     } catch (fallbackErr: any) {
       if (policy.synthesis_failure_policy === 'fail_closed') {
         const message = `Review failed: Authority synthesis failed under fail_closed policy: ${fallbackErr.message?.slice(0, 100) || 'unknown error'}`;
+        logAuthoritySynthesisFailurePolicy(synthesisModel, fallbackErr);
         return buildFailClosedSynthesisResult(message, synthesisModel);
       }
+      logAuthoritySynthesisHeuristicFallback(fallbackErr);
       console.warn(`    ⚠️ Authority synthesis fallback to heuristic: ${fallbackErr.message?.slice(0, 100)}`);
       return heuristic;
     }
@@ -468,8 +685,10 @@ Rules:
   } catch (err: any) {
     if (policy.synthesis_failure_policy === 'fail_closed') {
       const message = `Review failed: Authority synthesis parse failed under fail_closed policy: ${err.message?.slice(0, 100) || 'invalid response'}`;
+      logAuthoritySynthesisFailurePolicy(synthesisModel, err);
       return buildFailClosedSynthesisResult(message, synthesisModel, qr?.tokenUsage);
     }
+    logAuthoritySynthesisHeuristicFallback(err);
     console.warn(`    ⚠️ Authority synthesis parse failed, falling back to heuristic: ${err.message?.slice(0, 100)}`);
     return {
       ...heuristic,
@@ -525,7 +744,113 @@ function finalizeReviewResult(
   }
 
   result.token_stages = tokenStages;
-  return result;
+  return attachReviewRoutingMetadata(result, workerResult);
+}
+
+function buildDiffContractBoundaryResult(
+  workerResult: WorkerResult,
+  task: SubTask,
+  plan: TaskPlan,
+  registry: ModelRegistry,
+  fingerprint: ReturnType<typeof buildTaskFingerprint>,
+  tokenStages: StageTokenUsage[],
+  startTime: number,
+  source: 'authority-layer' | 'legacy-cascade',
+): ReviewResult | null {
+  const contract = getTaskExecutionContract(task);
+
+  if (workerResult.changedFiles.length > 0 && forbidsFileDiff(task)) {
+    return finalizeReviewWithOneLog(
+      workerResult,
+      task,
+      plan,
+      registry,
+      fingerprint,
+      withReviewMetadata({
+        taskId: workerResult.taskId,
+        final_stage: 'cross-review',
+        passed: false,
+        findings: [{
+          id: 1,
+          severity: 'red',
+          lens: 'orchestrator',
+          file: workerResult.changedFiles[0] || '(unexpected write)',
+          issue: `Task contract "${contract}" forbids file edits, but worker changed ${workerResult.changedFiles.length} file(s).`,
+          decision: 'flag',
+          decision_reason: 'Observe-only tasks must not produce code diffs.',
+        }],
+        iterations: 0,
+        duration_ms: Date.now() - startTime,
+        authority: {
+          source,
+          mode: 'single',
+          members: [],
+        },
+      }),
+      tokenStages,
+      { skipScoreUpdate: true },
+    );
+  }
+
+  if (workerResult.success && workerResult.changedFiles.length === 0) {
+    if (allowsEmptyDiff(task)) {
+      return finalizeReviewWithOneLog(
+        workerResult,
+        task,
+        plan,
+        registry,
+        fingerprint,
+        withReviewMetadata({
+          taskId: workerResult.taskId,
+          final_stage: 'cross-review',
+          passed: true,
+          findings: [],
+          iterations: 0,
+          duration_ms: Date.now() - startTime,
+          authority: {
+            source,
+            mode: 'single',
+            members: [],
+          },
+        }),
+        tokenStages,
+        { skipScoreUpdate: true },
+      );
+    }
+
+    return finalizeReviewWithOneLog(
+      workerResult,
+      task,
+      plan,
+      registry,
+      fingerprint,
+      withReviewMetadata({
+        taskId: workerResult.taskId,
+        final_stage: 'cross-review',
+        passed: false,
+        findings: [{
+          id: 1,
+          severity: 'red',
+          lens: 'orchestrator',
+          file: '(no files changed)',
+          issue: 'Worker reported success but produced no file changes — zero output is a hard failure.',
+          decision: 'flag',
+          decision_reason: 'Empty diff is not accepted as a completed task.',
+        }],
+        iterations: 0,
+        duration_ms: Date.now() - startTime,
+        authority: {
+          source,
+          mode: 'single',
+          members: [],
+        },
+      }),
+      tokenStages,
+      { skipScoreUpdate: true },
+    );
+  }
+
+  return null;
 }
 
 async function runCrossReview(
@@ -567,6 +892,7 @@ Rules:
 - Output ONLY the JSON, no other text`;
 
   console.log(`    🔍 Cross-review: ${workerResult.model} → ${reviewerModel}`);
+  logCrossReviewRoute(workerResult, reviewerModel, reviewerProvider);
 
   try {
     let qr;
@@ -575,6 +901,7 @@ Rules:
     } catch (err: any) {
       const fallbackModel = resolveFallback(reviewerModel, classifyReviewError(err), task, hiveConfig, fallbackRegistry);
       const fallbackProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
+      logCrossReviewFallback(reviewerModel, fallbackModel, fallbackProvider, err);
       qr = await queryModelText(prompt, workerResult.worktreePath, fallbackModel, fallbackProvider, 2, 30000, 'cross_review');
     }
 
@@ -589,6 +916,7 @@ Rules:
     }
 
     const parsed = JSON.parse(jsonPayload);
+    logReviewReturnRoute(task.id, { reviewer_model: reviewerModel, passed: parsed.passed === true, confidence: Math.max(0, Math.min(1, parsed.confidence || 0)), flagged_issues: [], tokenUsage: qr.tokenUsage });
     return {
       passed: parsed.passed === true,
       confidence: Math.max(0, Math.min(1, parsed.confidence || 0)),
@@ -686,6 +1014,7 @@ Rules:
     'review',
   );
   console.log(`    ⚖️ Arbitration model: ${arbitrationModel}`);
+  logArbitrationRoute(arbitrationModel);
 
   let qr;
   try {
@@ -795,6 +1124,7 @@ Rules:
     'review',
   );
   console.log(`    🔬 Final review model: ${finalReviewModel}`);
+  logFinalReviewRoute(finalReviewModel);
 
   let qr;
   try {
@@ -857,47 +1187,28 @@ async function runAuthorityReview(
 
   console.log(`\n🏛️ Authority review for ${workerResult.taskId}`);
 
-  if (workerResult.success && workerResult.changedFiles.length === 0) {
-    return finalizeReviewResult(
-      workerResult,
-      task,
-      plan,
-      registry,
-      fingerprint,
-      {
-        taskId: workerResult.taskId,
-        final_stage: 'cross-review',
-        passed: false,
-        findings: [{
-          id: 1,
-          severity: 'red',
-          lens: 'orchestrator',
-          file: '(no files changed)',
-          issue: 'Worker reported success but produced no file changes — zero output is a hard failure.',
-          decision: 'flag',
-          decision_reason: 'Empty diff is not accepted as a completed task.',
-        }],
-        iterations: 0,
-        duration_ms: Date.now() - startTime,
-        authority: {
-          source: 'authority-layer',
-          mode: 'single',
-          members: [],
-        },
-      },
-      tokenStages,
-      { skipScoreUpdate: true },
-    );
+  const boundaryResult = buildDiffContractBoundaryResult(
+    workerResult,
+    task,
+    plan,
+    registry,
+    fingerprint,
+    tokenStages,
+    startTime,
+    'authority-layer',
+  );
+  if (boundaryResult) {
+    return boundaryResult;
   }
 
   if (shouldAutoPass(task, workerResult.changedFiles, reviewPolicy)) {
-    return finalizeReviewResult(
+    return finalizeReviewWithOneLog(
       workerResult,
       task,
       plan,
       registry,
       fingerprint,
-      {
+      withReviewMetadata({
         taskId: workerResult.taskId,
         final_stage: 'cross-review',
         passed: true,
@@ -909,7 +1220,7 @@ async function runAuthorityReview(
           mode: 'single',
           members: [],
         },
-      },
+      }),
       tokenStages,
       { skipScoreUpdate: true },
     );
@@ -943,13 +1254,13 @@ async function runAuthorityReview(
   });
 
   if (!shouldEscalateCommittee(task, authorityPolicy, primaryReview, smokePassed) || reviewers.length < 2) {
-    return finalizeReviewResult(
+    return finalizeReviewWithOneLog(
       workerResult,
       task,
       plan,
       registry,
       fingerprint,
-      {
+      withReviewMetadata({
         taskId: workerResult.taskId,
         final_stage: 'cross-review',
         passed: primaryResult.passed,
@@ -962,7 +1273,7 @@ async function runAuthorityReview(
           mode: 'single',
           members: [primaryModel],
         },
-      },
+      }, primaryResult),
       tokenStages,
     );
   }
@@ -996,9 +1307,16 @@ async function runAuthorityReview(
   const disagreement = detectReviewDisagreement([primaryReview, challengerReview], {
     deterministic_failed: smokePassed === false,
   });
-  const needsSynthesis = disagreement.has_disagreement
+  const pairConsensusPass = primaryResult.passed
+    && challengerResult.passed
+    && !disagreement.has_disagreement
+    && primaryResult.confidence >= authorityPolicy.low_confidence_threshold
+    && challengerResult.confidence >= authorityPolicy.low_confidence_threshold;
+  const needsSynthesis = !pairConsensusPass && (
+    disagreement.has_disagreement
     || primaryResult.confidence < authorityPolicy.low_confidence_threshold
-    || challengerResult.confidence < authorityPolicy.low_confidence_threshold;
+    || challengerResult.confidence < authorityPolicy.low_confidence_threshold
+  );
   const synthesis = needsSynthesis
     ? await runAuthoritySynthesis(
         workerResult,
@@ -1037,20 +1355,20 @@ async function runAuthorityReview(
     console.log(`    [authority] synthesize by=${synthesisLabel} disagreement=${disagreement.flags.join(',') || 'low_confidence'}`);
   }
 
-  return finalizeReviewResult(
+  return finalizeReviewWithOneLog(
     workerResult,
     task,
     plan,
     registry,
     fingerprint,
-    {
-        taskId: workerResult.taskId,
-        final_stage: 'cross-review',
-        passed,
-        verdict,
-        findings: finalFindings,
-        iterations: 2,
-        duration_ms: Date.now() - startTime,
+    withReviewMetadata({
+      taskId: workerResult.taskId,
+      final_stage: 'cross-review',
+      passed,
+      verdict,
+      findings: finalFindings,
+      iterations: 2,
+      duration_ms: Date.now() - startTime,
       authority: {
         source: 'authority-layer',
         mode: 'pair',
@@ -1060,7 +1378,7 @@ async function runAuthorityReview(
         synthesis_strategy: synthesis?.strategy,
         synthesis_attempted_by: synthesis?.attemptedBy,
       },
-    },
+    }, synthesis ? undefined : primaryResult),
     tokenStages,
     {
       skipScoreUpdate: synthesis?.failedClosed,
@@ -1102,35 +1420,27 @@ export async function reviewCascade(
 
   console.log(`\n📋 Starting review for ${workerResult.taskId}`);
 
-  if (workerResult.success && workerResult.changedFiles.length === 0) {
-    console.log('    🔴 No-op detected: worker reported success but produced no diff');
-    return finalizeReviewResult(workerResult, task, _plan, registry, fingerprint, {
-      taskId: workerResult.taskId,
-      final_stage: 'cross-review',
-      passed: false,
-      findings: [{
-        id: 1,
-        severity: 'red',
-        lens: 'orchestrator',
-        file: '(no files changed)',
-        issue: 'Worker reported success but produced no file changes — zero output is a hard failure.',
-        decision: 'flag',
-        decision_reason: 'Empty diff is not accepted as a completed task.',
-      }],
-      iterations: 0,
-      duration_ms: Date.now() - startTime,
-      authority: {
-        source: 'legacy-cascade',
-        mode: 'single',
-        members: [],
-      },
-    }, tokenStages, { skipScoreUpdate: true });
+  const boundaryResult = buildDiffContractBoundaryResult(
+    workerResult,
+    task,
+    _plan,
+    registry,
+    fingerprint,
+    tokenStages,
+    startTime,
+    'legacy-cascade',
+  );
+  if (boundaryResult) {
+    if (!boundaryResult.passed) {
+      console.log('    🔴 Contract boundary failure: worker diff did not match task contract');
+    }
+    return boundaryResult;
   }
 
   // Auto-pass check
   if (shouldAutoPass(task, workerResult.changedFiles, reviewPolicy)) {
     console.log('    ✅ Auto-pass: docs/comments only');
-    return finalizeReviewResult(workerResult, task, _plan, registry, fingerprint, {
+    return finalizeReviewWithOneLog(workerResult, task, _plan, registry, fingerprint, withReviewMetadata({
       taskId: workerResult.taskId, final_stage: 'cross-review', passed: true,
       findings: [], iterations: 0, duration_ms: Date.now() - startTime,
       authority: {
@@ -1138,7 +1448,7 @@ export async function reviewCascade(
         mode: 'single',
         members: [],
       },
-    }, tokenStages, { skipScoreUpdate: true });
+    }), tokenStages, { skipScoreUpdate: true });
   }
 
   // Stage 1: Cross-review
@@ -1166,7 +1476,7 @@ export async function reviewCascade(
 
   if (canSkip) {
     console.log(`    ✅ Cross-review passed with high confidence, skipping a2a`);
-    return finalizeReviewResult(workerResult, task, _plan, registry, fingerprint, {
+    return finalizeReviewWithOneLog(workerResult, task, _plan, registry, fingerprint, withReviewMetadata({
       taskId: workerResult.taskId, final_stage: 'cross-review', passed: true,
       findings, iterations: 1, duration_ms: Date.now() - startTime,
       authority: {
@@ -1174,7 +1484,7 @@ export async function reviewCascade(
         mode: 'single',
         members: [reviewerModel],
       },
-    }, tokenStages);
+    }, crossResult), tokenStages);
   }
 
   // Stage 2: a2a 3-lens review
@@ -1191,7 +1501,7 @@ export async function reviewCascade(
 
   if (a2aResult.verdict === 'PASS') {
     console.log('    ✅ a2a review: PASS');
-    return finalizeReviewResult(workerResult, task, _plan, registry, fingerprint, {
+    return finalizeReviewWithOneLog(workerResult, task, _plan, registry, fingerprint, withReviewMetadata({
       taskId: workerResult.taskId, final_stage: 'a2a-lenses', passed: true,
       verdict: a2aResult.verdict, findings, iterations: 1, duration_ms: Date.now() - startTime,
       authority: {
@@ -1199,12 +1509,12 @@ export async function reviewCascade(
         mode: 'single',
         members: [reviewerModel],
       },
-    }, tokenStages);
+    }, crossResult), tokenStages);
   }
 
   if (a2aResult.verdict === 'REJECT') {
     console.log('    ❌ a2a review: REJECT — sending back to worker');
-    return finalizeReviewResult(workerResult, task, _plan, registry, fingerprint, {
+    return finalizeReviewWithOneLog(workerResult, task, _plan, registry, fingerprint, withReviewMetadata({
       taskId: workerResult.taskId, final_stage: 'a2a-lenses', passed: false,
       verdict: a2aResult.verdict, findings, iterations: 1, duration_ms: Date.now() - startTime,
       authority: {
@@ -1212,7 +1522,7 @@ export async function reviewCascade(
         mode: 'single',
         members: [reviewerModel],
       },
-    }, tokenStages);
+    }, crossResult), tokenStages);
   }
 
   // CONTESTED → Stage 3: Arbitration
@@ -1229,7 +1539,7 @@ export async function reviewCascade(
   if (arbitration.passed) {
     console.log('    ✅ Arbitration: passed');
     findings.push(...arbitration.findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
-    return finalizeReviewResult(workerResult, task, _plan, registry, fingerprint, {
+    return finalizeReviewWithOneLog(workerResult, task, _plan, registry, fingerprint, withReviewMetadata({
       taskId: workerResult.taskId, final_stage: 'sonnet', passed: true,
       verdict: 'PASS', findings, iterations, duration_ms: Date.now() - startTime,
       authority: {
@@ -1237,13 +1547,13 @@ export async function reviewCascade(
         mode: 'single',
         members: [reviewerModel, arbitration.model],
       },
-    }, tokenStages);
+    }, crossResult), tokenStages);
   }
 
   if (arbitration.fixInstructions) {
     console.log('    ⚠️ Arbitration requests fixes');
     findings.push(...arbitration.findings.map((f, i) => ({ ...f, id: findings.length + i + 1 })));
-    return finalizeReviewResult(workerResult, task, _plan, registry, fingerprint, {
+    return finalizeReviewWithOneLog(workerResult, task, _plan, registry, fingerprint, withReviewMetadata({
       taskId: workerResult.taskId, final_stage: 'sonnet', passed: false,
       verdict: 'REJECT', findings, iterations, duration_ms: Date.now() - startTime,
       authority: {
@@ -1251,7 +1561,7 @@ export async function reviewCascade(
         mode: 'single',
         members: [reviewerModel, arbitration.model],
       },
-    }, tokenStages);
+    }, crossResult), tokenStages);
   }
 
   // Stage 4: Final review (rare)
@@ -1268,7 +1578,7 @@ export async function reviewCascade(
 
   console.log(`    ${finalResult.passed ? '✅' : '❌'} Final review: ${finalResult.passed ? 'passed' : 'failed'}`);
 
-  return finalizeReviewResult(workerResult, task, _plan, registry, fingerprint, {
+  return finalizeReviewWithOneLog(workerResult, task, _plan, registry, fingerprint, withReviewMetadata({
     taskId: workerResult.taskId, final_stage: 'opus',
     passed: finalResult.passed, verdict: finalResult.passed ? 'PASS' : 'BLOCKED',
     findings, iterations, duration_ms: Date.now() - startTime,
@@ -1277,7 +1587,7 @@ export async function reviewCascade(
       mode: 'single',
       members: [reviewerModel, arbitration.model, finalResult.model],
     },
-  }, tokenStages, { infraFailure: arbitration.infraFailure || finalResult.infraFailure });
+  }, crossResult), tokenStages, { infraFailure: arbitration.infraFailure || finalResult.infraFailure });
 }
 
 export type { ReviewResult, ReviewFinding };

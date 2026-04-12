@@ -14,6 +14,9 @@ function makeWorkerResult(taskId: string, overrides?: Partial<WorkerResult>): Wo
   return {
     taskId,
     model: 'glm-5-turbo',
+    provider: 'zhipu',
+    requested_model: 'glm-4.5',
+    requested_provider: 'openrouter',
     worktreePath: '/tmp/wt',
     branch: 'test-branch',
     sessionId: `session-${taskId}`,
@@ -24,6 +27,11 @@ function makeWorkerResult(taskId: string, overrides?: Partial<WorkerResult>): Wo
     token_usage: { input: 100, output: 50 },
     discuss_triggered: false,
     discuss_results: [],
+    prompt_policy_version: 'v3',
+    prompt_fragments: ['strict_file_boundary'],
+    execution_contract: 'implementation',
+    provider_failure_subtype: 'timeout',
+    provider_fallback_used: true,
     ...overrides,
   };
 }
@@ -46,6 +54,14 @@ describe('result-store', () => {
       expect(loaded).not.toBeNull();
       expect(loaded!.taskId).toBe('task-a');
       expect(loaded!.model).toBe('glm-5-turbo');
+      expect(loaded!.provider).toBe('zhipu');
+      expect(loaded!.requested_model).toBe('glm-4.5');
+      expect(loaded!.requested_provider).toBe('openrouter');
+      expect(loaded!.prompt_policy_version).toBe('v3');
+      expect(loaded!.prompt_fragments).toEqual(['strict_file_boundary']);
+      expect(loaded!.execution_contract).toBe('implementation');
+      expect(loaded!.provider_failure_subtype).toBe('timeout');
+      expect(loaded!.provider_fallback_used).toBe(true);
       expect(loaded!.success).toBe(true);
     });
 
