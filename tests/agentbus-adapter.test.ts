@@ -488,7 +488,7 @@ describe('synthesizeWorkerDiscussRepliesWithModel', () => {
     expect(safeQueryMock).toHaveBeenCalled();
   });
 
-  it('falls back to env without provider when resolveProviderForModel fails', async () => {
+  it('falls back to heuristic when a non-Claude synthesis model has no direct route', async () => {
     const replies: AgentBusReply[] = [
       { participant_id: 'agent-a', content: 'Do this', response_time_ms: 500, content_length: 7, received_at: '2026-04-03T00:00:00.500Z' },
     ];
@@ -501,10 +501,9 @@ describe('synthesizeWorkerDiscussRepliesWithModel', () => {
 
     const result = await synthesizeWorkerDiscussRepliesWithModel(replies, trigger, config, 'glm-5-turbo');
 
-    // Called once: provider resolve failed, so only the catch branch calls buildSdkEnv
-    expect(buildSdkEnvMock).toHaveBeenCalledTimes(1);
-    expect(buildSdkEnvMock).toHaveBeenCalledWith('glm-5-turbo');
-    expect(result.decision).toBe('Do this');
+    expect(buildSdkEnvMock).not.toHaveBeenCalled();
+    expect(safeQueryMock).not.toHaveBeenCalled();
+    expect(result.decision).toContain('Do this');
   });
 
   it('falls back to heuristic when safeQuery rejects', async () => {

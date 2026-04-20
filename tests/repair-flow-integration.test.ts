@@ -319,6 +319,22 @@ const smokeFail = (): VerificationResult => ({
   failure_class: 'build_fail',
 });
 
+const suiteAcceptanceFail = (): VerificationResult => ({
+  target: {
+    type: 'test',
+    label: 'acceptance check',
+    command: 'npm test',
+    must_pass: true,
+    scope: 'suite',
+  },
+  passed: false,
+  exit_code: 1,
+  stdout_tail: '',
+  stderr_tail: 'Acceptance failed',
+  duration_ms: 100,
+  failure_class: 'test_fail',
+});
+
 /**
  * Helper: mock runVerification with explicit sequence.
  *
@@ -397,6 +413,61 @@ describe('executeRun() repair flow integration', () => {
     expect(state._smokeResults?.['task-a']).toBe(false);
     expect(state.status).toBe('partial');
     expect(state.next_action?.kind).toBe('request_human');
+  });
+
+  it('worker failed + review pass still must not finalize done', async () => {
+    const spec = makeSpec({ max_rounds: 1 });
+
+    vi.mocked(dispatchBatch).mockResolvedValue({
+      worker_results: [makeWorkerResult('task-a', false, {
+        changedFiles: [],
+        output: [{ type: 'error', content: 'Worker crashed before editing files', timestamp: Date.now() }],
+      })],
+      extra_stage_usages: [],
+    });
+    mockReviewSequence(makeReviewResult('task-a', true));
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(state.status).not.toBe('done');
+    expect(state.next_action?.kind).toBe('request_human');
+    expect(state.task_states['task-a']?.status).toBe('worker_failed');
+  });
+
+  it('implementation task with empty changedFiles must not finalize done', async () => {
+    const spec = makeSpec({ max_rounds: 1 });
+
+    vi.mocked(dispatchBatch).mockResolvedValue({
+      worker_results: [makeWorkerResult('task-a', true, {
+        changedFiles: [],
+      })],
+      extra_stage_usages: [],
+    });
+    mockVerificationSequence(smokePass());
+    mockReviewSequence(makeReviewResult('task-a', true));
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(state.status).not.toBe('done');
+    expect(state.next_action?.kind).toBe('request_human');
+    expect(state.task_states['task-a']?.status).toBe('no_op');
+  });
+
+  it('required acceptance verification failure must block finalize done', async () => {
+    const spec = makeSpec({ max_rounds: 1, execution_mode: 'execute-standard' });
+
+    mockVerificationSequence(smokePass());
+    mockReviewSequence(makeReviewResult('task-a', true));
+    vi.mocked(runVerificationSuite).mockReturnValue([suiteAcceptanceFail()]);
+
+    const initialState = makeInitialState(spec);
+    const { state } = await executeRun(spec, initialState);
+
+    expect(state.status).not.toBe('done');
+    expect(state.next_action?.kind).toBe('request_human');
+    expect(state.next_action?.reason).toContain('pending replan');
   });
 
   it('persists score history for each executed round', async () => {

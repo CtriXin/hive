@@ -26,6 +26,10 @@ function stripV1Suffix(url: string): string {
 export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): Record<string, string> {
   const env: Record<string, string> = {};
   const canonicalModel = normalizeModelId(model);
+  const normalizedExplicitBaseUrl = baseUrl ? stripV1Suffix(baseUrl) : undefined;
+  const hasExplicitRoute = typeof normalizedExplicitBaseUrl === 'string' && normalizedExplicitBaseUrl.length > 0;
+  const explicitLooksDirectAnthropic = !!normalizedExplicitBaseUrl && /\/anthropic\/?$/i.test(normalizedExplicitBaseUrl);
+  const explicitNeedsProxy = hasExplicitRoute && !explicitLooksDirectAnthropic;
   // Inherit all parent env (preserves PATH, HOME, NVM_DIR, etc.)
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) env[k] = v;
@@ -64,20 +68,21 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
     && !needsMmsGateway
     && isModelProxyRunning();
 
-  if (needsModelProxy) {
+  if (hasExplicitRoute && !needsMmsGateway && explicitNeedsProxy && needsModelProxy) {
+    env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${getModelProxyPort()}`;
+    env.ANTHROPIC_AUTH_TOKEN = 'proxy-managed';
+  } else if (hasExplicitRoute && !needsMmsGateway) {
+    env.ANTHROPIC_BASE_URL = normalizedExplicitBaseUrl;
+    env.ANTHROPIC_AUTH_TOKEN = apiKey || inheritedToken;
+  } else if (needsModelProxy) {
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${getModelProxyPort()}`;
     env.ANTHROPIC_AUTH_TOKEN = 'proxy-managed';
   } else if (needsMmsGateway && mmsBaseUrl) {
     env.ANTHROPIC_BASE_URL = stripV1Suffix(mmsBaseUrl);
     env.ANTHROPIC_AUTH_TOKEN = mmsToken || inheritedToken;
   } else if (isNonClaude && mmsBaseUrl) {
-    // Domestic models without model proxy: route through MMS gateway
-    // which handles protocol adaptation (bridge mode for kimi, etc.)
     env.ANTHROPIC_BASE_URL = stripV1Suffix(mmsBaseUrl);
     env.ANTHROPIC_AUTH_TOKEN = mmsToken || inheritedToken;
-  } else if (baseUrl) {
-    env.ANTHROPIC_BASE_URL = stripV1Suffix(baseUrl);
-    env.ANTHROPIC_AUTH_TOKEN = apiKey || inheritedToken;
   } else {
     if (inheritedToken) {
       env.ANTHROPIC_AUTH_TOKEN = inheritedToken;

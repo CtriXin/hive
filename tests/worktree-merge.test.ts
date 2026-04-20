@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { execSync } from 'child_process';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commitAndMergeWorktree, createWorktree } from '../orchestrator/worktree-manager.js';
+import { commitAndMergeWorktree, createWorktree, getWorktreeDiff } from '../orchestrator/worktree-manager.js';
 
 const tempDirs: string[] = [];
 
@@ -25,6 +25,44 @@ afterEach(() => {
 });
 
 describe('worktree merge', () => {
+  it('reports files that were already committed inside the worker branch', () => {
+    const repo = makeRepo();
+    const worktree = createWorktree({ cwd: repo, name: 'task-committed' });
+
+    fs.mkdirSync(path.join(worktree.path, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(worktree.path, 'docs', 'final.md'), '# Final\n', 'utf-8');
+    execSync('git add docs/final.md && git commit -m "worker commit"', {
+      cwd: worktree.path,
+      stdio: 'ignore',
+    });
+
+    const diff = getWorktreeDiff(worktree.path);
+
+    expect(diff.committedFiles).toEqual(['docs/final.md']);
+    expect(diff.workingTreeFiles).toEqual([]);
+    expect(diff.files).toEqual(['docs/final.md']);
+
+    const result = commitAndMergeWorktree(
+      worktree.path,
+      worktree.branch,
+      'task committed: merge worker branch',
+      repo,
+    );
+
+    expect(result).toEqual({ merged: true });
+    expect(fs.readFileSync(path.join(repo, 'docs', 'final.md'), 'utf-8')).toBe('# Final\n');
+  });
+
+  it('keeps untouched copied untracked files out of the reported diff', () => {
+    const repo = makeRepo();
+    fs.mkdirSync(path.join(repo, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'docs', 'copied.md'), '# copied\n', 'utf-8');
+
+    const worktree = createWorktree({ cwd: repo, name: 'task-copied' });
+
+    expect(getWorktreeDiff(worktree.path).files).toEqual([]);
+  });
+
   it('merges worktree changes back into the target repo root', () => {
     const repo = makeRepo();
     const worktree = createWorktree({ cwd: repo, name: 'task-a' });

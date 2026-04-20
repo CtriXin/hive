@@ -12,6 +12,8 @@ import { collectHumanBridgeRefs, formatHumanBridgeRef } from './human-bridge-lin
 import { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 import { loadLatestRunLocator, saveLatestRunLocator } from './run-locator.js';
 import { pickWorkerSurfaceSummary } from './worker-surface-summary.js';
+import type { ReviewResult } from './types.js';
+import { extractAuthorityDegradation, formatAuthorityDegradation } from './authority-surface.js';
 
 export interface CompactPacketWorkerDiscussConclusion {
   quality_gate: 'pass' | 'warn' | 'fail' | 'fallback';
@@ -53,6 +55,7 @@ export interface CompactPacket {
   round: number;
   summary: string;
   next_action: string;
+  authority_warning?: string;
   score?: number;
   thread_id?: string;
   room_refs: MindkeeperRoomRef[];
@@ -84,6 +87,7 @@ export interface WorkspaceCompactPacket {
   goal: string;
   summary: string;
   next_action: string;
+  authority_warning?: string;
   conversation_context?: CompactConversationContext;
   changed_files: string[];
   suggested_commands: string[];
@@ -611,6 +615,8 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
   const requestHumanTrace = buildRequestHumanTrace(data);
   const plannerDiscuss = data.loopProgress?.planner_discuss_conclusion;
   const latestWorkerDiscuss = selectLatestWorkerDiscuss(data.workerSnapshot);
+  const nextActionText = buildNextActionText(data);
+  const authority = extractAuthorityDegradation(data.result?.review_results);
   const packet: CompactPacket = {
     version: 1,
     run_id: data.runId,
@@ -621,7 +627,8 @@ export function buildCompactPacket(data: HiveShellDashboardData): CompactPacket 
     status: data.state?.status || 'unknown',
     round: data.state?.round ?? data.workerSnapshot?.round ?? 0,
     summary: truncate(data.state?.final_summary || 'artifact-backed run', 180),
-    next_action: buildNextActionText(data),
+    next_action: nextActionText,
+    authority_warning: authority.degradation ? authority.degradation.description : undefined,
     score,
     thread_id: data.mindkeeperCheckpointResult?.threadId || data.mindkeeperBootstrap?.activeThread?.id,
     room_refs: roomRefs,
@@ -816,6 +823,10 @@ export function renderWorkspaceCompactPacket(packet: WorkspaceCompactPacket): st
     `- summary: ${packet.summary}`,
     `- next: ${packet.next_action}`,
   ];
+
+  if (packet.authority_warning) {
+    lines.push(`- \u26A0\uFE0F authority: ${packet.authority_warning}`);
+  }
 
   if (packet.conversation_context) {
     lines.push('- conversation carry-over:');

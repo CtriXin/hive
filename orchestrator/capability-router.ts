@@ -1,6 +1,7 @@
 // orchestrator/capability-router.ts — Capability-aware routing with deterministic scoring
-import type { Complexity } from './types.js';
+import type { Complexity, ProviderFailureSubtype } from './types.js';
 import { resolveProjectPath } from './project-paths.js';
+import { ProviderHealthStore, PROVIDER_COOLDOWN_MS, PROVIDER_COOLDOWN_MAX_FAILURES } from './provider-resilience.js';
 import fs from 'fs';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -84,11 +85,45 @@ export interface ProviderFailureState {
 // Configuration
 // ═══════════════════════════════════════════════════════════════════
 
-const COOLDOWN_MS = 60_000;
-const MAX_FAILURES_BEFORE_COOLDOWN = 2;
 const CONTEXT_THRESHOLDS = { low: 10_000, medium: 50_000, high: 100_000 };
 const SAMPLE_CONFIDENCE_CAP = 5;
 const HEURISTIC_SCORE_THRESHOLD = 0.001;
+
+// ═══════════════════════════════════════════════════════════════════
+// Unified provider state — backed by ProviderHealthStore
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Adapter: convert ProviderHealthStore state to legacy ProviderFailureState
+ * for the scoring path. No independent truth — pure projection.
+ */
+function healthToFailureState(
+  health: ReturnType<ProviderHealthStore['getState']>,
+  store: ProviderHealthStore,
+  now: number,
+): ProviderFailureState {
+  return {
+    failures: health.consecutive_failures,
+    lastFailure: health.last_failure_at,
+    inCooldown: health.consecutive_failures >= PROVIDER_COOLDOWN_MAX_FAILURES
+      && health.last_failure_at > 0
+      && now - health.last_failure_at <= PROVIDER_COOLDOWN_MS,
+  };
+}
+
+/** Global health store — replaces the in-memory providerFailures map. */
+let _globalHealthStore: ProviderHealthStore | null = null;
+
+function getGlobalHealthStore(): ProviderHealthStore {
+  if (!_globalHealthStore) {
+    _globalHealthStore = new ProviderHealthStore();
+  }
+  return _globalHealthStore;
+}
+
+export function resetGlobalHealthStore(): void {
+  _globalHealthStore = null;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Main Router Function
@@ -239,45 +274,33 @@ function computeBudgetFactor(pressure: BudgetPressure): number {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Provider Failure Management
+// Provider Failure Management (unified via ProviderHealthStore)
 // ═══════════════════════════════════════════════════════════════════
 
+/** Record a failure through the unified health store. */
 export function updateProviderFailure(
   provider: string,
-  providerFailures: Map<string, ProviderFailureState>,
+  _legacyProviderFailures: Map<string, ProviderFailureState>,
+  subtype: ProviderFailureSubtype = 'unknown_provider_failure',
 ): void {
-  const state = providerFailures.get(provider) ?? {
-    failures: 0, lastFailure: 0, inCooldown: false,
-  };
-  state.failures++;
-  state.lastFailure = Date.now();
-  state.inCooldown = state.failures >= MAX_FAILURES_BEFORE_COOLDOWN;
-  providerFailures.set(provider, state);
+  getGlobalHealthStore().recordFailure(provider, subtype);
 }
 
+/** Clear provider cooldown through the unified health store. */
 export function clearProviderCooldown(
   provider: string,
-  providerFailures: Map<string, ProviderFailureState>,
+  _legacyProviderFailures: Map<string, ProviderFailureState>,
 ): void {
-  const state = providerFailures.get(provider);
-  if (!state) return;
-  state.failures = 0;
-  state.inCooldown = false;
-  providerFailures.set(provider, state);
+  getGlobalHealthStore().resetCooldown(provider);
 }
 
+/** Check cooldown against unified health store. */
 function isProviderInCooldown(
   provider: string,
-  providerFailures: Map<string, ProviderFailureState>,
+  _legacyProviderFailures: Map<string, ProviderFailureState>,
   now: number,
 ): boolean {
-  const state = providerFailures.get(provider);
-  if (!state) return false;
-  if (state.inCooldown && now - state.lastFailure > COOLDOWN_MS) {
-    clearProviderCooldown(provider, providerFailures);
-    return false;
-  }
-  return state.inCooldown;
+  return getGlobalHealthStore().isCooledDown(provider, now);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -461,34 +484,59 @@ function createDefaultCandidate(): ScoredCandidate {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Convenience Exports
+// Convenience Exports (all routed through ProviderHealthStore)
 // ═══════════════════════════════════════════════════════════════════
 
-let globalProviderFailures = new Map<string, ProviderFailureState>();
-
-export function recordProviderFailure(provider: string): void {
-  updateProviderFailure(provider, globalProviderFailures);
+export function recordProviderFailure(provider: string, subtype?: ProviderFailureSubtype): void {
+  getGlobalHealthStore().recordFailure(provider, subtype ?? 'unknown_provider_failure');
 }
 
 export function resetProviderCooldown(provider: string): void {
-  clearProviderCooldown(provider, globalProviderFailures);
+  getGlobalHealthStore().resetCooldown(provider);
 }
 
 export function isProviderCooledDown(provider: string): boolean {
-  return isProviderInCooldown(provider, globalProviderFailures, Date.now());
+  return getGlobalHealthStore().isCooledDown(provider, Date.now());
 }
 
 export function routeTask(input: CapabilityRouterInput): RoutingDecision {
   const profiles = loadModelProfiles();
-  return routeWithCapabilities(input, profiles, globalProviderFailures);
+  const store = getGlobalHealthStore();
+  const providerFailures = buildFailureMapView(store, input.now ?? Date.now());
+  return routeWithCapabilities(input, profiles, providerFailures);
 }
 
+/** Build a Map view of provider failure states from the health store.
+ * Pure projection — not an independent truth source. */
+function buildFailureMapView(
+  store: ProviderHealthStore,
+  now: number,
+): Map<string, ProviderFailureState> {
+  const map = new Map<string, ProviderFailureState>();
+  for (const [provider] of store.getAllStates()) {
+    const health = store.getState(provider);
+    map.set(provider, healthToFailureState(health, store, now));
+  }
+  return map;
+}
+
+/** Legacy accessor — returns empty map. All state lives in ProviderHealthStore. */
 export function getGlobalProviderFailures(): Map<string, ProviderFailureState> {
-  return globalProviderFailures;
+  return buildFailureMapView(getGlobalHealthStore(), Date.now());
 }
 
+/** No-op setter — state is managed by ProviderHealthStore. Kept for test compatibility. */
 export function setGlobalProviderFailures(
   failures: Map<string, ProviderFailureState>,
 ): void {
-  globalProviderFailures = failures;
+  // Drain store and re-populate from legacy map (reverse projection)
+  for (const [provider, state] of failures) {
+    if (state.failures > 0) {
+      getGlobalHealthStore().recordFailure(
+        provider,
+        'unknown_provider_failure',
+        state.lastFailure || Date.now(),
+      );
+    }
+  }
 }

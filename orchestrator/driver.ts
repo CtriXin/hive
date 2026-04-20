@@ -51,7 +51,7 @@ import { loadProjectVerificationPolicy, loadTaskVerificationRules, type TaskVeri
 import { selectRuleForTask } from './rule-selector.js';
 import { selectPromptPolicy } from './prompt-policy.js';
 import { loadLessonStore, refreshLessonStore, loadAllTransitionLogs, loadTaskStates, extractLessons } from './lesson-store.js';
-import type { LessonStore } from './types.js';
+import type { LessonStore, ProjectMemoryStore, FailureClass } from './types.js';
 import { initProjectMemory, loadProjectMemory, saveProjectMemory, refreshMemoryFreshness } from './project-memory-store.js';
 import { extractProjectMemories } from './memory-extractor.js';
 import { recallProjectMemories, formatMemoryRecall } from './memory-recall.js';
@@ -76,6 +76,11 @@ import {
 } from './steering-store.js';
 import type { SteeringAction } from './types.js';
 import { validateSteeringAction, applySteeringAction } from './steering-actions.js';
+import {
+  consumeRuntimeModelOverrides,
+  resolveEffectiveRunModelPolicy,
+  type RunModelPolicyPatch,
+} from './run-model-policy.js';
 
 // ── Options & Result ──
 
@@ -83,6 +88,7 @@ export interface CreateRunOptions {
   goal: string;
   cwd: string;
   mode?: RunMode;
+  modelPolicyOverride?: RunModelPolicyPatch;
   /** Phase 5A: Operator-facing execution mode */
   execution_mode?: ExecutionMode;
   /** Operator-facing lane name (auto-derived if not provided) */
@@ -185,6 +191,33 @@ function setLoopPhase(
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function collectMergedChangedFiles(state: RunState): string[] {
+  return dedupe(
+    Object.values(state.task_states || {})
+      .filter((task) => task.merged)
+      .flatMap((task) => task.changed_files || []),
+  );
+}
+
+function triggerUserProfileExtraction(spec: RunSpec, state: RunState): void {
+  const executionMode = resolveEffectiveMode(spec, state).normalized;
+  const changedFiles = collectMergedChangedFiles(state);
+
+  void import('./user-profile-extractor.js')
+    .then(({ extractAndSaveUserProfile }) =>
+      extractAndSaveUserProfile({
+        runId: spec.id,
+        goal: spec.goal,
+        finalSummary: state.final_summary || '',
+        changedFiles,
+        executionMode,
+      }))
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`  ⚠️ User profile extraction failed: ${message.slice(0, 100)}`);
+    });
 }
 
 const BUILD_BASELINE_GOAL_PATTERNS = [
@@ -319,6 +352,7 @@ function seedTaskStatesFromPlan(state: RunState, plan: TaskPlan): void {
 
 function updateTaskStatesFromWorkers(
   state: RunState,
+  plan: TaskPlan,
   workerResults: WorkerResult[],
 ): void {
   for (const worker of workerResults) {
@@ -326,14 +360,60 @@ function updateTaskStatesFromWorkers(
     record.round = state.round;
     record.changed_files = worker.changedFiles;
     record.worker_success = worker.success;
+    const executionContract = worker.execution_contract || taskExecutionContract(plan, worker.taskId);
     if (!worker.success) {
       record.status = 'worker_failed';
       record.last_error = worker.output.find((msg) => msg.type === 'error')?.content;
-    } else if (worker.changedFiles.length === 0 && worker.execution_contract === 'implementation') {
+    } else if (worker.changedFiles.length === 0 && executionContract === 'implementation') {
       record.status = 'no_op';
       record.last_error = 'Worker reported success but produced no file changes.';
     }
   }
+}
+
+function findBlockingTaskVerification(
+  state: RunState,
+  taskId: string,
+): VerificationResult | null {
+  const results = state.task_verification_results[taskId] || [];
+  return results.find((result) => result.target.must_pass && !result.passed)
+    || results.find((result) => !result.passed)
+    || null;
+}
+
+function getTaskExecutionBlocker(
+  state: RunState,
+  plan: TaskPlan,
+  taskId: string,
+): string | null {
+  const record = ensureTaskState(state, taskId);
+  if (!record.worker_success) {
+    return record.last_error || 'Worker execution did not succeed.';
+  }
+  if (record.changed_files.length === 0 && taskExecutionContract(plan, taskId) === 'implementation') {
+    return record.last_error || 'Worker reported success but produced no file changes.';
+  }
+  const failedVerification = findBlockingTaskVerification(state, taskId);
+  if (failedVerification) {
+    return record.last_error || summarizeVerificationFailure(failedVerification);
+  }
+  return null;
+}
+
+function getTaskFinalizeBlocker(
+  state: RunState,
+  plan: TaskPlan,
+  taskId: string,
+): string | null {
+  const executionBlocker = getTaskExecutionBlocker(state, plan, taskId);
+  if (executionBlocker) {
+    return executionBlocker;
+  }
+  const record = ensureTaskState(state, taskId);
+  if (!record.review_passed) {
+    return record.last_error || 'Review did not pass.';
+  }
+  return null;
 }
 
 function updateTaskStatesFromReviews(
@@ -345,17 +425,21 @@ function updateTaskStatesFromReviews(
     const record = ensureTaskState(state, review.taskId);
     record.round = state.round;
     record.review_passed = review.passed;
+    const executionBlocker = getTaskExecutionBlocker(state, plan, review.taskId);
     if (review.passed && !record.merged) {
+      if (executionBlocker) {
+        record.last_error ||= executionBlocker;
+        continue;
+      }
       record.status = 'verified';
       record.last_error = undefined;
     } else if (!review.passed) {
-      if (record.worker_success && record.changed_files.length === 0 && taskExecutionContract(plan, review.taskId) === 'implementation') {
-        record.status = 'no_op';
-        record.last_error = 'No-op task: worker reported success but changed no files.';
-      } else {
-        record.status = 'review_failed';
-        record.last_error = review.findings[0]?.issue;
+      if (executionBlocker) {
+        record.last_error ||= executionBlocker;
+        continue;
       }
+      record.status = 'review_failed';
+      record.last_error = review.findings[0]?.issue;
     }
   }
 }
@@ -490,6 +574,15 @@ function getTaskVerificationConditions(
   const { rule, selection } = getTaskRule(task, taskRules, { lessons });
   const taskConditions = rule?.done_conditions || [];
   return { conditions: dedupeConditions([...baseConditions, ...taskConditions]), selection };
+}
+
+function recordRuleSelection(
+  state: RunState,
+  taskId: string,
+  selection: import('./types.js').RuleSelectionResult,
+): void {
+  const record = ensureTaskState(state, taskId);
+  record.rule_selection = selection;
 }
 
 function mergeVerificationResults(
@@ -701,6 +794,7 @@ export function createRunSpec(options: CreateRunOptions): RunSpec {
     goal: options.goal,
     cwd: options.cwd,
     mode: options.mode || 'safe',
+    model_policy_override_active: Boolean(options.modelPolicyOverride),
     execution_mode: normalizedMode,
     lane,
     agent_count: options.agent_count,
@@ -733,10 +827,13 @@ export function initialNextAction(): NextAction {
 
 export function createInitialRunState(spec: RunSpec): RunState {
   const budgetStatus = getBudgetStatus(loadConfig(spec.cwd));
+  const effectivePolicy = resolveEffectiveRunModelPolicy(spec.cwd, spec.id);
   return {
     run_id: spec.id,
     status: 'init',
     round: 0,
+    model_policy_override_active: effectivePolicy.override_active,
+    model_policy_override_summary: effectivePolicy.override_summary,
     completed_task_ids: [],
     failed_task_ids: [],
     review_failed_task_ids: [],
@@ -763,6 +860,14 @@ export function bootstrapRun(
 ): { spec: RunSpec; state: RunState } {
   const spec = createRunSpec(options);
   const state = createInitialRunState(spec);
+  if (options.modelPolicyOverride) {
+    const { updateRunModelOverrides } = require('./run-model-policy.js') as typeof import('./run-model-policy.js');
+    updateRunModelOverrides(spec.cwd, spec.id, 'start-run', options.modelPolicyOverride);
+    const effective = resolveEffectiveRunModelPolicy(spec.cwd, spec.id);
+    spec.model_policy_override_active = effective.override_active;
+    state.model_policy_override_active = effective.override_active;
+    state.model_policy_override_summary = effective.override_summary;
+  }
   saveRunSpec(spec.cwd, spec);
   saveRunState(spec.cwd, state);
   return { spec, state };
@@ -840,6 +945,54 @@ function buildRepairPrompt(
     ...task.acceptance_criteria.map((c) => `- ${c}`),
     '- All review findings above must be resolved',
   ].join('\n');
+}
+
+/**
+ * Build a compact project memory context for repair prompts.
+ * Recalls memories relevant to the task's failure class and estimated files.
+ * Keeps output under ~300 chars so it doesn't bloat the prompt.
+ */
+function buildRepairMemoryContext(
+  cwd: string,
+  projectMemory: ProjectMemoryStore | null,
+  task: SubTask,
+  state: RunState,
+): string | null {
+  if (!projectMemory || projectMemory.memories.length === 0) return null;
+
+  // Get the task's failure class from state if available
+  const taskState = state.task_states[task.id];
+  const failureClass = taskState?.last_error
+    ? classifyFailureFromError(taskState.last_error)
+    : undefined;
+
+  try {
+    const recall = recallProjectMemories(projectMemory, {
+      goal: task.description,
+      task_type: task.category,
+      touched_files: task.estimated_files,
+      failure_class: failureClass,
+    }, { topN: 2 });
+
+    const formatted = formatMemoryRecall(recall, 300);
+    return formatted || null;
+  } catch {
+    return null; // memory unavailable — proceed without
+  }
+}
+
+/**
+ * Crude failure class inference from error message text.
+ * Used to enrich repair memory recall when the task's failure class is unknown.
+ */
+function classifyFailureFromError(error: string): FailureClass | undefined {
+  const lower = error.toLowerCase();
+  if (lower.includes('build') || lower.includes('compil') || lower.includes('tsc')) return 'build';
+  if (lower.includes('test') || lower.includes('vitest') || lower.includes('jest')) return 'test';
+  if (lower.includes('lint')) return 'lint';
+  if (lower.includes('merge') || lower.includes('conflict')) return 'merge';
+  if (lower.includes('timeout') || lower.includes('provider')) return 'provider';
+  return undefined;
 }
 
 type ReviewReplacementStrategy = 'original' | 'same-tier' | 'upper-tier';
@@ -953,6 +1106,7 @@ async function runRepairRound(
   inheritedSmokeResults: Record<string, boolean>,
   taskRules: Record<string, TaskVerificationRule>,
   lessons: import('./types.js').Lesson[],
+  projectMemory: ProjectMemoryStore | null,
   hooks?: {
     onRecoverySnapshot?: (taskId: string, snapshot: CollabStatusSnapshot) => void | Promise<void>;
   },
@@ -1008,6 +1162,10 @@ async function runRepairRound(
         note: undefined,
       };
     const repairPrompt = buildRepairPrompt(task, recovery.findings, replacement.note);
+    const repairMemoryContext = buildRepairMemoryContext(spec.cwd, projectMemory, task, state);
+    const fullRepairPrompt = repairMemoryContext
+      ? `${repairPrompt}\n\n${repairMemoryContext}`
+      : repairPrompt;
     const repairModel = replacement.modelId;
     const modelCap = registry.get(repairModel) || registry.get(task.assigned_model);
     const repairNotePrefix = replacement.strategy === 'original'
@@ -1019,7 +1177,7 @@ async function runRepairRound(
       taskId: task.id,
       model: repairModel,
       provider: modelCap?.provider || repairModel,
-      prompt: repairPrompt,
+      prompt: fullRepairPrompt,
       cwd: plan.cwd,
       worktree: true,
       contextInputs: [],
@@ -1036,7 +1194,8 @@ async function runRepairRound(
 
     if (workerResult.success) {
       // Re-run real smoke verification on the repair worktree
-      const { conditions: taskConditions } = getTaskVerificationConditions(spec.done_conditions, task, taskRules, lessons);
+      const { conditions: taskConditions, selection } = getTaskVerificationConditions(spec.done_conditions, task, taskRules, lessons);
+      recordRuleSelection(state, workerResult.taskId, selection);
       const smokeCheckResults = smokeVerifyWorktree(taskConditions, workerResult);
       recordTaskVerificationResults(state, workerResult.taskId, smokeCheckResults);
       markTaskVerificationFailure(state, workerResult.taskId, smokeCheckResults);
@@ -1390,7 +1549,8 @@ export function mergePassedTasks(
 
     const worker = workerResults.find((w) => w.taskId === review.taskId);
     const task = plan.tasks.find((t) => t.id === review.taskId);
-    if (!worker?.branch) continue;
+    if (!worker?.branch || !worker.success) continue;
+    if (worker.changedFiles.length === 0 && taskExecutionContract(plan, review.taskId) === 'implementation') continue;
 
     const expectedFiles = new Set((task?.estimated_files || []).map(normalizeRepoPath));
     const changedFiles = dedupe(worker.changedFiles.map(normalizeRepoPath));
@@ -1840,6 +2000,7 @@ export async function executeRun(
   let plannerDiagnostics: Record<string, unknown> | null | undefined;
 
   if (blockIfBudgetExhausted(spec, currentState)) {
+    triggerUserProfileExtraction(spec, currentState);
     return { spec, state: currentState, plan, result: loadRunResult(spec.cwd, spec.id) ?? undefined };
   }
 
@@ -1856,6 +2017,7 @@ export async function executeRun(
     currentState.final_summary = `Record-only: goal recorded without execution — ${spec.goal}`;
     saveRunState(spec.cwd, currentState);
     emitProgress('done', `Record-only: goal recorded without execution`);
+    triggerUserProfileExtraction(spec, currentState);
     return { spec, state: currentState, plan: null };
   }
 
@@ -1865,6 +2027,7 @@ export async function executeRun(
     currentState.final_summary = `Clarify-first: waiting for user clarification — ${spec.goal}`;
     saveRunState(spec.cwd, currentState);
     emitProgress('blocked', `Clarify-first: waiting for user clarification`);
+    triggerUserProfileExtraction(spec, currentState);
     return { spec, state: currentState, plan: null };
   }
 
@@ -1890,6 +2053,15 @@ export async function executeRun(
         steeringResult.overrideAction.taskIds,
         steeringResult.overrideAction.instructions,
       );
+    }
+
+    if (consumeRuntimeModelOverrides(spec, currentState)) {
+      const effectivePolicy = resolveEffectiveRunModelPolicy(spec.cwd, spec.id);
+      spec.model_policy_override_active = effectivePolicy.override_active;
+      currentState.model_policy_override_active = effectivePolicy.override_active;
+      currentState.model_policy_override_summary = effectivePolicy.override_summary;
+      saveRunSpec(spec.cwd, spec);
+      saveRunState(spec.cwd, currentState);
     }
 
     currentState.round += 1;
@@ -1932,7 +2104,7 @@ export async function executeRun(
               {},
             );
           },
-        }, { projectMemory }),
+        }, { projectMemory, runId: spec.id }),
         (elapsedMs) => {
           emitProgress('planning', `Generating plan via LLM planner... (still running ${Math.floor(elapsedMs / 1000)}s)`);
         },
@@ -1948,6 +2120,7 @@ export async function executeRun(
         currentState.final_summary =
           planning.planner_error || 'Planner failed';
         saveRunState(spec.cwd, currentState);
+        triggerUserProfileExtraction(spec, currentState);
         return {
           spec,
           state: currentState,
@@ -2050,7 +2223,7 @@ export async function executeRun(
               {},
             );
           },
-        }, { projectMemory }),
+        }, { projectMemory, runId: spec.id }),
         (elapsedMs) => {
           emitProgress('replanning', `Replanning remaining work... (still running ${Math.floor(elapsedMs / 1000)}s)`);
         },
@@ -2141,6 +2314,7 @@ export async function executeRun(
           inheritedSmokeResults,
           taskRules,
           lessons,
+          projectMemory,
           {
             onRecoverySnapshot: async (taskId, snapshot) => {
               activeCollabSnapshot = snapshot;
@@ -2263,7 +2437,8 @@ export async function executeRun(
       for (const wr of workerResults) {
         if (!wr.success || !wr.worktreePath) continue;
         const task = plan!.tasks.find((t) => t.id === wr.taskId);
-        const { conditions: taskConditions } = getTaskVerificationConditions(spec.done_conditions, task, taskRules, lessons);
+        const { conditions: taskConditions, selection } = getTaskVerificationConditions(spec.done_conditions, task, taskRules, lessons);
+        recordRuleSelection(currentState, wr.taskId, selection);
         const results = smokeVerifyWorktree(taskConditions, wr);
         recordTaskVerificationResults(currentState, wr.taskId, results);
         markTaskVerificationFailure(currentState, wr.taskId, results);
@@ -2381,7 +2556,7 @@ export async function executeRun(
     });
 
     // Update completed/failed tracking
-    updateTaskStatesFromWorkers(currentState, workerResults);
+    updateTaskStatesFromWorkers(currentState, plan, workerResults);
     updateTaskStatesFromReviews(currentState, plan, reviewResults);
     markMergeBlockedTasks(currentState, mergePassResult.blocked);
 
@@ -2429,7 +2604,8 @@ export async function executeRun(
     if (modeContract.verification_scope !== 'minimal') {
       for (const taskId of currentState.merged_task_ids) {
         const task = plan.tasks.find((item) => item.id === taskId);
-        const { rule: taskRule } = getTaskRule(task, taskRules, { lessons });
+        const { rule: taskRule, selection } = getTaskRule(task, taskRules, { lessons });
+        if (task) recordRuleSelection(currentState, taskId, selection);
         if (!taskRule || taskRule.done_conditions.length === 0) continue;
 
         const scopedRuleConditions = suiteScopedConditions(taskRule.done_conditions);
@@ -2488,6 +2664,14 @@ export async function executeRun(
       .filter(([, passed]) => passed === false)
       .map(([taskId]) => taskId);
     const allSmokeChecksPassed = smokeFailedTaskIds.length === 0;
+    const executionBlockedTasks = plan.tasks
+      .map((task) => ({
+        taskId: task.id,
+        reason: getTaskFinalizeBlocker(currentState, plan!, task.id),
+      }))
+      .filter((task): task is { taskId: string; reason: string } => Boolean(task.reason));
+    const executionBlockedTaskIds = executionBlockedTasks.map((task) => task.taskId);
+    const allExecutionGatesPassed = executionBlockedTasks.length === 0;
     const scopeBlockedTaskIds = mergePassResult.blocked
       .filter((item) => item.kind === 'scope_violation')
       .map((item) => item.taskId);
@@ -2515,7 +2699,11 @@ export async function executeRun(
       && allReviewsPassed
       && minimalSuiteChecksPassed;
 
-    if (allReviewsPassed && (allSmokeChecksPassed || smokeChecksAdvisory) && (suiteVerificationPassed || suiteVerificationNonBlocking) && mergeBlockedTaskIds.length === 0) {
+    if (allReviewsPassed
+      && allExecutionGatesPassed
+      && (allSmokeChecksPassed || smokeChecksAdvisory)
+      && (suiteVerificationPassed || suiteVerificationNonBlocking)
+      && mergeBlockedTaskIds.length === 0) {
       currentState.status = 'done';
       currentState.next_action = makeNextAction(
         'finalize',
@@ -2546,6 +2734,13 @@ export async function executeRun(
           `${otherMergeBlockedTaskIds.length} task(s) were blocked during auto-merge: ${mergePassResult.blocked.map((item) => `${item.taskId}=${item.kind}`).join(', ')}`,
         ),
         otherMergeBlockedTaskIds,
+      );
+    } else if (allReviewsPassed && executionBlockedTaskIds.length > 0) {
+      currentState.status = 'partial';
+      currentState.next_action = makeNextAction(
+        'repair_task',
+        `Execution gates failed for ${executionBlockedTaskIds.length} task(s): ${executionBlockedTasks.map((task) => `${task.taskId}=${task.reason}`).join('; ')}`,
+        executionBlockedTaskIds,
       );
     } else if (allReviewsPassed && !allSmokeChecksPassed) {
       currentState.status = 'partial';
@@ -2644,6 +2839,7 @@ export async function executeRun(
     finalReason = currentState.final_summary || currentState.status;
   }
   emitProgress(finalPhase, finalReason);
+  triggerUserProfileExtraction(spec, currentState);
 
   return {
     spec,

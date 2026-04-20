@@ -94,12 +94,12 @@ describe('buildReviewBrief', () => {
       makeTask(),
       makeWorkerResult(),
       makeReviewResult(),
-      '/Users/xin/auto-skills/CtriXin-repo/hive',
+      '/Users/example/project/hive',
     );
 
     expect(brief.type).toBe('review-brief');
     expect(brief.cwd_hint).toBe('hive');
-    expect(brief.cwd_hint).not.toContain('/Users/xin');
+    expect(brief.cwd_hint).not.toContain('/Users/example');
     expect(brief.task_id).toBe('task-a');
     expect(brief.findings).toHaveLength(1);
     expect(brief.findings[0]?.severity).toBe('red');
@@ -145,7 +145,7 @@ describe('maybeRunExternalReviewSlot', () => {
 
     const snapshots: string[] = [];
     const result = await maybeRunExternalReviewSlot({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       workerResult: makeWorkerResult(),
       reviewResult: makeReviewResult(),
@@ -175,7 +175,7 @@ describe('maybeRunExternalReviewSlot', () => {
     const passedResult = { ...makeReviewResult(), passed: true };
 
     const result = await maybeRunExternalReviewSlot({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       workerResult: makeWorkerResult(),
       reviewResult: passedResult,
@@ -191,7 +191,7 @@ describe('maybeRunExternalReviewSlot', () => {
     });
 
     const result = await maybeRunExternalReviewSlot({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       workerResult: makeWorkerResult(),
       reviewResult: makeReviewResult(),
@@ -205,7 +205,7 @@ describe('maybeRunExternalReviewSlot', () => {
     openReviewRoomMock.mockRejectedValue(new Error('AgentBus unavailable'));
 
     const result = await maybeRunExternalReviewSlot({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       workerResult: makeWorkerResult(),
       reviewResult: makeReviewResult(),
@@ -220,7 +220,7 @@ describe('maybeRunExternalReviewSlot', () => {
     collectDiscussRepliesMock.mockResolvedValue([]);
 
     const result = await maybeRunExternalReviewSlot({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       workerResult: makeWorkerResult(),
       reviewResult: makeReviewResult(),

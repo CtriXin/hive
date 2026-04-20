@@ -175,6 +175,10 @@ const OPEN_COOLDOWN_MS = 60_000;    // How long breaker stays open
 const PROBING_MAX = 2;              // Max probes before deciding
 const RECOVERY_SUCCESS_WINDOW_MS = 300_000; // 5 min: success resets counter
 
+// Cooldown constants — used by routing layer to deprioritize providers
+export const PROVIDER_COOLDOWN_MS = 60_000;
+export const PROVIDER_COOLDOWN_MAX_FAILURES = 2;
+
 function healthyState(): ProviderHealthState {
   return {
     breaker: 'healthy',
@@ -378,6 +382,29 @@ export class ProviderHealthStore {
   shouldAvoid(provider: string, now = Date.now()): { avoid: boolean; state: CircuitBreakerState } {
     const state = this.getState(provider);
     return shouldAvoidProvider(state, now);
+  }
+
+  /** Check if provider is in cooldown (routing deprioritization threshold).
+   * Cooldown = >= MAX_FAILURES consecutive failures within cooldown window.
+   * Matches legacy ProviderCooldownStore semantics for capability-router. */
+  isCooledDown(provider: string, now = Date.now()): boolean {
+    const state = this.providers.get(provider);
+    if (!state) return false;
+    if (state.consecutive_failures < PROVIDER_COOLDOWN_MAX_FAILURES) return false;
+    if (state.last_failure_at > 0 && now - state.last_failure_at > PROVIDER_COOLDOWN_MS) {
+      this.resetCooldown(provider);
+      return false;
+    }
+    return true;
+  }
+
+  /** Reset provider cooldown counters (e.g. after successful probe). */
+  resetCooldown(provider: string): void {
+    const current = this.providers.get(provider);
+    if (!current) return;
+    const next = { ...current, consecutive_failures: 0, cycle_failures: 0, last_failure_at: 0 };
+    this.providers.set(provider, next);
+    this.dirty = true;
   }
 
   /** Get all provider health states */

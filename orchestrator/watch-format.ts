@@ -5,6 +5,8 @@ import type { WatchData } from './watch-loader.js';
 import type { OverallRunState } from './operator-summary.js';
 import { suggestNextCommands } from './operator-commands.js';
 import { cueIcon, cueLabel, type TaskCollabCue } from './collab-cues.js';
+import type { ReviewResult } from './types.js';
+import { extractAuthorityDegradation, formatAuthorityDegradation } from './authority-surface.js';
 
 function truncate(text: string | undefined, limit: number): string {
   const normalized = (text || '').replace(/\s+/g, ' ').trim();
@@ -66,89 +68,120 @@ function mapStatusToOverallState(status: string, steering?: { is_paused: boolean
   return 'running';
 }
 
-/** Format a full watch snapshot */
-export function formatWatch(data: WatchData, now?: string): string {
+/** Format a full watch snapshot — conclusion-first, operator-briefing style */
+export function formatWatch(data: WatchData, now?: string, opts?: { reviewResults?: ReviewResult[] }): string {
   const timestamp = now || new Date().toISOString();
   const blocks: string[] = [];
+  const overallState = mapStatusToOverallState(data.status, data.steering);
 
-  // Header
+  // ── Header (always present) ──
   blocks.push(`== Hive Watch [${timestamp}] ==`);
 
-  // Core status with operator summary
-  const coreLines: string[] = [];
-  const overallState = mapStatusToOverallState(data.status, data.steering);
-  coreLines.push(`${stateIcon(overallState)} run: ${data.run_id} | ${overallState}`);
-  coreLines.push(`round: ${data.round}${data.max_rounds ? `/${data.max_rounds}` : ''}`);
+  // ── 1. CONCLUSION: state, human attention, next action, blocker ──
+  const conclusionLines: string[] = [];
+  conclusionLines.push(`${stateIcon(overallState)} run: ${data.run_id} | ${overallState}`);
+  conclusionLines.push(`round: ${data.round}${data.max_rounds ? `/${data.max_rounds}` : ''}`);
+  conclusionLines.push(`${modeIcon(data.mode.current_mode)} mode: ${data.mode.current_mode}${data.mode.escalated ? ' [ESCALATED]' : ''}`);
 
-  if (data.phase) {
-    coreLines.push(`phase: ${data.phase}${data.phase_reason ? ` | ${truncate(data.phase_reason, 80)}` : ''}`);
-  }
-
-  coreLines.push(`${modeIcon(data.mode.current_mode)} mode: ${data.mode.current_mode}${data.mode.escalated ? ' [ESCALATED]' : ''}`);
-
-  if (data.focus_task) {
-    coreLines.push(`focus: ${data.focus_task}${data.focus_agent ? ` (${data.focus_agent})` : ''}${data.focus_summary ? ` | ${truncate(data.focus_summary, 60)}` : ''}`);
-  }
-
-  if (data.latest_reason) {
-    coreLines.push(`next: ${truncate(data.latest_reason, 100)}`);
-  }
-
-  coreLines.push(`updated: ${data.updated_at}`);
-  blocks.push(section('Run', coreLines));
-
-  // Operator Summary — conclusion first
-  const summaryLines: string[] = [];
-  const hasProviderIssue = data.provider.total > 0 && data.provider.any_unhealthy;
-  const hasSteering = data.steering.pending_count > 0 || data.steering.last_applied || data.steering.last_rejected;
-
+  // Next action / current blocker — first screen priority
   if (overallState === 'paused') {
-    summaryLines.push('\u23F8\uFE0F PAUSED — resume run or apply steering actions');
+    conclusionLines.push('\u23F8\uFE0F PAUSED — resume or apply steering actions');
   } else if (overallState === 'blocked') {
-    summaryLines.push('\uD83D\uDD34 BLOCKED — requires intervention');
+    conclusionLines.push('\uD83D\uDD34 BLOCKED — requires intervention');
+    if (data.latest_reason) conclusionLines.push(`blocker: ${truncate(data.latest_reason, 100)}`);
   } else if (overallState === 'partial') {
-    summaryLines.push('\uD83D\uDFE1 PARTIAL — some tasks completed, some failed');
+    conclusionLines.push('\uD83D\uDFE1 PARTIAL — some tasks completed, some failed');
   } else if (overallState === 'done') {
-    summaryLines.push('\u2705 DONE — all tasks completed');
+    conclusionLines.push('\u2705 DONE — all tasks completed');
   } else {
-    summaryLines.push('\uD83D\uDFE2 RUNNING — execution in progress');
-  }
-
-  if (hasProviderIssue) {
-    const unhealthy = data.provider.details.filter((d) => d.breaker !== 'healthy')[0];
-    if (unhealthy) {
-      summaryLines.push(`\u26A0\uFE0F Provider ${unhealthy.provider} ${unhealthy.breaker}${unhealthy.subtype ? ` (${unhealthy.subtype})` : ''}`);
+    if (data.focus_task) {
+      conclusionLines.push(`focus: ${data.focus_task}${data.focus_agent ? ` (${data.focus_agent})` : ''}${data.focus_summary ? ` | ${truncate(data.focus_summary, 60)}` : ''}`);
     }
   }
 
-  if (hasSteering && data.steering.pending_count! > 0) {
-    summaryLines.push(`\uD83D\uDCCC ${data.steering.pending_count} pending steering action(s)`);
+  // Phase / latest reason (only if useful)
+  if (data.phase && overallState === 'running') {
+    conclusionLines.push(`phase: ${data.phase}${data.phase_reason ? ` | ${truncate(data.phase_reason, 80)}` : ''}`);
   }
 
-  if (summaryLines.length > 0) {
-    blocks.push(section('Summary', summaryLines));
+  conclusionLines.push(`updated: ${data.updated_at}`);
+  blocks.push(section('Run', conclusionLines));
+
+  // ── 2. AUTHORITY DEGRADATION (if present — high visibility) ──
+  const authority = extractAuthorityDegradation(opts?.reviewResults);
+  if (authority.degradation) {
+    blocks.push(section('Authority', formatAuthorityDegradation(authority.degradation)));
   }
 
-  // Next Action Hints — top 3 actionable items
-  const hintLines: string[] = [];
-  const hints = generateOperatorHintsFromWatchData(data);
+  // ── 3. PROVIDER HEALTH (visible but not noisy) ──
+  const hasProviderIssue = data.provider.total > 0 && data.provider.any_unhealthy;
+  const provLines: string[] = [];
+
+  if (data.provider.total === 0) {
+    // Skip provider section entirely when no data — less noise
+  } else if (!hasProviderIssue) {
+    // Normal: just show counts, skip detail lines
+    provLines.push(`${data.provider.total} tracked, ${data.provider.healthy} healthy`);
+  } else {
+    // Degraded/open: show full detail
+    const summary = data.provider.summary_text || [
+      `${data.provider.total} total`,
+      `${data.provider.healthy} healthy`,
+      data.provider.degraded > 0 ? `${data.provider.degraded} degraded` : '',
+      data.provider.open > 0 ? `${data.provider.open} open` : '',
+      data.provider.probing > 0 ? `${data.provider.probing} probing` : '',
+    ].filter(Boolean).join(' | ');
+    provLines.push(`\u26A0\uFE0F ${summary}`);
+
+    const unhealthy = data.provider.details.filter((d) => d.breaker !== 'healthy');
+    for (const d of unhealthy) {
+      provLines.push(`${breakerIcon(d.breaker)} ${d.provider}: ${d.breaker}${d.subtype ? ` (${d.subtype})` : ''}`);
+    }
+  }
+
+  if (data.provider.latest_decision) {
+    provLines.push(`resilience: ${data.provider.latest_decision}`);
+  }
+  if (data.provider.latest_task_route) {
+    const route = data.provider.latest_task_route;
+    const requested = route.requested_provider
+      ? `${route.requested_model || '-'}@${route.requested_provider}`
+      : route.requested_model || '-';
+    const actual = route.actual_provider
+      ? `${route.actual_model || '-'}@${route.actual_provider}`
+      : route.actual_model || '-';
+    const suffix = route.failure_subtype ? ` | ${route.failure_subtype}` : '';
+    provLines.push(`route: ${route.task_id} | ${requested} -> ${actual}${route.fallback_used ? ' [fallback]' : ''}${suffix}`);
+  }
+  if (provLines.length > 0) {
+    blocks.push(section('Provider', provLines));
+  }
+
+  // ── 4. STEERING (only if relevant) ──
+  const steerLines: string[] = [];
+  if (data.steering.is_paused) steerLines.push('\u23F8\ufe0f PAUSED');
+  if (data.steering.pending_count > 0) steerLines.push(`pending: ${data.steering.pending_count} action(s)`);
+  if (data.steering.last_applied) steerLines.push(`applied: ${data.steering.last_applied.action_type} | ${truncate(data.steering.last_applied.outcome, 80)}`);
+  if (data.steering.last_rejected) steerLines.push(`rejected: ${data.steering.last_rejected.action_type} | ${truncate(data.steering.last_rejected.reason, 80)}`);
+  if (steerLines.length > 0) {
+    blocks.push(section('Steering', steerLines));
+  }
+
+  // ── 5. NEXT ACTIONS (hints + commands) ──
+  const hints = generateOperatorHintsFromWatchData(data, authority);
   let topHintAction: string | undefined;
   if (hints.length > 0) {
     topHintAction = hints[0].action;
-    for (const hint of hints.slice(0, 3)) {
+    const hintLines = hints.slice(0, 3).map((hint) => {
       const icon = hint.priority === 'high' ? '‼️' : hint.priority === 'medium' ? '\u25B6\uFE0F' : '\uD83D\uDCA1';
-      hintLines.push(`${icon} ${hint.description}`);
-      hintLines.push(`   action: ${hint.action}`);
-      if (hint.rationale) {
-        hintLines.push(`   why: ${truncate(hint.rationale, 70)}`);
-      }
-    }
-  } else {
-    hintLines.push('- no specific actions recommended');
+      let line = `${icon} ${hint.description}`;
+      if (hint.rationale) line += ` | ${truncate(hint.rationale, 70)}`;
+      return line;
+    });
+    blocks.push(section('Next Actions', hintLines));
   }
-  blocks.push(section('Next Actions', hintLines));
 
-  // Suggested Commands — lifecycle-aware, 2-4 quick commands
+  // Suggested commands (only when not running)
   const stateForCmds = mapStatusToOverallState(data.status, data.steering);
   if (stateForCmds !== 'running') {
     const cmds = suggestNextCommands(stateForCmds, {
@@ -162,86 +195,19 @@ export function formatWatch(data: WatchData, now?: string): string {
     }
   }
 
-  // Phase 10A: Collaboration Cues — task-level signals for handoff
+  // ── 6. COLLABORATION CUES (only active) ──
   const activeCues = data.taskCues.filter((c) => c.cue !== 'ready' && c.cue !== 'passive');
   if (activeCues.length > 0) {
     const cueLines = activeCues.slice(0, 5).map((c) => `${cueIcon(c.cue)} ${c.task_id}: ${truncate(c.reason, 70)}`);
     blocks.push(section('Collaboration Cues', cueLines));
   }
 
-  // Steering
-  const steerLines: string[] = [];
-  if (data.steering.is_paused) {
-    steerLines.push('\u23F8\ufe0f  PAUSED');
-  }
-  if (data.steering.pending_count > 0) {
-    steerLines.push(`pending: ${data.steering.pending_count} action(s)`);
-  }
-  if (data.steering.last_applied) {
-    steerLines.push(`applied: ${data.steering.last_applied.action_type} | ${truncate(data.steering.last_applied.outcome, 80)}`);
-  }
-  if (data.steering.last_rejected) {
-    steerLines.push(`rejected: ${data.steering.last_rejected.action_type} | ${truncate(data.steering.last_rejected.reason, 80)}`);
-  }
-  if (data.steering.recent_actions.length > 0 && !data.steering.last_applied && data.steering.pending_count === 0) {
-    for (const a of data.steering.recent_actions.slice(-3)) {
-      const icon = a.status === 'applied' ? '\u2705' : a.status === 'rejected' ? '\u26D4' : a.status === 'suppressed' ? '\uD83D\uDD07' : '\u23F3';
-      steerLines.push(`${icon} ${a.type}${a.task_id ? ` \u2192 ${a.task_id}` : ''}`);
-    }
-  }
-  if (steerLines.length === 0) {
-    steerLines.push('no steering actions');
-  }
-  blocks.push(section('Steering', steerLines));
-
-  // Provider health
-  const provLines: string[] = [];
-  if (data.provider.total === 0) {
-    provLines.push('no provider health data');
-  } else {
-    const summary = data.provider.summary_text || [
-      `${data.provider.total} total`,
-      `${data.provider.healthy} healthy`,
-      data.provider.degraded > 0 ? `${data.provider.degraded} degraded` : '',
-      data.provider.open > 0 ? `${data.provider.open} open` : '',
-      data.provider.probing > 0 ? `${data.provider.probing} probing` : '',
-    ].filter(Boolean).join(' | ');
-    provLines.push(summary);
-
-    const unhealthy = data.provider.details.filter((d) => d.breaker !== 'healthy');
-    if (unhealthy.length > 0) {
-      for (const d of unhealthy) {
-        provLines.push(`${breakerIcon(d.breaker)} ${d.provider}: ${d.breaker}${d.subtype ? ` (${d.subtype})` : ''}`);
-      }
-    }
-    if (data.provider.latest_decision) {
-      provLines.push(`latest resilience: ${data.provider.latest_decision}`);
-    }
-    if (data.provider.latest_task_route) {
-      const route = data.provider.latest_task_route;
-      const requested = route.requested_provider
-        ? `${route.requested_model || '-'}@${route.requested_provider}`
-        : route.requested_model || '-';
-      const actual = route.actual_provider
-        ? `${route.actual_model || '-'}@${route.actual_provider}`
-        : route.actual_model || '-';
-      const suffix = route.failure_subtype ? ` | ${route.failure_subtype}` : '';
-      provLines.push(`latest route: ${route.task_id} | ${requested} -> ${actual}${route.fallback_used ? ' [fallback]' : ''}${suffix}`);
-    }
-  }
-  blocks.push(section('Provider', provLines));
-
-  // Mode escalation history
+  // ── 7. MODE ESCALATION (only if happened) ──
   if (data.mode.escalated && data.mode.escalation_history.length > 0) {
     const escLines = data.mode.escalation_history.map(
-      (e) => `round ${e.round}: ${e.from} \u2192 ${e.to} | ${truncate(e.reason, 90)}`,
+      (e) => `r${e.round}: ${e.from} \u2192 ${e.to} | ${truncate(e.reason, 90)}`,
     );
     blocks.push(section('Mode Escalation', escLines));
-  }
-
-  // Artifact health
-  if (data.artifacts_missing.length > 0) {
-    blocks.push(section('Missing Artifacts', data.artifacts_missing.map((a) => `- ${a}`)));
   }
 
   return blocks.join('\n\n');
@@ -258,14 +224,27 @@ export function formatWatchCompact(data: WatchData): string {
   return `[${data.run_id}] ${data.status}${phase} r${data.round} | ${data.mode.current_mode}${focus}${paused}${provider}${escalated}`;
 }
 
+import type { AuthoritySurfaceResult } from './authority-surface.js';
+
 /** Generate operator hints from watch data (simplified version for watch output) */
-function generateOperatorHintsFromWatchData(data: WatchData): Array<{
+function generateOperatorHintsFromWatchData(data: WatchData, authority?: AuthoritySurfaceResult): Array<{
   action: string;
   priority: 'high' | 'medium' | 'low';
   description: string;
   rationale?: string;
 }> {
   const hints: Array<{ action: string; priority: 'high' | 'medium' | 'low'; description: string; rationale?: string }> = [];
+
+  // Authority degradation — highest priority
+  if (authority?.degradation) {
+    const d = authority.degradation;
+    hints.push({
+      action: 'request_human_input',
+      priority: d.severity === 'high' ? 'high' : 'medium',
+      description: d.description,
+      rationale: `review mode: ${d.actual_mode}`,
+    });
+  }
 
   const overallState = mapStatusToOverallState(data.status, data.steering);
 

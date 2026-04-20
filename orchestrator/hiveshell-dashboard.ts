@@ -37,6 +37,14 @@ import {
   latestProviderDecision,
   summarizeProviderHealth,
 } from './provider-surface.js';
+import {
+  loadRunModelOverrides,
+  previewResolvedModelPolicy,
+  resolveEffectiveRunModelPolicy,
+  type EffectiveRunModelPolicy,
+  type RunModelPolicyOverrides,
+  type RunModelPolicyPatch,
+} from './run-model-policy.js';
 
 interface MindkeeperCheckpointPayload {
   repo: string;
@@ -88,6 +96,10 @@ export interface HiveShellDashboardData {
   cwd: string;
   spec: RunSpec | null;
   state: RunState | null;
+  modelPolicy: EffectiveRunModelPolicy;
+  modelOverrides: RunModelPolicyOverrides | null;
+  previewModelPolicy: EffectiveRunModelPolicy;
+  startRunDraft: RunModelPolicyPatch | null;
   loopProgress: LoopProgress | null;
   plan: TaskPlan | null;
   result: OrchestratorResult | null;
@@ -436,6 +448,84 @@ function renderCurrentMode(data: HiveShellDashboardData): string[] {
   return lines;
 }
 
+function policyStageModelLabel(value: unknown): string {
+  const record = (value && typeof value === 'object') ? value as Record<string, unknown> : {};
+  const model = record.model;
+  if (Array.isArray(model)) return model.join(',');
+  return String(model ?? '-');
+}
+
+function policyStageFallbackLabel(value: unknown): string {
+  const record = (value && typeof value === 'object') ? value as Record<string, unknown> : {};
+  return typeof record.fallback === 'string' && record.fallback ? ` fallback=${record.fallback}` : '';
+}
+
+function renderModelPolicy(data: HiveShellDashboardData): string[] {
+  const modelPolicy = data.modelPolicy || previewResolvedModelPolicy(data.cwd);
+  const lines: string[] = [];
+  lines.push('Base Policy');
+  for (const stage of modelPolicy.stages) {
+    lines.push(`- ${stage.stage}: ${policyStageModelLabel(stage.config)}${policyStageFallbackLabel(stage.config)}`);
+  }
+  lines.push('Run Override');
+  lines.push(`- start-run: ${data.modelOverrides?.start_time ? 'present' : 'none'}`);
+  lines.push(`- runtime-next-stage: ${data.modelOverrides?.runtime_next_stage ? 'present' : 'none'}`);
+  lines.push('Effective Policy');
+  lines.push(`- override: ${modelPolicy.override_active ? 'active' : 'inactive'}`);
+  if (modelPolicy.override_summary) {
+    lines.push(`- summary: ${truncate(modelPolicy.override_summary, 120)}`);
+  }
+  for (const stage of modelPolicy.stages) {
+    const model = policyStageModelLabel(stage.effective);
+    const fallback = policyStageFallbackLabel(stage.effective);
+    const source = stage.overridden ? ` source=${stage.source}` : ' source=default';
+    lines.push(`- ${stage.stage}: ${model}${fallback}${source}`);
+  }
+  return lines;
+}
+
+function renderOverrideArtifacts(data: HiveShellDashboardData): string[] {
+  const modelPolicy = data.modelPolicy || previewResolvedModelPolicy(data.cwd);
+  const lines: string[] = [];
+  const start = data.modelOverrides?.start_time;
+  const runtime = data.modelOverrides?.runtime_next_stage;
+  lines.push(`start-run override: ${start ? 'present' : 'none'}`);
+  lines.push(`runtime next-stage override: ${runtime ? 'present' : 'none'}`);
+  lines.push(`override active: ${modelPolicy.override_active ? 'yes' : 'no'}`);
+  if (runtime) {
+    lines.push('Apply to next round');
+    lines.push('Apply on next review stage');
+    lines.push('Apply on next replan');
+    lines.push('This does not affect currently running workers');
+  }
+  return lines;
+}
+
+function renderStartRunControls(data: HiveShellDashboardData): string[] {
+  const previewPolicy = data.previewModelPolicy || previewResolvedModelPolicy(data.cwd, data.startRunDraft || undefined);
+  const lines: string[] = [];
+  lines.push('Start Run');
+  lines.push('fields: goal / mode / model policy override');
+  lines.push('actions: Start run with override / Preview Effective Model Policy');
+  for (const stage of previewPolicy.stages) {
+    const model = policyStageModelLabel(stage.effective);
+    lines.push(`- preview ${stage.stage}: ${model}${stage.overridden ? ' [override]' : ''}`);
+  }
+  return lines;
+}
+
+function renderTuneCurrentRun(data: HiveShellDashboardData): string[] {
+  const lines: string[] = [];
+  lines.push('Tune Current Run');
+  lines.push('fields: next planner / next executor / next reviewer tiers / next discuss');
+  lines.push('actions: Update run-scoped override / Update next-stage override / Reset override to default');
+  lines.push('Apply to next round');
+  lines.push('Apply on next review stage');
+  lines.push('Apply on next replan');
+  lines.push('This does not affect currently running workers');
+  return lines;
+}
+
 function renderOverview(data: HiveShellDashboardData): string[] {
   const spec = data.spec;
   const state = data.state;
@@ -447,6 +537,7 @@ function renderOverview(data: HiveShellDashboardData): string[] {
   const round = state?.round ?? data.workerSnapshot?.round ?? 0;
   const summary = state?.final_summary || (data.workerSnapshot ? 'artifact-backed run' : undefined);
 
+  const modelPolicy = data.modelPolicy || previewResolvedModelPolicy(data.cwd);
   const lines = [
     `- run: ${data.runId}`,
     `- goal: ${truncate(goal, 110)}`,
@@ -457,7 +548,12 @@ function renderOverview(data: HiveShellDashboardData): string[] {
     `- summary: ${truncate(summary, 110)}`,
     `- score: ${score ? `${score.score} (best ${data.scoreHistory?.best_score ?? score.score})` : 'n/a'}`,
     `- workers: ${workers ? `${workers.total} total / ${workers.active} active / ${workers.completed} completed / ${workers.failed} failed` : 'n/a'}`,
+    `- model override: ${modelPolicy.override_active ? 'active' : 'inactive'}`,
   ];
+
+  if (modelPolicy.override_summary) {
+    lines.push(`- override summary: ${truncate(modelPolicy.override_summary, 110)}`);
+  }
 
   if (progress?.planner_discuss_conclusion) {
     lines.push(`- planner discuss: ${progress.planner_discuss_conclusion.quality_gate} | ${truncate(progress.planner_discuss_conclusion.overall_assessment, 90)}`);
@@ -637,6 +733,10 @@ export function loadHiveShellDashboard(
     cwd,
     spec: loadRunSpec(cwd, resolvedRunId),
     state: loadRunState(cwd, resolvedRunId),
+    modelPolicy: resolveEffectiveRunModelPolicy(cwd, resolvedRunId),
+    modelOverrides: loadRunModelOverrides(cwd, resolvedRunId),
+    previewModelPolicy: previewResolvedModelPolicy(cwd),
+    startRunDraft: null,
     loopProgress: readLoopProgress(cwd, resolvedRunId),
     plan: loadRunPlan(cwd, resolvedRunId),
     result: loadRunResult(cwd, resolvedRunId),
@@ -662,6 +762,10 @@ export function renderHiveShellDashboard(
       `updated: ${new Date().toISOString()}`,
     ]),
     section('Run Overview', renderOverview(data)),
+    section('Model Policy', renderModelPolicy(data)),
+    section('Override Artifacts', renderOverrideArtifacts(data)),
+    section('Start Run', renderStartRunControls(data)),
+    section('Tune Current Run', renderTuneCurrentRun(data)),
     section('Mode', renderCurrentMode(data)),
     section('Collab', renderCollab(data)),
     section('Collab Cues', renderCollabCues(data)),

@@ -1,8 +1,8 @@
-{"type":"tool_use","id":"tool_9la0jc6KwiGygRaB2cHDBWqD","name":"Read","input":{"file_path":"/Users/xin/auto-skills/CtriXin-repo/hive/.ai/manifest.json"}}
+{"type":"tool_use","id":"tool_9la0jc6KwiGygRaB2cHDBWqD","name":"Read","input":{"file_path":"<repo-root>/.ai/manifest.json"}}
 (no content)
-{"type":"tool_use","id":"tool_rByhwSaz4RpNLNjH6qsZ8Wt1","name":"Read","input":{"file_path":"/Users/xin/auto-skills/CtriXin-repo/hive/rules/AGENT_RULES.md"}}
+{"type":"tool_use","id":"tool_rByhwSaz4RpNLNjH6qsZ8Wt1","name":"Read","input":{"file_path":"<repo-root>/rules/AGENT_RULES.md"}}
 (no content)
-{"type":"tool_use","id":"tool_C7Jmk9gJRjs2Ai7O9BjsWY70","name":"Read","input":{"file_path":"/Users/xin/auto-skills/CtriXin-repo/hive/rules/code-quality.md"}}
+{"type":"tool_use","id":"tool_C7Jmk9gJRjs2Ai7O9BjsWY70","name":"Read","input":{"file_path":"<repo-root>/rules/code-quality.md"}}
 (no content)
 # RateLimiter Code Review
 

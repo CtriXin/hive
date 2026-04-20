@@ -325,4 +325,181 @@ describe('memory-recall', () => {
       expect(result.memories[0].relevance_score).toBeLessThan(0.4);
     }
   });
+
+  // ── Phase 7B: Multi-signal ranking ──
+
+  it('recalls memory with weak keywords but strong file overlap', () => {
+    const store = makeStore([
+      makeMemoryEntry({
+        memory_id: 'mem-file-strong',
+        summary: 'Schema validation patterns',
+        detail: 'Evidence: task broke schema.ts in orchestrator/types.ts',
+        category: 'recurring_failure',
+        confidence: 0.8,
+        recency: 0.7,
+      }),
+      makeMemoryEntry({
+        memory_id: 'mem-keyword-only',
+        summary: 'Build failures in build tasks',
+        detail: 'Generic build issue',
+        category: 'recurring_failure',
+        confidence: 0.6,
+        recency: 0.8,
+      }),
+    ]);
+
+    const result = recallProjectMemories(store, {
+      goal: 'update validation logic',
+      touched_files: ['orchestrator/types.ts', 'src/schema.ts'],
+    });
+
+    expect(result.memories.length).toBeGreaterThan(0);
+    // File-overlap memory should rank at least in top results
+    const fileMemIndex = result.memories.findIndex(m => m.entry.memory_id === 'mem-file-strong');
+    expect(fileMemIndex).toBeLessThan(result.memories.length);
+    expect(fileMemIndex).toBeLessThan(2);
+  });
+
+  it('old but high-confidence memory ranks above new low-confidence memory', () => {
+    const store = makeStore([
+      makeMemoryEntry({
+        memory_id: 'mem-old-strong',
+        summary: 'Build failure pattern in compilation step',
+        detail: 'Recurring build failures across multiple runs',
+        confidence: 0.9,
+        recency: 0.2, // old but high confidence
+      }),
+      makeMemoryEntry({
+        memory_id: 'mem-new-weak',
+        summary: 'Build issue detected',
+        detail: 'Minor build problem',
+        confidence: 0.3,
+        recency: 0.9, // recent but low confidence
+      }),
+    ]);
+
+    const result = recallProjectMemories(store, { goal: 'fix build issues' }, { topN: 2 });
+    expect(result.memories).toHaveLength(2);
+    // High-confidence old memory should beat new weak memory
+    expect(result.memories[0].entry.memory_id).toBe('mem-old-strong');
+  });
+
+  it('failure_class match boosts relevant memory in repair context', () => {
+    const store = makeStore([
+      makeMemoryEntry({
+        memory_id: 'mem-build',
+        summary: 'Build compilation failures recur',
+        detail: 'The build step fails with type errors in round transitions',
+        category: 'effective_repair',
+        confidence: 0.7,
+        recency: 0.6,
+      }),
+      makeMemoryEntry({
+        memory_id: 'mem-test',
+        summary: 'Test suite flaky patterns',
+        detail: 'Tests sometimes timeout under load',
+        category: 'recurring_failure',
+        confidence: 0.7,
+        recency: 0.6,
+      }),
+    ]);
+
+    const result = recallProjectMemories(store, {
+      goal: 'retry the task',
+      failure_class: 'build',
+    });
+
+    expect(result.memories.length).toBeGreaterThan(0);
+    expect(result.memories[0].entry.memory_id).toBe('mem-build');
+  });
+
+  it('phrase match boosts memories with multi-word continuity', () => {
+    const store = makeStore([
+      makeMemoryEntry({
+        memory_id: 'mem-phrase',
+        summary: 'Schema validation patterns for user input',
+        detail: 'User input validation often breaks schema files',
+        category: 'risky_area',
+        confidence: 0.6,
+        recency: 0.5,
+      }),
+      makeMemoryEntry({
+        memory_id: 'mem-generic',
+        summary: 'Generic failure pattern',
+        detail: 'Tasks fail sometimes',
+        category: 'recurring_failure',
+        confidence: 0.6,
+        recency: 0.5,
+      }),
+    ]);
+
+    const result = recallProjectMemories(store, {
+      goal: 'update schema validation for user input',
+    }, { topN: 2 });
+
+    expect(result.memories.length).toBeGreaterThan(0);
+    // Phrase-match memory should rank higher due to multi-word overlap
+    expect(result.memories[0].entry.memory_id).toBe('mem-phrase');
+  });
+
+  // ── Phase 7B: Size caps ──
+
+  it('recall respects topN limit with many candidates', () => {
+    const memories: ProjectMemoryStore['memories'] = [];
+    for (let i = 0; i < 10; i++) {
+      memories.push(makeMemoryEntry({
+        memory_id: `mem-${i}`,
+        summary: `Build failure pattern ${i}`,
+        detail: `Description of build issue ${i}`,
+        confidence: 0.5 + i * 0.05,
+        recency: 0.5 + i * 0.05,
+      }));
+    }
+    const store = makeStore(memories);
+
+    const result = recallProjectMemories(store, { goal: 'fix build' }, { topN: 3 });
+    expect(result.memories).toHaveLength(3);
+  });
+
+  it('formatted recall stays within size budget', () => {
+    const memories: ProjectMemoryStore['memories'] = [];
+    for (let i = 0; i < 5; i++) {
+      memories.push(makeMemoryEntry({
+        memory_id: `mem-${i}`,
+        summary: `Memory with a moderately long summary about ${i} related things`,
+        detail: `Detailed explanation of the issue number ${i} with evidence from multiple runs and contexts`,
+        confidence: 0.6 + i * 0.05,
+        recency: 0.5 + i * 0.05,
+      }));
+    }
+    const store = makeStore(memories);
+    const recall = recallProjectMemories(store, { goal: 'build issue' }, { topN: 5 });
+
+    const formatted = formatMemoryRecall(recall, 400);
+    expect(formatted.length).toBeLessThanOrEqual(415); // 400 + truncation tolerance
+  });
+
+  it('recency floor prevents old high-confidence memories from being silenced', () => {
+    const store = makeStore([
+      makeMemoryEntry({
+        memory_id: 'mem-old-important',
+        summary: 'Critical build failure pattern',
+        detail: 'This is a critical recurring build failure',
+        confidence: 0.95,
+        recency: 0.15, // very old
+      }),
+      makeMemoryEntry({
+        memory_id: 'mem-new-trivial',
+        summary: 'Minor build warning',
+        detail: 'Trivial build warning, not critical',
+        confidence: 0.4,
+        recency: 0.9, // very recent
+      }),
+    ]);
+
+    const result = recallProjectMemories(store, { goal: 'fix build failure' }, { topN: 2 });
+    expect(result.memories.length).toBeGreaterThan(0);
+    // Old but high-confidence memory should still be competitive due to recency floor
+    expect(result.memories[0].entry.memory_id).toBe('mem-old-important');
+  });
 });

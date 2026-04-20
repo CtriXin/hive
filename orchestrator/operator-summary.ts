@@ -19,6 +19,11 @@ import {
   latestProviderDecision,
   summarizeProviderHealth,
 } from './provider-surface.js';
+import {
+  extractAuthorityDegradation,
+  formatAuthorityDegradation,
+  type AuthorityDegradationSignal,
+} from './authority-surface.js';
 
 export type OverallRunState =
   | 'done'
@@ -31,6 +36,7 @@ export interface SuccessItem {
   task_id: string;
   description: string;
   merged: boolean;
+  rule_selection_basis?: string;
 }
 
 export interface FailureItem {
@@ -39,6 +45,7 @@ export interface FailureItem {
   failure_class: FailureClass | 'unknown';
   last_error: string;
   retry_count: number;
+  rule_selection_basis?: string;
 }
 
 export interface BlockerItem {
@@ -73,6 +80,7 @@ export interface RunSummary {
   max_rounds?: number;
   mode?: string;
   primary_blocker?: BlockerItem;
+  authority_degradation?: AuthorityDegradationSignal;
   provider_summary?: string;
   latest_route?: string;
   latest_resilience?: string;
@@ -136,6 +144,7 @@ function extractTopSuccesses(
       task_id: task.task_id,
       description: taskMap.get(task.task_id) || `Task ${task.task_id}`,
       merged: task.merged || task.status === 'merged',
+      rule_selection_basis: task.rule_selection?.basis,
     }))
     .sort((a, b) => (b.merged ? 1 : 0) - (a.merged ? 1 : 0));
 
@@ -166,6 +175,7 @@ function extractTopFailures(
       failure_class: classifyFailureFromTask(task, verificationResultsByTask?.[task.task_id]),
       last_error: task.last_error || 'Unknown error',
       retry_count: task.retry_count || 0,
+      rule_selection_basis: task.rule_selection?.basis,
     }))
     .sort((a, b) => b.retry_count - a.retry_count);
 
@@ -258,6 +268,7 @@ export function generateRunSummary(args: {
   const primaryBlocker = state
     ? identifyPrimaryBlocker(state, providerHealth)
     : undefined;
+  const authorityDegradation = extractAuthorityDegradation(reviewResults);
   const providerSummary = summarizeProviderHealth(providerHealth);
   const latestRoute = formatProviderRoute(
     extractLatestProviderRoute({ reviewResults, providerHealth }),
@@ -265,6 +276,17 @@ export function generateRunSummary(args: {
   const latestResilience = formatProviderDecision(latestProviderDecision(providerHealth));
 
   const nextActionHints: NextActionHint[] = [];
+
+  // Authority degradation hint (high visibility)
+  if (authorityDegradation.degradation) {
+    const d = authorityDegradation.degradation;
+    nextActionHints.push({
+      action: 'request_human_input',
+      priority: d.severity === 'high' ? 'high' : 'medium',
+      description: d.description,
+      rationale: `Authority review mode: ${d.actual_mode}. Failed: ${d.failed_reviewers.map((f) => f.model).join(', ')}.`,
+    });
+  }
 
   if (overallState === 'paused') {
     nextActionHints.push({
@@ -356,6 +378,10 @@ export function generateRunSummary(args: {
     summaryParts.push(`blocked by: ${primaryBlocker.description}`);
   }
 
+  if (authorityDegradation.degradation) {
+    summaryParts.push(`authority: ${authorityDegradation.degradation.description}`);
+  }
+
   if (providerSummary) {
     summaryParts.push(`providers: ${providerSummary}`);
   }
@@ -375,6 +401,7 @@ export function generateRunSummary(args: {
     max_rounds: spec?.max_rounds,
     mode: spec?.execution_mode,
     primary_blocker: primaryBlocker,
+    authority_degradation: authorityDegradation.degradation,
     provider_summary: providerSummary,
     latest_route: latestRoute,
     latest_resilience: latestResilience,

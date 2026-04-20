@@ -113,15 +113,15 @@ Rules:
 ### Validation Run
 - command: `npm run build`
 - result: pass
-- command: `./bin/hive run --goal "Create or update docs/hiveshell/REAL_VALIDATION_RUN_LOG.md ..." --cwd /Users/xin/auto-skills/CtriXin-repo/hive`
+- command: `./bin/hive run --goal "Create or update docs/hiveshell/REAL_VALIDATION_RUN_LOG.md ..." --cwd <repo-root>`
 - result: `run-1775576629068` finished `done`
-- command: `./bin/hive status --cwd /Users/xin/auto-skills/CtriXin-repo/hive --run-id run-1775576629068`
+- command: `./bin/hive status --cwd <repo-root> --run-id run-1775576629068`
 - result: pass
-- command: `./bin/hive shell --cwd /Users/xin/auto-skills/CtriXin-repo/hive --run-id run-1775576629068`
+- command: `./bin/hive shell --cwd <repo-root> --run-id run-1775576629068`
 - result: pass
-- command: `./bin/hive compact --cwd /Users/xin/auto-skills/CtriXin-repo/hive --run-id run-1775576629068`
+- command: `./bin/hive compact --cwd <repo-root> --run-id run-1775576629068`
 - result: pass
-- command: `./bin/hive restore --cwd /Users/xin/auto-skills/CtriXin-repo/hive`
+- command: `./bin/hive restore --cwd <repo-root>`
 - result: pass
 - command: `git diff --name-only -- config/model-lessons.json`
 - result: unchanged
@@ -173,9 +173,9 @@ Rules:
 - Corrected the earlier worker draft, which had incorrectly described the issue as stale `validation-` tasks
 
 ### Validation Run
-- command: `./bin/hive status --cwd /Users/xin/auto-skills/CtriXin-repo/hive --run-id run-1775575692467`
+- command: `./bin/hive status --cwd <repo-root> --run-id run-1775575692467`
 - result: pass (`done`, `plan tasks: 1`, `1/1 reviews passed`, `verification passed`)
-- command: `./bin/hive workers --cwd /Users/xin/auto-skills/CtriXin-repo/hive --run-id run-1775575692467 --worker task-a`
+- command: `./bin/hive workers --cwd <repo-root> --run-id run-1775575692467 --worker task-a`
 - result: pass (`completed`, `review passed`, single task path confirmed)
 - command: manual content review of `docs/hiveshell/NO_OP_VALIDATION_LESSON_V2.md`
 - result: pass
@@ -280,7 +280,7 @@ Rules:
 - `docs/hiveshell/MAIN_AGENT_PROGRESS_RECEIPTS.md`
 
 ### What Actually Happened
-- Ran `./bin/hive run --goal "...PHASE_CLOSEOUT_CHECKLIST..." --cwd /Users/xin/auto-skills/CtriXin-repo/hive`
+- Ran `./bin/hive run --goal "...PHASE_CLOSEOUT_CHECKLIST..." --cwd <repo-root>`
 - Fresh run `run-1775572970412` reached terminal status `partial` instead of stalling at worker verification
 - `task-a` exhausted retry budget because it was a strict no-op: the target file `docs/hiveshell/PHASE_CLOSEOUT_CHECKLIST.md` already exists on `main`
 - `task-b` succeeded and produced a docs-only diff in its worktree (`docs/hiveshell/REAL_SMOKE_MATRIX.md`), but the overall run still ended in `request_human` because `task-a` failed review as no-op
@@ -294,15 +294,15 @@ Rules:
 ### Validation Run
 - command: `npm run build`
 - result: pass
-- command: `./bin/hive run --goal "...PHASE_CLOSEOUT_CHECKLIST..." --cwd /Users/xin/auto-skills/CtriXin-repo/hive`
+- command: `./bin/hive run --goal "...PHASE_CLOSEOUT_CHECKLIST..." --cwd <repo-root>`
 - result: `run-1775572970412` finished `partial`
-- command: `./bin/hive status --cwd /Users/xin/auto-skills/CtriXin-repo/hive --run-id run-1775572970412`
+- command: `./bin/hive status --cwd <repo-root> --run-id run-1775572970412`
 - result: pass (`partial`, `request_human`, planner discuss + handoff visible)
-- command: `./bin/hive shell --cwd /Users/xin/auto-skills/CtriXin-repo/hive --run-id run-1775572970412`
+- command: `./bin/hive shell --cwd <repo-root> --run-id run-1775572970412`
 - result: pass (surface rendered correctly)
-- command: `./bin/hive compact --cwd /Users/xin/auto-skills/CtriXin-repo/hive --run-id run-1775572970412`
+- command: `./bin/hive compact --cwd <repo-root> --run-id run-1775572970412`
 - result: pass (restore packet rendered correctly)
-- command: `./bin/hive restore --cwd /Users/xin/auto-skills/CtriXin-repo/hive`
+- command: `./bin/hive restore --cwd <repo-root>`
 - result: pass (restore prompt available; latest packet output exists)
 - command: `git diff --name-only -- config/model-lessons.json`
 - result: unchanged

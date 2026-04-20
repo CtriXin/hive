@@ -464,3 +464,58 @@ describe('ProviderHealthStore: persistence', () => {
     expect(store.getAllStates().size).toBe(0);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// Cooldown Integration Tests (unified routing + health)
+// ═══════════════════════════════════════════════════════════════════
+
+describe('ProviderHealthStore: cooldown (unified routing)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-cooldown-unified-'));
+  });
+
+  it('isCooledDown false with no failures', () => {
+    const store = new ProviderHealthStore(tmpDir);
+    expect(store.isCooledDown('kimi')).toBe(false);
+  });
+
+  it('isCooledDown false below threshold', () => {
+    const store = new ProviderHealthStore(tmpDir);
+    store.recordFailure('kimi', 'rate_limit');
+    expect(store.isCooledDown('kimi')).toBe(false);
+  });
+
+  it('isCooledDown true at threshold (2 failures)', () => {
+    const store = new ProviderHealthStore(tmpDir);
+    store.recordFailure('kimi', 'rate_limit');
+    store.recordFailure('kimi', 'rate_limit');
+    expect(store.isCooledDown('kimi')).toBe(true);
+  });
+
+  it('isCooledDown auto-clears after cooldown window', () => {
+    const store = new ProviderHealthStore(tmpDir);
+    store.recordFailure('kimi', 'rate_limit');
+    store.recordFailure('kimi', 'rate_limit');
+    expect(store.isCooledDown('kimi')).toBe(true);
+
+    const future = Date.now() + 61_000;
+    expect(store.isCooledDown('kimi', future)).toBe(false);
+  });
+
+  it('resetCooldown clears the state', () => {
+    const store = new ProviderHealthStore(tmpDir);
+    store.recordFailure('kimi', 'rate_limit');
+    store.recordFailure('kimi', 'rate_limit');
+    expect(store.isCooledDown('kimi')).toBe(true);
+
+    store.resetCooldown('kimi');
+    expect(store.isCooledDown('kimi')).toBe(false);
+  });
+
+  it('resetCooldown is idempotent on fresh provider', () => {
+    const store = new ProviderHealthStore(tmpDir);
+    expect(() => store.resetCooldown('nonexistent')).not.toThrow();
+  });
+});

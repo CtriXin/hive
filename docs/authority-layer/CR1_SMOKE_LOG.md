@@ -55,10 +55,10 @@ This smoke run was executed with **docs-only scope**:
 
 All operations were performed within the isolated worktree:
 ```
-/Users/xin/auto-skills/CtriXin-repo/hive/.claude/worktrees/worker-smoke-run/
+<repo-root>/.claude/worktrees/worker-smoke-run/
 ```
 
-The main repository at `/Users/xin/auto-skills/CtriXin-repo/hive/` was not modified.
+The main repository at `<repo-root>/` was not modified.
 
 ## Acceptance Criteria Verification
 

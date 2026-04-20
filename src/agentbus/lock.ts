@@ -101,32 +101,6 @@ export async function tryAcquireLock(
     // Ensure parent lock directory exists
     await fs.mkdir(lockDir, { recursive: true });
 
-    // Try to read existing lock (for refresh or steal scenarios)
-    const existingLock = await readLockMeta(lockPath);
-
-    if (existingLock) {
-      // Same participant can refresh their own lock
-      if (existingLock.participant_id === key.participant_id) {
-        await atomicWriteFile(getLockMetaPath(lockPath), JSON.stringify(lockMeta, null, 2));
-        return { success: true, lock: lockMeta };
-      }
-
-      // Lock held by different participant - check if expired/stale
-      if (!isLockExpired(existingLock, now) && !isLockStale(existingLock, now)) {
-        return {
-          success: false,
-          error: `Lock held by ${existingLock.participant_id} until ${existingLock.expires_at}`,
-        };
-      }
-
-      // Lock is expired/stale - steal it by removing and recreating
-      try {
-        await fs.rm(lockPath, { recursive: true, force: true });
-      } catch {
-        // Ignore errors during cleanup
-      }
-    }
-
     // ATOMIC CLAIM: Create lock directory
     // Only one process can succeed here - others get EEXIST
     await fs.mkdir(lockPath, { recursive: false });
@@ -141,17 +115,53 @@ export async function tryAcquireLock(
     return { success: true, lock: lockMeta };
   } catch (err) {
     const errorMsg = (err as Error).message;
+    const code = (err as NodeJS.ErrnoException).code;
 
     // EEXIST means another process claimed the lock simultaneously
-    if (errorMsg.includes('EEXIST') || (err as NodeJS.ErrnoException).code === 'EEXIST') {
-      // Re-check if we lost the race to someone else
+    if (code === 'EEXIST' || errorMsg.includes('EEXIST')) {
+      // Re-check if this is a refresh or a steal opportunity
       const existingLock = await readLockMeta(lockPath);
-      if (existingLock && existingLock.participant_id !== key.participant_id) {
-        return {
-          success: false,
-          error: `Lock held by ${existingLock.participant_id} until ${existingLock.expires_at}`,
-        };
+
+      if (existingLock) {
+        // Same participant can refresh their own lock
+        if (existingLock.participant_id === key.participant_id) {
+          await atomicWriteFile(getLockMetaPath(lockPath), JSON.stringify(lockMeta, null, 2));
+          return { success: true, lock: lockMeta };
+        }
+
+        // Lock held by different participant - check if expired/stale
+        if (!isLockExpired(existingLock, now) && !isLockStale(existingLock, now)) {
+          return {
+            success: false,
+            error: `Lock held by ${existingLock.participant_id} until ${existingLock.expires_at}`,
+          };
+        }
+
+        // Lock is expired/stale - steal it by removing and recreating
+        try {
+          await fs.rm(lockPath, { recursive: true, force: true });
+        } catch {
+          // Ignore errors during cleanup
+        }
+
+        // Try once more to claim
+        try {
+          await fs.mkdir(lockPath, { recursive: false });
+          await fs.writeFile(
+            getLockMetaPath(lockPath),
+            JSON.stringify(lockMeta, null, 2),
+            'utf-8'
+          );
+          return { success: true, lock: lockMeta };
+        } catch {
+          // Another process stole it during our cleanup
+          return {
+            success: false,
+            error: `Lock already claimed (race condition)`,
+          };
+        }
       }
+
       // Lock exists but we can't tell who owns it - fail safe
       return {
         success: false,
@@ -203,7 +213,7 @@ export async function releaseLock(
  * Atomic file write using write-then-rename pattern
  */
 export async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  const tempPath = `${filePath}.tmp.${Date.now()}`;
+  const tempPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 11)}`;
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(tempPath, content, 'utf-8');
   await fs.rename(tempPath, filePath);

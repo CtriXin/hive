@@ -160,6 +160,7 @@ export interface WorkerResult {
   taskId: string;
   model: string;
   provider?: string;
+  runId?: string;
   requested_model?: string;
   requested_provider?: string;
   worktreePath: string;
@@ -630,6 +631,8 @@ export interface TaskRunRecord {
   retry_count: number;
   failure_class?: FailureClass;
   terminal_reason?: string;
+  /** Rule selection metadata — how verification rule was chosen for this task. */
+  rule_selection?: RuleSelectionResult;
 }
 
 export interface RepairHistoryEntry {
@@ -664,6 +667,7 @@ export interface RunSpec {
   origin_cwd?: string;
   task_cwd?: string;
   mode: RunMode;
+  model_policy_override_active?: boolean;
   /** Phase 5A: Operator-facing execution mode */
   execution_mode?: ExecutionMode;
   /** Operator-facing lane name (display only) */
@@ -683,6 +687,8 @@ export interface RunState {
   run_id: string;
   status: RunStatus;
   round: number;
+  model_policy_override_active?: boolean;
+  model_policy_override_summary?: string;
   current_plan_id?: string;
   completed_task_ids: string[];
   failed_task_ids: string[];
@@ -755,6 +761,24 @@ export type A2aVerdict = 'PASS' | 'CONTESTED' | 'REJECT' | 'BLOCKED';
 export type FindingSeverity = 'red' | 'yellow' | 'green';
 export type A2aLens = 'challenger' | 'architect' | 'subtractor';
 
+/**
+ * Runtime reason a reviewer candidate could not execute.
+ * Infra-level failures only — distinct from policy filters like insufficient_complexity_capacity.
+ */
+export type ReviewerRuntimeFailureReason =
+  | 'bridge_unavailable'     // MMS bridge transport not reachable
+  | 'missing_env'            // required env var (API key, base URL) not set
+  | 'provider_runtime_error' // provider call failed (network, auth, quota, etc.)
+  | 'reviewer_timeout';      // review call exceeded timeout_ms
+
+/** Details of a reviewer that failed at runtime during authority review. */
+export interface ReviewerRuntimeFailure {
+  model: string;
+  reason: ReviewerRuntimeFailureReason;
+  /** Short error message from the runtime (truncated). */
+  error_hint?: string;
+}
+
 export interface ReviewAuthorityMetadata {
   source: 'legacy-cascade' | 'authority-layer';
   mode: 'single' | 'pair';
@@ -763,6 +787,12 @@ export interface ReviewAuthorityMetadata {
   synthesized_by?: string;
   synthesis_strategy?: 'model' | 'heuristic';
   synthesis_attempted_by?: string;
+  /**
+   * Reviewer candidates that failed at runtime (infra/env/timeout).
+   * Present only when the authority pipeline had to skip or retry reviewers.
+   * Does NOT include models filtered out by policy (e.g. insufficient_complexity_capacity).
+   */
+  reviewer_runtime_failures?: ReviewerRuntimeFailure[];
 }
 
 export type ReviewFailureAttribution =

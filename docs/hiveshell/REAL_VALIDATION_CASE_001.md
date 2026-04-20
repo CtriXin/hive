@@ -61,7 +61,7 @@ npm run build
 Use either MCP `run_goal` or CLI. CLI example:
 
 ```bash
-hive run --goal "Create or update docs/hiveshell/REAL_VALIDATION_RUN_LOG.md with one new top entry for the latest safe Hive validation smoke. If the file does not exist, create it with a short title first. The new entry must include: (1) date, (2) goal summary, (3) final run status, (4) whether verification passed, (5) whether review passed, (6) changed files, and (7) whether any unexpected runtime/code files were touched. Only modify docs/hiveshell/REAL_VALIDATION_RUN_LOG.md. Do not modify runtime code, config, scripts, package.json, or any other docs." --cwd /Users/xin/auto-skills/CtriXin-repo/hive
+hive run --goal "Create or update docs/hiveshell/REAL_VALIDATION_RUN_LOG.md with one new top entry for the latest safe Hive validation smoke. If the file does not exist, create it with a short title first. The new entry must include: (1) date, (2) goal summary, (3) final run status, (4) whether verification passed, (5) whether review passed, (6) changed files, and (7) whether any unexpected runtime/code files were touched. Only modify docs/hiveshell/REAL_VALIDATION_RUN_LOG.md. Do not modify runtime code, config, scripts, package.json, or any other docs." --cwd <repo-root>
 ```
 
 ### 3. After the run completes
@@ -69,11 +69,11 @@ hive run --goal "Create or update docs/hiveshell/REAL_VALIDATION_RUN_LOG.md with
 Capture these surfaces:
 
 ```bash
-hive status --cwd /Users/xin/auto-skills/CtriXin-repo/hive
-hive shell --cwd /Users/xin/auto-skills/CtriXin-repo/hive
-hive compact --cwd /Users/xin/auto-skills/CtriXin-repo/hive
-hive restore --cwd /Users/xin/auto-skills/CtriXin-repo/hive
-hive score --cwd /Users/xin/auto-skills/CtriXin-repo/hive
+hive status --cwd <repo-root>
+hive shell --cwd <repo-root>
+hive compact --cwd <repo-root>
+hive restore --cwd <repo-root>
+hive score --cwd <repo-root>
 ```
 
 ### 4. Lesson-path observation

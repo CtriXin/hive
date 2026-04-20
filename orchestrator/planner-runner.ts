@@ -17,6 +17,7 @@ import { buildPlanFromClaudeOutput, PLAN_PROMPT_TEMPLATE } from './planner.js';
 import { translateToEnglish } from './translator.js';
 import { ModelRegistry } from './model-registry.js';
 import { loadConfig, resolveTierModel, getBudgetWarning } from './hive-config.js';
+import { resolveEffectiveRunModelPolicy } from './run-model-policy.js';
 import { describeTaskVerificationRules } from './project-policy.js';
 import type { DiscussPlanDiag } from './discuss-bridge.js';
 import { resolveProviderForModel } from './provider-resolver.js';
@@ -695,6 +696,11 @@ export async function synthesizeAgentBusReplies(
       const resolved = resolveProviderForModel(discussTierModel);
       env = buildSdkEnv(discussTierModel, resolved.baseUrl, resolved.apiKey);
     } catch {
+      if (!discussTierModel.startsWith('claude-')) {
+        throw new Error(
+          `Discuss synthesis model "${discussTierModel}" has no direct Claude Code transport route.`,
+        );
+      }
       env = buildSdkEnv(discussTierModel);
     }
 
@@ -917,10 +923,21 @@ export async function planGoal(
   goal: string,
   cwd: string,
   hooks: PlanGoalHooks = {},
-  options?: { projectMemory?: ProjectMemoryStore | null },
+  options?: { projectMemory?: ProjectMemoryStore | null; runId?: string },
 ): Promise<PlanGoalResult> {
   const registry = new ModelRegistry();
+  const policy = options?.runId ? resolveEffectiveRunModelPolicy(cwd, options.runId) : null;
   const config = loadConfig(cwd);
+  if (policy) {
+    config.tiers = {
+      ...config.tiers,
+      translator: policy.effective_policy.translator,
+      planner: policy.effective_policy.planner,
+      executor: policy.effective_policy.executor,
+      discuss: policy.effective_policy.discuss,
+      reviewer: policy.effective_policy.reviewer,
+    };
+  }
   const plannerModel = resolveTierModel(
     config.tiers.planner.model,
     () => registry.selectForPlanning(),

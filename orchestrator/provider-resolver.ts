@@ -12,7 +12,9 @@ import { loadConfig } from './hive-config.js';
 import { normalizeModelId } from './model-defaults.js';
 import { resolveProjectPath } from './project-paths.js';
 import {
+  isClaudeCodeDirectRoute,
   resolveModelRoute,
+  resolveModelRouteFull,
   invalidateCache as invalidateMmsCache,
 } from './mms-routes-loader.js';
 
@@ -57,6 +59,27 @@ function loadProviders(): ProvidersConfig {
 export interface ResolvedProvider {
   baseUrl: string;
   apiKey: string;
+  routeMode?: 'direct' | 'bridge';
+  source?: 'mms' | 'providers';
+  providerId?: string;
+}
+
+export class UnsupportedMmsTransportError extends Error {
+  modelId: string;
+  cliMode: string;
+
+  constructor(modelId: string, cliMode: string) {
+    super(
+      `MMS route for model "${modelId}" requires ${cliMode} transport for Claude Code SDK; direct provider mode is not allowed.`,
+    );
+    this.name = 'UnsupportedMmsTransportError';
+    this.modelId = modelId;
+    this.cliMode = cliMode;
+  }
+}
+
+export function isUnsupportedMmsTransportError(error: unknown): error is UnsupportedMmsTransportError {
+  return error instanceof UnsupportedMmsTransportError;
 }
 
 function getFileMtimeMs(filePath: string): number | null {
@@ -65,6 +88,16 @@ function getFileMtimeMs(filePath: string): number | null {
   } catch {
     return null;
   }
+}
+
+function assertDirectClaudeRoute(
+  modelId: string,
+  route: Parameters<typeof isClaudeCodeDirectRoute>[0],
+): void {
+  if (isClaudeCodeDirectRoute(route)) return;
+  const cliMode = route.cli_modes?.claude?.trim().toLowerCase()
+    || (Array.isArray(route.capabilities) && route.capabilities.includes('bridge_required') ? 'bridge' : 'unsupported');
+  throw new UnsupportedMmsTransportError(modelId, cliMode);
 }
 
 /**
@@ -85,9 +118,35 @@ export function resolveProvider(
 ): ResolvedProvider {
   // ── Level 1: MMS model-routes.json ──
   if (modelId) {
-    const mmsRoute = resolveModelRoute(modelId);
-    if (mmsRoute) {
-      return { baseUrl: mmsRoute.anthropic_base_url, apiKey: mmsRoute.api_key };
+    const resolved = resolveModelRouteFull(modelId);
+    if (resolved) {
+      assertDirectClaudeRoute(resolved.modelId, resolved.route);
+      const routeBaseUrl = resolved.route.anthropic_base_url;
+      if (!routeBaseUrl || !/^https?:\/\//i.test(routeBaseUrl)) {
+        throw new Error(`Model "${resolved.modelId}" resolved to an invalid provider URL: ${routeBaseUrl || '(empty)'}`);
+      }
+      let routePath = '';
+      try {
+        routePath = new URL(routeBaseUrl).pathname.replace(/\/+$/, '');
+      } catch {
+        routePath = '';
+      }
+      const routeLooksClaudeCompatible = routePath === ''
+        || routePath === '/'
+        || routePath.endsWith('/anthropic');
+      if (!routeLooksClaudeCompatible) {
+        throw new Error(
+          `Model "${resolved.modelId}" resolved to non-Claude-compatible base URL "${routeBaseUrl}". `
+          + 'Expected a direct Anthropic-compatible route ending with /anthropic.'
+        );
+      }
+      return {
+        baseUrl: routeBaseUrl,
+        apiKey: resolved.route.api_key,
+        routeMode: 'direct',
+        source: 'mms',
+        providerId: resolved.route.provider_id,
+      };
     }
   }
 
@@ -124,7 +183,13 @@ export function resolveProvider(
         `Provider "${providerId}" claims anthropic_native but missing anthropic_base_url`
       );
     }
-    return { baseUrl: provider.anthropic_base_url, apiKey };
+    return {
+      baseUrl: provider.anthropic_base_url,
+      apiKey,
+      routeMode: 'direct',
+      source: 'providers',
+      providerId: provider.id,
+    };
   }
 
   // OpenAI only 协议 → 需要本地 adapter
@@ -144,9 +209,16 @@ export function resolveProvider(
  */
 export function resolveProviderForModel(modelId: string): ResolvedProvider {
   // Try MMS route first
-  const mmsRoute = resolveModelRoute(modelId);
-  if (mmsRoute) {
-    return { baseUrl: mmsRoute.anthropic_base_url, apiKey: mmsRoute.api_key };
+  const resolved = resolveModelRouteFull(modelId);
+  if (resolved) {
+    assertDirectClaudeRoute(resolved.modelId, resolved.route);
+    return {
+      baseUrl: resolved.route.anthropic_base_url,
+      apiKey: resolved.route.api_key,
+      routeMode: 'direct',
+      source: 'mms',
+      providerId: resolved.route.provider_id,
+    };
   }
 
   // No MMS route — caller needs to know the providerId
@@ -226,6 +298,10 @@ export async function quickPing(
       url = mmsBase.replace(/\/v1\/?$/, '') + '/v1/messages';
       apiKey = process.env.ANTHROPIC_AUTH_TOKEN || '';
     } else {
+      const route = resolveModelRoute(canonicalModelId);
+      if (route && !isClaudeCodeDirectRoute(route)) {
+        return { ok: false, ms: Date.now() - start, error: 'BRIDGE_REQUIRED' };
+      }
       const resolved = resolveProviderForModel(canonicalModelId);
       url = resolved.baseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
       apiKey = resolved.apiKey;

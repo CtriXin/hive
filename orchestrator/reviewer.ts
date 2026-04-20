@@ -2,9 +2,10 @@
 import type {
   WorkerResult, SubTask, TaskPlan, ReviewResult, ReviewFinding,
   CrossReviewResult, A2aReviewResult, FindingSeverity, HiveConfig,
-  StageTokenUsage, A2aVerdict,
+  StageTokenUsage, A2aVerdict, ReviewerRuntimeFailure,
 } from './types.js';
 import { loadConfig, resolveFallback, resolveTierModel, type FailureType } from './hive-config.js';
+import { resolveEffectiveRunModelPolicy } from './run-model-policy.js';
 import { runA2aReview } from './a2a-bridge.js';
 import { ModelRegistry, type LegacyModelView } from './model-registry.js';
 import { buildTaskFingerprint } from './task-fingerprint.js';
@@ -17,6 +18,17 @@ import {
   getWorktreeFullDiff, truncateDiff, extractJsonObject, queryModelText,
   type ReviewPolicy,
 } from './review-utils.js';
+
+// ── Runtime failure classification (infra only, distinct from policy filters) ──
+
+function classifyReviewerRuntimeFailure(err: unknown): ReviewerRuntimeFailure['reason'] {
+  const msg = (err as Error)?.message?.toLowerCase() || '';
+  if (msg.includes('timeout')) return 'reviewer_timeout';
+  if (msg.includes('bridge') || msg.includes('BRIDGE_REQUIRED')) return 'bridge_unavailable';
+  if (msg.includes('api key') || msg.includes('api_key') || msg.includes('auth_token')
+      || msg.includes('not configured') || msg.includes('missing')) return 'missing_env';
+  return 'provider_runtime_error';
+}
 
 // ── Stage 1: Cross-review ──
 
@@ -281,6 +293,116 @@ function chooseAuthorityReviewers(
   }
 
   return selected;
+}
+
+// ── Runtime degradation: try reviewer candidates with fallback chain ──
+
+/**
+ * Result of attempting a reviewer at runtime.
+ * - success: review completed (may include fallback model)
+ * - runtime_failure: infra-level failure (bridge/env/timeout/provider error)
+ */
+type ReviewerAttemptResult =
+  | { kind: 'success'; result: CrossReviewWithTokens }
+  | { kind: 'runtime_failure'; model: string; failure: ReviewerRuntimeFailure };
+
+async function tryReviewerWithFallback(
+  workerResult: WorkerResult,
+  task: SubTask,
+  reviewerModel: string,
+  reviewerProvider: string | undefined,
+  fallbackRegistry: ModelRegistry,
+  hiveConfig: HiveConfig,
+): Promise<ReviewerAttemptResult> {
+  let result: CrossReviewWithTokens;
+  try {
+    result = await runCrossReview(workerResult, task, reviewerModel, reviewerProvider, fallbackRegistry, hiveConfig);
+  } catch (err: any) {
+    return {
+      kind: 'runtime_failure',
+      model: reviewerModel,
+      failure: {
+        model: reviewerModel,
+        reason: classifyReviewerRuntimeFailure(err),
+        error_hint: err.message?.slice(0, 120),
+      },
+    };
+  }
+
+  // Detect runtime failure from result: runCrossReview returns confidence=0 and
+  // a "Review failed:" issue when both the primary model and its internal fallback
+  // both threw errors. This means the reviewer is truly unavailable at runtime.
+  if (!result.passed && result.confidence === 0) {
+    const failureIssue = result.flagged_issues.find((fi) =>
+      fi.issue.startsWith('Review failed:'),
+    );
+    if (failureIssue) {
+      return {
+        kind: 'runtime_failure',
+        model: reviewerModel,
+        failure: {
+          model: reviewerModel,
+          reason: classifyReviewerRuntimeFailure(new Error(failureIssue.issue)),
+          error_hint: failureIssue.issue.slice(0, 120),
+        },
+      };
+    }
+  }
+
+  return { kind: 'success', result };
+}
+
+/**
+ * Try multiple reviewer candidates for a single review slot.
+ * Attempts the given reviewerModel first; on runtime failure, tries remaining
+ * candidates from the authority-selected list before falling to resolveFallback.
+ */
+async function executeReviewerWithDegradation(
+  workerResult: WorkerResult,
+  task: SubTask,
+  reviewerModel: string,
+  remainingCandidates: string[],
+  fallbackRegistry: ModelRegistry,
+  hiveConfig: HiveConfig,
+  failures: ReviewerRuntimeFailure[],
+): Promise<{ result: CrossReviewWithTokens | null; usedFallback: boolean }> {
+  let attempt = reviewerModel;
+  let provider = normalizeProviderId(fallbackRegistry.getModel(attempt));
+  logReviewStagePrimary('reviewer', attempt, provider);
+
+  const attemptResult = await tryReviewerWithFallback(workerResult, task, attempt, provider, fallbackRegistry, hiveConfig);
+  if (attemptResult.kind === 'success') {
+    return { result: attemptResult.result, usedFallback: false };
+  }
+
+  failures.push(attemptResult.failure);
+  logReviewStageFallback('reviewer', attemptResult.model, '(runtime failure)', attemptResult.failure.reason);
+
+  // Try remaining authority candidates
+  for (const candidate of remainingCandidates) {
+    const candProvider = normalizeProviderId(fallbackRegistry.getModel(candidate));
+    logReviewStagePrimary('reviewer-retry', candidate, candProvider);
+    const retryResult = await tryReviewerWithFallback(workerResult, task, candidate, candProvider, fallbackRegistry, hiveConfig);
+    if (retryResult.kind === 'success') {
+      return { result: retryResult.result, usedFallback: true };
+    }
+    failures.push(retryResult.failure);
+    logReviewStageFallback('reviewer-retry', retryResult.model, '(runtime failure)', retryResult.failure.reason);
+  }
+
+  // Final fallback via resolveFallback
+  const fallbackModel = resolveFallback(attempt, 'server_error', task, hiveConfig, fallbackRegistry);
+  if (fallbackModel && fallbackModel !== attempt && !remainingCandidates.includes(fallbackModel)) {
+    const fbProvider = normalizeProviderId(fallbackRegistry.getModel(fallbackModel));
+    logReviewStageFallback('reviewer', attempt, fallbackModel, 'fallback_chain_exhausted');
+    const fbResult = await tryReviewerWithFallback(workerResult, task, fallbackModel, fbProvider, fallbackRegistry, hiveConfig);
+    if (fbResult.kind === 'success') {
+      return { result: fbResult.result, usedFallback: true };
+    }
+    failures.push(fbResult.failure);
+  }
+
+  return { result: null, usedFallback: true };
 }
 
 function shouldEscalateCommittee(
@@ -1183,6 +1305,17 @@ async function runAuthorityReview(
   const fingerprint = buildTaskFingerprint(task);
   const reviewPolicy = loadReviewPolicy();
   const hiveConfig = loadConfig(workerResult.worktreePath);
+  if (workerResult.runId) {
+    const policy = resolveEffectiveRunModelPolicy(workerResult.worktreePath, workerResult.runId);
+    hiveConfig.tiers = {
+      ...hiveConfig.tiers,
+      translator: policy.effective_policy.translator,
+      planner: policy.effective_policy.planner,
+      executor: policy.effective_policy.executor,
+      discuss: policy.effective_policy.discuss,
+      reviewer: policy.effective_policy.reviewer,
+    };
+  }
   const authorityPolicy = loadReviewAuthorityPolicy();
 
   console.log(`\n🏛️ Authority review for ${workerResult.taskId}`);
@@ -1228,19 +1361,42 @@ async function runAuthorityReview(
 
   const reviewers = chooseAuthorityReviewers(registry, task, authorityPolicy, workerResult.model);
   const primaryModel = reviewers[0] || registry.selectReviewer();
-  console.log(`    [authority] mode=single primary=${primaryModel}`);
-  const primaryProvider = normalizeProviderId(registry.getModel(primaryModel));
-  const primaryResult = await runCrossReview(
-    workerResult,
-    task,
-    primaryModel,
-    primaryProvider,
-    registry,
-    hiveConfig,
+  const reviewerRuntimeFailures: ReviewerRuntimeFailure[] = [];
+
+  // ── Primary review with multi-candidate retry ──
+  const primaryOtherCandidates = reviewers.slice(1);
+  const primaryExecution = await executeReviewerWithDegradation(
+    workerResult, task, primaryModel, primaryOtherCandidates, registry, hiveConfig, reviewerRuntimeFailures,
   );
+
+  if (!primaryExecution.result) {
+    // All reviewer candidates failed at runtime — degrade to single with infra finding
+    console.log(`    [authority] all reviewer candidates failed at runtime, degrading to single with infra finding`);
+    return finalizeReviewWithOneLog(
+      workerResult, task, plan, registry, fingerprint,
+      withReviewMetadata({
+        taskId: workerResult.taskId, final_stage: 'cross-review', passed: false,
+        findings: [{
+          id: 1, severity: 'red', lens: 'authority-degradation', file: '(reviewer-runtime)',
+          issue: `All reviewer candidates failed at runtime: ${reviewerRuntimeFailures.map(f => `${f.model}(${f.reason})`).join(', ')}`,
+          decision: 'flag', decision_reason: 'Reviewer runtime degradation — no available reviewer',
+        }],
+        iterations: 0, duration_ms: Date.now() - startTime,
+        authority: {
+          source: 'authority-layer', mode: 'single', members: [],
+          reviewer_runtime_failures: reviewerRuntimeFailures,
+        },
+      }),
+      tokenStages, { skipScoreUpdate: true, infraFailure: true },
+    );
+  }
+
+  const actualPrimaryModel = primaryExecution.result.reviewer_model;
+  console.log(`    [authority] mode=single primary=${actualPrimaryModel}${primaryExecution.usedFallback ? ' [fallback candidate]' : ''}`);
+  const primaryResult = primaryExecution.result;
   const primaryFindings = crossReviewToFindings(primaryResult);
   const primaryReview: CommitteeMemberReview = {
-    model: primaryModel,
+    model: actualPrimaryModel,
     passed: primaryResult.passed,
     confidence: primaryResult.confidence,
     findings: primaryFindings,
@@ -1248,12 +1404,15 @@ async function runAuthorityReview(
 
   tokenStages.push({
     stage: `authority-primary:${workerResult.taskId}`,
-    model: primaryModel,
+    model: actualPrimaryModel,
     input_tokens: primaryResult.tokenUsage.input,
     output_tokens: primaryResult.tokenUsage.output,
   });
 
-  if (!shouldEscalateCommittee(task, authorityPolicy, primaryReview, smokePassed) || reviewers.length < 2) {
+  // Recalculate remaining candidates for challenger (exclude the one used for primary)
+  const challengerCandidates = reviewers.filter(m => m !== actualPrimaryModel);
+
+  if (!shouldEscalateCommittee(task, authorityPolicy, primaryReview, smokePassed) || challengerCandidates.length < 1) {
     return finalizeReviewWithOneLog(
       workerResult,
       task,
@@ -1271,119 +1430,140 @@ async function runAuthorityReview(
         authority: {
           source: 'authority-layer',
           mode: 'single',
-          members: [primaryModel],
+          members: [actualPrimaryModel],
+          reviewer_runtime_failures: reviewerRuntimeFailures.length > 0 ? reviewerRuntimeFailures : undefined,
         },
       }, primaryResult),
       tokenStages,
     );
   }
 
-  const challengerModel = reviewers[1];
+  // ── Challenger review with multi-candidate retry ──
+  const challengerModel = challengerCandidates[0];
   console.log(`    [authority] escalate single->pair challenger=${challengerModel}`);
-  const challengerProvider = normalizeProviderId(registry.getModel(challengerModel));
-  const challengerResult = await runCrossReview(
-    workerResult,
-    task,
-    challengerModel,
-    challengerProvider,
-    registry,
-    hiveConfig,
+  const challengerOtherCandidates = challengerCandidates.filter(m => m !== challengerModel);
+  const challengerExecution = await executeReviewerWithDegradation(
+    workerResult, task, challengerModel, challengerOtherCandidates, registry, hiveConfig, reviewerRuntimeFailures,
   );
-  const challengerFindings = crossReviewToFindings(challengerResult);
-  const challengerReview: CommitteeMemberReview = {
-    model: challengerModel,
-    passed: challengerResult.passed,
-    confidence: challengerResult.confidence,
-    findings: challengerFindings,
-  };
 
-  tokenStages.push({
-    stage: `authority-challenger:${workerResult.taskId}`,
-    model: challengerModel,
-    input_tokens: challengerResult.tokenUsage.input,
-    output_tokens: challengerResult.tokenUsage.output,
-  });
+  let challengerReview: CommitteeMemberReview | undefined;
+  let challengerReviewResult: CrossReviewWithTokens | undefined;
+  let effectiveMode: 'pair' | 'single' = 'pair';
 
-  const disagreement = detectReviewDisagreement([primaryReview, challengerReview], {
-    deterministic_failed: smokePassed === false,
-  });
-  const pairConsensusPass = primaryResult.passed
-    && challengerResult.passed
-    && !disagreement.has_disagreement
-    && primaryResult.confidence >= authorityPolicy.low_confidence_threshold
-    && challengerResult.confidence >= authorityPolicy.low_confidence_threshold;
-  const needsSynthesis = !pairConsensusPass && (
-    disagreement.has_disagreement
-    || primaryResult.confidence < authorityPolicy.low_confidence_threshold
-    || challengerResult.confidence < authorityPolicy.low_confidence_threshold
-  );
-  const synthesis = needsSynthesis
-    ? await runAuthoritySynthesis(
-        workerResult,
-        task,
-        primaryReview,
-        challengerReview,
-        disagreement.flags,
-        authorityPolicy,
-        registry,
-        hiveConfig,
-      )
-    : null;
-  const synthesisStageModel = synthesis?.synthesizedBy || synthesis?.attemptedBy;
-  if (synthesis?.tokenUsage && synthesisStageModel) {
+  if (challengerExecution.result) {
+    const actualChallengerModel = challengerExecution.result.reviewer_model;
+    challengerReviewResult = challengerExecution.result;
+    const challengerFindings = crossReviewToFindings(challengerReviewResult);
+    challengerReview = {
+      model: actualChallengerModel,
+      passed: challengerReviewResult.passed,
+      confidence: challengerReviewResult.confidence,
+      findings: challengerFindings,
+    };
+    console.log(`    [authority] challenger=${actualChallengerModel}${challengerExecution.usedFallback ? ' [fallback candidate]' : ''}`);
+
     tokenStages.push({
-      stage: `authority-synthesis:${workerResult.taskId}`,
-      model: synthesisStageModel,
-      input_tokens: synthesis.tokenUsage.input,
-      output_tokens: synthesis.tokenUsage.output,
+      stage: `authority-challenger:${workerResult.taskId}`,
+      model: actualChallengerModel,
+      input_tokens: challengerReviewResult.tokenUsage.input,
+      output_tokens: challengerReviewResult.tokenUsage.output,
     });
+  } else {
+    // Challenger failed — degrade pair to single
+    effectiveMode = 'single';
+    console.log(`    [authority] challenger runtime failed, degrading pair->single with primary=${actualPrimaryModel}`);
   }
-  const finalFindings = synthesis
-    ? synthesis.findings
-    : mergeCommitteeFindings([primaryReview, challengerReview], disagreement.flags);
-  const passed = synthesis
-    ? synthesis.passed
-    : primaryResult.passed && challengerResult.passed;
-  const verdict = synthesis
-    ? synthesis.verdict
-    : passed ? 'PASS' : 'REJECT';
 
-  if (needsSynthesis) {
-    const synthesisLabel = synthesis?.synthesizedBy
-      || (synthesis?.strategy === 'heuristic' ? 'heuristic' : undefined)
-      || (synthesis?.attemptedBy ? `blocked(${synthesis.attemptedBy})` : 'unknown');
-    console.log(`    [authority] synthesize by=${synthesisLabel} disagreement=${disagreement.flags.join(',') || 'low_confidence'}`);
+  // ── Synthesis / finalization ──
+  let finalFindings: ReviewFinding[];
+  let passed: boolean;
+  let verdict: A2aVerdict;
+  let iterations = 1;
+  const reviewerRuntimeFailuresTracked = reviewerRuntimeFailures.length > 0 ? reviewerRuntimeFailures : undefined;
+
+  if (effectiveMode === 'pair' && challengerReview) {
+    iterations = 2;
+    const disagreement = detectReviewDisagreement([primaryReview, challengerReview], {
+      deterministic_failed: smokePassed === false,
+    });
+    const pairConsensusPass = primaryResult.passed
+      && challengerReviewResult!.passed
+      && !disagreement.has_disagreement
+      && primaryResult.confidence >= authorityPolicy.low_confidence_threshold
+      && challengerReviewResult!.confidence >= authorityPolicy.low_confidence_threshold;
+    const needsSynthesis = !pairConsensusPass && (
+      disagreement.has_disagreement
+      || primaryResult.confidence < authorityPolicy.low_confidence_threshold
+      || challengerReviewResult!.confidence < authorityPolicy.low_confidence_threshold
+    );
+    const synthesis = needsSynthesis
+      ? await runAuthoritySynthesis(
+          workerResult, task, primaryReview, challengerReview,
+          disagreement.flags, authorityPolicy, registry, hiveConfig,
+        )
+      : null;
+    const synthesisStageModel = synthesis?.synthesizedBy || synthesis?.attemptedBy;
+    if (synthesis?.tokenUsage && synthesisStageModel) {
+      tokenStages.push({
+        stage: `authority-synthesis:${workerResult.taskId}`,
+        model: synthesisStageModel,
+        input_tokens: synthesis.tokenUsage.input,
+        output_tokens: synthesis.tokenUsage.output,
+      });
+    }
+    finalFindings = synthesis
+      ? synthesis.findings
+      : mergeCommitteeFindings([primaryReview, challengerReview], disagreement.flags);
+    passed = synthesis ? synthesis.passed : primaryResult.passed && challengerReviewResult!.passed;
+    verdict = synthesis ? synthesis.verdict : passed ? 'PASS' : 'REJECT';
+
+    if (needsSynthesis) {
+      const synthesisLabel = synthesis?.synthesizedBy
+        || (synthesis?.strategy === 'heuristic' ? 'heuristic' : undefined)
+        || (synthesis?.attemptedBy ? `blocked(${synthesis.attemptedBy})` : 'unknown');
+      console.log(`    [authority] synthesize by=${synthesisLabel} disagreement=${disagreement.flags.join(',') || 'low_confidence'}`);
+    }
+
+    return finalizeReviewWithOneLog(
+      workerResult, task, plan, registry, fingerprint,
+      withReviewMetadata({
+        taskId: workerResult.taskId, final_stage: 'cross-review',
+        passed, verdict, findings: finalFindings, iterations,
+        duration_ms: Date.now() - startTime,
+        authority: {
+          source: 'authority-layer', mode: 'pair',
+          members: [actualPrimaryModel, challengerReview.model],
+          disagreement_flags: disagreement.flags,
+          synthesized_by: synthesis?.synthesizedBy,
+          synthesis_strategy: synthesis?.strategy,
+          synthesis_attempted_by: synthesis?.attemptedBy,
+          reviewer_runtime_failures: reviewerRuntimeFailuresTracked,
+        },
+      }, primaryResult),
+      tokenStages,
+      { skipScoreUpdate: synthesis?.failedClosed, infraFailure: synthesis?.infraFailure },
+    );
   }
+
+  // Degraded to single (challenger failed at runtime)
+  console.log(`    [authority] degraded to single: primary=${actualPrimaryModel}`);
+  finalFindings = primaryFindings;
+  passed = primaryResult.passed;
+  verdict = passed ? 'PASS' : 'REJECT';
 
   return finalizeReviewWithOneLog(
-    workerResult,
-    task,
-    plan,
-    registry,
-    fingerprint,
+    workerResult, task, plan, registry, fingerprint,
     withReviewMetadata({
-      taskId: workerResult.taskId,
-      final_stage: 'cross-review',
-      passed,
-      verdict,
-      findings: finalFindings,
-      iterations: 2,
+      taskId: workerResult.taskId, final_stage: 'cross-review',
+      passed, verdict, findings: finalFindings, iterations,
       duration_ms: Date.now() - startTime,
       authority: {
-        source: 'authority-layer',
-        mode: 'pair',
-        members: [primaryModel, challengerModel],
-        disagreement_flags: disagreement.flags,
-        synthesized_by: synthesis?.synthesizedBy,
-        synthesis_strategy: synthesis?.strategy,
-        synthesis_attempted_by: synthesis?.attemptedBy,
+        source: 'authority-layer', mode: 'single' as const,
+        members: [actualPrimaryModel],
+        reviewer_runtime_failures: reviewerRuntimeFailuresTracked,
       },
-    }, synthesis ? undefined : primaryResult),
+    }, primaryResult),
     tokenStages,
-    {
-      skipScoreUpdate: synthesis?.failedClosed,
-      infraFailure: synthesis?.infraFailure,
-    },
   );
 }
 
@@ -1417,6 +1597,17 @@ export async function reviewCascade(
   const fingerprint = buildTaskFingerprint(task);
   const reviewPolicy = loadReviewPolicy();
   const hiveConfig = loadConfig(workerResult.worktreePath);
+  if (workerResult.runId) {
+    const policy = resolveEffectiveRunModelPolicy(workerResult.worktreePath, workerResult.runId);
+    hiveConfig.tiers = {
+      ...hiveConfig.tiers,
+      translator: policy.effective_policy.translator,
+      planner: policy.effective_policy.planner,
+      executor: policy.effective_policy.executor,
+      discuss: policy.effective_policy.discuss,
+      reviewer: policy.effective_policy.reviewer,
+    };
+  }
 
   console.log(`\n📋 Starting review for ${workerResult.taskId}`);
 

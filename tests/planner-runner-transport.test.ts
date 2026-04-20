@@ -11,6 +11,11 @@ const {
   safeQueryMock,
   extractTextFromMessagesMock,
   extractTokenUsageMock,
+  recallUserProfileMock,
+  formatUserProfileRecallMock,
+  recallProjectMemoriesMock,
+  formatMemoryRecallMock,
+  resolveProviderForModelMock,
 } = vi.hoisted(() => ({
   discussPlanMock: vi.fn(),
   openPlannerDiscussRoomMock: vi.fn(),
@@ -18,6 +23,11 @@ const {
   safeQueryMock: vi.fn(),
   extractTextFromMessagesMock: vi.fn(),
   extractTokenUsageMock: vi.fn(() => ({ input: 0, output: 0 })),
+  recallUserProfileMock: vi.fn(),
+  formatUserProfileRecallMock: vi.fn(),
+  recallProjectMemoriesMock: vi.fn(),
+  formatMemoryRecallMock: vi.fn(),
+  resolveProviderForModelMock: vi.fn(() => ({ baseUrl: 'http://mock-route', apiKey: 'mock-key' })),
 }));
 
 vi.mock('../orchestrator/discuss-bridge.js', () => ({
@@ -39,8 +49,31 @@ vi.mock('../orchestrator/sdk-query-safe.js', () => ({
   extractTokenUsage: extractTokenUsageMock,
 }));
 
+vi.mock('../orchestrator/user-profile-recall.js', () => ({
+  recallUserProfile: recallUserProfileMock,
+  formatUserProfileRecall: formatUserProfileRecallMock,
+}));
+
+vi.mock('../orchestrator/memory-recall.js', () => ({
+  recallProjectMemories: recallProjectMemoriesMock,
+  formatMemoryRecall: formatMemoryRecallMock,
+}));
+
 vi.mock('../orchestrator/provider-resolver.js', () => ({
-  resolveProviderForModel: () => ({ baseUrl: 'http://mock-route', apiKey: 'mock-key' }),
+  resolveProviderForModel: resolveProviderForModelMock,
+}));
+
+vi.mock('../orchestrator/hive-config.js', () => ({
+  loadConfig: vi.fn(() => ({
+    tiers: {
+      planner: { model: 'glm-5-turbo', fallback: 'qwen3-max' },
+      translator: { model: 'glm-5-turbo', fallback: 'qwen3-max' },
+      discuss: { mode: 'off', model: 'glm-5-turbo', fallback: 'qwen3-max' },
+    },
+  })),
+  resolveTierModel: vi.fn((model: string) => model),
+  getBudgetWarning: vi.fn(() => null),
+  getModelForTask: vi.fn(() => 'glm-5-turbo'),
 }));
 
 vi.mock('../orchestrator/project-paths.js', async () => {
@@ -57,10 +90,17 @@ import {
   buildPlanningBrief,
   describePlannerJsonError,
   executePlannerDiscuss,
+  planGoal,
   renderPlanningBriefForSynthesis,
   runClaudePlanner,
 } from '../orchestrator/planner-runner.js';
 import { ModelRegistry } from '../orchestrator/model-registry.js';
+
+beforeEach(() => {
+  safeQueryMock.mockReset();
+  resolveProviderForModelMock.mockReset();
+  resolveProviderForModelMock.mockReturnValue({ baseUrl: 'http://mock-route', apiKey: 'mock-key' });
+});
 
 function buildPlan(): TaskPlan {
   return {
@@ -313,6 +353,51 @@ describe('planner diagnostics', () => {
       'Planner transport returned malformed result: messages array missing',
     );
     expect(safeQueryMock.mock.calls[0]?.[0]?.timeoutMs).toBe(45000);
+  });
+
+  it('refuses bridge-required planner routes instead of implicitly using Claude gateway', async () => {
+    resolveProviderForModelMock.mockImplementation(() => {
+      throw new Error('MMS route for model "glm-5-turbo" requires bridge transport for Claude Code SDK; direct provider mode is not allowed.');
+    });
+
+    await expect(runClaudePlanner('Return JSON only', '/tmp/hive-planner', 'glm-5-turbo')).rejects.toThrow(
+      'Refusing implicit Claude fallback',
+    );
+    expect(safeQueryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('planGoal user profile context', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    discussPlanMock.mockResolvedValue({
+      result: null,
+      diag: null,
+    });
+    recallProjectMemoriesMock.mockReturnValue({ memories: [], total_candidates: 0, selection_reason: 'none' });
+    formatMemoryRecallMock.mockReturnValue('\n## Project Memory\n- project memory');
+    recallUserProfileMock.mockReturnValue({ entries: [{ entry: { summary: 'prefers terse responses' } }], selection_reason: 'top 1' });
+    formatUserProfileRecallMock.mockReturnValue('\n## User Profile\n- [communication_style] prefers terse responses');
+    safeQueryMock.mockResolvedValue({
+      messages: [{ type: 'assistant', message: { content: [{ type: 'text', text: '{"goal":"test goal","tasks":[{"id":"task-a","description":"test task","complexity":"medium","category":"utils","estimated_files":["src/foo.ts"],"acceptance_criteria":["it works"]}]}' }] } }],
+      exitError: null,
+    });
+    extractTextFromMessagesMock.mockReturnValue('{"goal":"test goal","tasks":[{"id":"task-a","description":"test task","complexity":"medium","category":"utils","estimated_files":["src/foo.ts"],"acceptance_criteria":["it works"]}]}');
+  });
+
+  it('injects user profile context after memory context and before user goal', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-plan-goal-'));
+
+    const result = await planGoal('fix TypeScript planner prompt', tempDir, {}, { projectMemory: null });
+
+    expect(result.plan).not.toBeNull();
+    expect(recallUserProfileMock).toHaveBeenCalledWith('fix TypeScript planner prompt', { topN: 2 });
+
+    const plannerPrompt = safeQueryMock.mock.calls[0]?.[0]?.prompt as string;
+    expect(plannerPrompt).toContain('## Project Memory');
+    expect(plannerPrompt).toContain('## User Profile');
+    expect(plannerPrompt.indexOf('## Project Memory')).toBeLessThan(plannerPrompt.indexOf('## User Profile'));
+    expect(plannerPrompt.indexOf('## User Profile')).toBeLessThan(plannerPrompt.indexOf('User goal: fix TypeScript planner prompt'));
   });
 });
 

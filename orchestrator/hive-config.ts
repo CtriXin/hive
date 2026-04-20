@@ -6,6 +6,10 @@ import type { ModelRegistry } from './model-registry.js';
 import { resolveModelRoute } from './mms-routes-loader.js';
 
 export type FailureType = 'rate_limit' | 'server_error' | 'quality_fail';
+interface FallbackResolveOptions {
+  excludeModels?: string[];
+  excludeProviders?: string[];
+}
 export type ModelStage =
   | 'translator'
   | 'planner'
@@ -219,19 +223,20 @@ export function getModelForTask(
     return ranked[0].model;
   }
 
-  if (config.default_worker && !config.default_worker.startsWith('claude-')) {
-    return config.default_worker;
-  }
-
-  if (!config.fallback_worker.startsWith('claude-')) {
-    return config.fallback_worker;
-  }
-
-  if (!config.high_tier.startsWith('claude-')) {
-    return config.high_tier;
-  }
-
-  return config.fallback_worker;
+  return pickExecutableModelCandidate(
+    [
+      config.default_worker,
+      config.tiers.executor.fallback,
+      config.fallback_worker,
+      config.high_tier,
+      'qwen3-max',
+      'qwen3.5-plus',
+      'kimi-k2.5',
+      'glm-5-turbo',
+      'kimi-for-coding',
+    ],
+    registry,
+  ) || config.fallback_worker;
 }
 
 export function isClaudeModel(modelId: string): boolean {
@@ -315,47 +320,88 @@ export function resolveFallback(
   task: SubTask,
   config: HiveConfig,
   registry: ModelRegistry,
+  options: FallbackResolveOptions = {},
 ): string {
+  const excludedModels = new Set(options.excludeModels || []);
+  excludedModels.add(failedModel);
+  const excludedProviders = new Set(options.excludeProviders || []);
   const safeRanked = registry.rankModelsForTask(task)
     .filter((item) => !item.blocked_by?.length
-      && item.model !== failedModel
+      && !excludedModels.has(item.model)
       && !item.model.startsWith('claude-'));
+
+  const rankedCandidateModels = safeRanked
+    .map((item) => item.model)
+    .filter((modelId) => {
+      const provider = registry.get(modelId)?.provider;
+      return !provider || !excludedProviders.has(provider);
+    });
 
   if (errorType === 'rate_limit' || errorType === 'server_error') {
     const failedProvider = registry.get(failedModel)?.provider || null;
+    if (failedProvider) {
+      excludedProviders.add(failedProvider);
+    }
 
     // Prefer a different provider to avoid hitting the same rate limit
     const alternateProvider = safeRanked.find((item) => {
       const provider = registry.get(item.model)?.provider || null;
-      return provider && provider !== failedProvider;
+      return provider
+        && provider !== failedProvider
+        && !excludedProviders.has(provider);
     });
     if (alternateProvider) {
       return alternateProvider.model;
     }
-    if (safeRanked.length > 0) {
-      return safeRanked[0].model;
+    const rankedFallback = pickExecutableModelCandidate(rankedCandidateModels, registry, excludedProviders);
+    if (rankedFallback) {
+      return rankedFallback;
     }
   }
 
   if (errorType === 'quality_fail') {
-    if (safeRanked.length > 0) {
-      return safeRanked[0].model;
+    const rankedFallback = pickExecutableModelCandidate(rankedCandidateModels, registry, excludedProviders);
+    if (rankedFallback) {
+      return rankedFallback;
     }
   }
 
-  if (config.fallback_worker !== failedModel && !config.fallback_worker.startsWith('claude-')) {
-    return config.fallback_worker;
-  }
-
-  if (!config.high_tier.startsWith('claude-')) {
-    return config.high_tier;
-  }
-
-  const knownSafe = ['glm-5-turbo', 'kimi-for-coding', 'kimi-k2.5', 'qwen3-max', 'qwen3.5-plus']
-    .find((modelId) => modelId !== failedModel && registry.get(modelId));
-  if (knownSafe) {
-    return knownSafe;
+  const configuredFallback = pickExecutableModelCandidate(
+    [
+      config.tiers.executor.fallback,
+      config.fallback_worker,
+      config.default_worker,
+      config.high_tier,
+      'qwen3-max',
+      'qwen3.5-plus',
+      'kimi-k2.5',
+      'glm-5-turbo',
+      'kimi-for-coding',
+    ],
+    registry,
+    excludedProviders,
+    excludedModels,
+  );
+  if (configuredFallback) {
+    return configuredFallback;
   }
 
   return failedModel;
+}
+
+function pickExecutableModelCandidate(
+  candidates: Array<string | undefined>,
+  registry: ModelRegistry,
+  excludedProviders: Set<string> = new Set(),
+  excludedModels: Set<string> = new Set(),
+): string | undefined {
+  for (const candidate of candidates) {
+    if (!candidate || candidate.startsWith('claude-') || excludedModels.has(candidate)) continue;
+    const provider = registry.get(candidate)?.provider;
+    if (provider && excludedProviders.has(provider)) continue;
+    if (registry.canResolveForModel(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }

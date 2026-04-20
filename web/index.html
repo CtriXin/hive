@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hive 控制台</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12161d;
+    --panel-2: #171c25;
+    --line: #2b3442;
+    --text: #eef3f8;
+    --muted: #95a1b2;
+    --accent: #6cb6ff;
+    --accent-soft: rgba(108, 182, 255, 0.12);
+    --ok: #3ecf8e;
+    --warn: #f6b33f;
+    --danger: #ff6b6b;
+    --shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+    --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--font); }
+  body { min-height: 100vh; }
+  button, select { font: inherit; }
+  .shell { max-width: 1120px; margin: 0 auto; padding: 20px 16px 40px; }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    backdrop-filter: blur(12px);
+    background: rgba(11, 13, 18, 0.92);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .topbar-inner {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .brand { display: flex; flex-direction: column; gap: 2px; }
+  .brand strong { color: var(--accent); font-size: 18px; }
+  .brand span { color: var(--muted); font-size: 12px; }
+  .topbar-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .pill {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle input { display: none; }
+  .toggle .track {
+    width: 36px;
+    height: 20px;
+    border-radius: 999px;
+    background: #3a4453;
+    position: relative;
+    transition: background 0.2s ease;
+  }
+  .toggle .track::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: white;
+    transition: transform 0.2s ease;
+  }
+  .toggle input:checked + .track { background: var(--accent); }
+  .toggle input:checked + .track::after { transform: translateX(16px); }
+  .btn, .ghost-btn, .tiny-btn {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: 0.15s ease;
+  }
+  .btn:hover, .ghost-btn:hover, .tiny-btn:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .btn { padding: 10px 16px; font-weight: 600; }
+  .btn.primary { background: var(--accent); color: #0b0d12; border-color: transparent; }
+  .btn.primary:hover { opacity: 0.92; }
+  .ghost-btn { padding: 8px 12px; }
+  .tiny-btn { padding: 6px 10px; font-size: 12px; }
+  .tiny-btn.inline { padding: 5px 8px; }
+  .tiny-btn.danger { border-color: rgba(255,107,107,0.35); color: var(--danger); }
+  .tiny-btn.warn { border-color: rgba(246,179,63,0.35); color: var(--warn); }
+  .tiny-btn.ok { border-color: rgba(62,207,142,0.35); color: var(--ok); }
+  .section { margin-top: 18px; }
+  .section h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  .panel {
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+  }
+  .notice {
+    display: none;
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(108, 182, 255, 0.28);
+    background: rgba(108, 182, 255, 0.1);
+    color: var(--text);
+    font-size: 13px;
+    white-space: pre-line;
+  }
+  .project-grid, .run-grid, .task-grid, .policy-stage-grid, .detail-grid {
+    display: grid;
+    gap: 12px;
+  }
+  .project-grid { grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .history-shell {
+    padding: 16px;
+    display: grid;
+    gap: 12px;
+  }
+  .history-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+  .text-input {
+    flex: 1 1 420px;
+    min-width: 280px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: #0f131a;
+    color: var(--text);
+    padding: 11px 12px;
+    font: inherit;
+  }
+  .chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .chip-btn {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 7px 10px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .chip-btn:hover { border-color: var(--accent); }
+  .project-stack { display: grid; gap: 14px; }
+  .project-subsection { display: grid; gap: 10px; }
+  .subsection-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .subsection-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .subsection-title strong { font-size: 14px; }
+  .subsection-note {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .archive-panel {
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: rgba(255,255,255,0.02);
+  }
+  .archive-panel details {
+    display: grid;
+    gap: 12px;
+  }
+  .archive-panel summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+  }
+  .archive-panel summary::-webkit-details-marker { display: none; }
+  .archive-panel summary strong { font-size: 14px; color: var(--text); }
+  .run-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .task-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .detail-grid { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .project-card, .run-card, .task-card, .policy-card, .detail-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .project-card.active, .run-card.active { border-color: rgba(108,182,255,0.4); background: rgba(108,182,255,0.08); }
+  .project-card { cursor: pointer; }
+  .project-card.archived {
+    opacity: 0.84;
+    background: rgba(255,255,255,0.015);
+  }
+  .active-run-card {
+    cursor: pointer;
+    display: grid;
+    gap: 10px;
+  }
+  .active-run-card.needs-user {
+    border-color: rgba(246,179,63,0.3);
+    background: rgba(246,179,63,0.06);
+  }
+  .project-card:hover, .run-card:hover { transform: translateY(-1px); border-color: rgba(108,182,255,0.35); }
+  .active-run-card:hover { transform: translateY(-1px); border-color: rgba(108,182,255,0.35); }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .card-title { font-size: 16px; font-weight: 700; color: var(--text); }
+  .card-sub { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; word-break: break-word; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .badge.info { color: var(--accent); background: rgba(108,182,255,0.12); border-color: rgba(108,182,255,0.24); }
+  .badge.ok { color: var(--ok); background: rgba(62,207,142,0.12); border-color: rgba(62,207,142,0.24); }
+  .badge.warn { color: var(--warn); background: rgba(246,179,63,0.12); border-color: rgba(246,179,63,0.24); }
+  .badge.danger { color: var(--danger); background: rgba(255,107,107,0.12); border-color: rgba(255,107,107,0.24); }
+  .badge.muted { color: var(--muted); background: rgba(149,161,178,0.12); border-color: rgba(149,161,178,0.18); }
+  .kv { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-top: 12px; }
+  .kv div { min-width: 0; }
+  .kv-label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .kv-value { font-size: 13px; color: var(--text); word-break: break-word; }
+  .hero {
+    padding: 22px;
+    display: grid;
+    gap: 14px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--panel);
+  }
+  .hero.info { border-color: rgba(108,182,255,0.3); }
+  .hero.warn { border-color: rgba(246,179,63,0.32); background: rgba(246,179,63,0.06); }
+  .hero.danger { border-color: rgba(255,107,107,0.32); background: rgba(255,107,107,0.06); }
+  .hero.ok { border-color: rgba(62,207,142,0.32); background: rgba(62,207,142,0.06); }
+  .hero-top { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
+  .hero-title { font-size: 28px; font-weight: 800; margin: 0; }
+  .hero-reason { font-size: 15px; color: var(--text); line-height: 1.6; }
+  .hero-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .focus-card { padding: 18px; }
+  .focus-card strong { font-size: 16px; }
+  .focus-card p { margin: 8px 0 0; color: var(--text); line-height: 1.6; }
+  .checklist { margin: 10px 0 0; padding-left: 18px; color: var(--muted); }
+  .checklist li { margin: 6px 0; }
+  .task-card { display: grid; gap: 10px; }
+  .task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .task-meta { color: var(--muted); font-size: 12px; }
+  .policy-shell { padding: 18px; }
+  .policy-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .policy-tab {
+    padding: 7px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .policy-tab.active { color: var(--text); border-color: rgba(108,182,255,0.35); background: rgba(108,182,255,0.1); }
+  .policy-header { display: grid; gap: 8px; margin-bottom: 14px; }
+  .policy-header p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .policy-stage-grid { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .policy-stage-card {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px;
+    display: grid;
+    gap: 10px;
+  }
+  .policy-stage-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+  .policy-stage-title { font-size: 15px; font-weight: 700; }
+  .policy-stage-note { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .field { display: grid; gap: 5px; }
+  .field label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .field select {
+    width: 100%;
+    min-width: 0;
+    border-radius: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    background: #0f131a;
+    color: var(--text);
+  }
+  .field select:disabled { opacity: 0.6; cursor: not-allowed; }
+  .policy-stage-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .policy-summary-box {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.03);
+    border-radius: 12px;
+    padding: 10px 12px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .details-panel { padding: 18px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .policy-details { padding: 18px; }
+  .policy-details > summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+    color: var(--text);
+  }
+  .policy-details > summary::-webkit-details-marker { display: none; }
+  .policy-details-body { margin-top: 14px; }
+  pre {
+    margin: 10px 0 0;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: #0f131a;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .empty { color: var(--muted); font-size: 13px; padding: 18px; text-align: center; border: 1px dashed var(--line); border-radius: 14px; }
+  .muted { color: var(--muted); }
+  @media (max-width: 760px) {
+    .hero-top { flex-direction: column; }
+    .project-grid, .run-grid, .task-grid, .policy-stage-grid, .detail-grid { grid-template-columns: 1fr; }
+    .topbar-inner { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <strong>Hive 控制台</strong>
+      <span id="topSummary">先看正在运行的项目，再决定进哪个 run。</span>
+    </div>
+    <div class="topbar-meta">
+      <span class="pill" id="currentProjectPill">项目：—</span>
+      <span class="pill" id="currentRunPill">Run：—</span>
+      <span class="pill" id="updatedPill">更新时间：—</span>
+      <label class="toggle">
+        <input type="checkbox" id="autoRefresh" checked>
+        <span class="track"></span>
+        <span>自动刷新</span>
+      </label>
+      <button class="ghost-btn" id="refreshBtn">刷新</button>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <div class="notice" id="notice"></div>
+
+  <section class="section">
+    <h2>当前运行</h2>
+    <div id="activeRunGrid" class="run-grid"></div>
+  </section>
+
+  <section class="section">
+    <h2>查看项目历史</h2>
+    <div class="panel history-shell">
+      <form id="cwdForm" class="history-controls" action="/" method="GET">
+        <input id="cwdInput" name="cwd" class="text-input" list="projectSuggestions" placeholder="/Users/.../repo">
+        <datalist id="projectSuggestions"></datalist>
+        <button class="btn" id="openProjectBtn" type="submit">打开项目</button>
+        <button class="ghost-btn" id="useActiveProjectBtn" type="button">回到当前运行</button>
+      </form>
+      <div id="historyHint" class="subsection-note">输入 cwd 后查看这个项目的全部 run 历史；首页默认只显示当前活跃 run。</div>
+      <details class="archive-panel">
+        <summary>
+          <div class="subsection-title">
+            <strong>最近记录的项目</strong>
+            <span class="badge muted" id="knownProjectCount">0 个</span>
+          </div>
+          <span class="subsection-note">需要时再展开，不把旧项目铺满首页。</span>
+        </summary>
+        <div id="knownProjectList" class="chip-list"></div>
+      </details>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>当前项目的 Run</h2>
+    <div id="runGrid" class="run-grid"></div>
+  </section>
+
+  <section class="section">
+    <div id="hero" class="hero info"></div>
+  </section>
+
+  <section class="section" id="modelPolicySection">
+    <details class="panel policy-details" id="policyDetails">
+      <summary>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <h2 style="margin:0;">模型策略中心</h2>
+          <span class="badge info">优先级：Run &gt; Project &gt; Global &gt; Default</span>
+        </div>
+        <span class="muted" style="font-size:12px;">统一入口；Global 会影响后续所有 Hive run</span>
+      </summary>
+      <div class="policy-details-body">
+        <div id="policyNotice" class="policy-summary-box" style="display:none;margin-bottom:12px;"></div>
+        <div class="policy-shell">
+          <div class="policy-tabs" id="policyTabs"></div>
+          <div id="policyEditor"></div>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section class="section">
+    <h2>运行级操作</h2>
+    <div id="runActions" class="panel" style="padding:16px;display:flex;flex-wrap:wrap;gap:10px;"></div>
+  </section>
+
+  <section class="section">
+    <h2>需要你处理的任务</h2>
+    <div id="taskGrid" class="task-grid"></div>
+  </section>
+
+  <section class="section">
+    <h2>关注点</h2>
+    <div id="focusCard" class="panel focus-card"></div>
+  </section>
+
+  <section class="section">
+    <h2>详情与调试信息</h2>
+    <div class="panel details-panel">
+      <div id="detailGrid" class="detail-grid"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const initialSearch = new URLSearchParams(window.location.search);
+  const initialCwd = (initialSearch.get('cwd') || '').trim().replace(/\/+$/, '');
+  const initialRunId = (initialSearch.get('runId') || '').trim();
+  const state = {
+    activeRuns: [],
+    projects: [],
+    runs: [],
+    currentProjectCwd: initialCwd || null,
+    currentRunId: initialRunId || null,
+    cwdDraft: initialCwd || '',
+    snapshot: null,
+    modelOptions: [],
+    autoTimer: null,
+    policyTab: 'run:start-run',
+    noticeTimer: null,
+    lastSaveResult: null,
+    loadVersion: 0,
+  };
+
+  const el = {
+    topSummary: document.getElementById('topSummary'),
+    currentProjectPill: document.getElementById('currentProjectPill'),
+    currentRunPill: document.getElementById('currentRunPill'),
+    updatedPill: document.getElementById('updatedPill'),
+    autoRefresh: document.getElementById('autoRefresh'),
+    refreshBtn: document.getElementById('refreshBtn'),
+    notice: document.getElementById('notice'),
+    activeRunGrid: document.getElementById('activeRunGrid'),
+    cwdForm: document.getElementById('cwdForm'),
+    cwdInput: document.getElementById('cwdInput'),
+    openProjectBtn: document.getElementById('openProjectBtn'),
+    useActiveProjectBtn: document.getElementById('useActiveProjectBtn'),
+    projectSuggestions: document.getElementById('projectSuggestions'),
+    historyHint: document.getElementById('historyHint'),
+    knownProjectCount: document.getElementById('knownProjectCount'),
+    knownProjectList: document.getElementById('knownProjectList'),
+    runGrid: document.getElementById('runGrid'),
+    hero: document.getElementById('hero'),
+    focusCard: document.getElementById('focusCard'),
+    taskGrid: document.getElementById('taskGrid'),
+    runActions: document.getElementById('runActions'),
+    policyTabs: document.getElementById('policyTabs'),
+    policyEditor: document.getElementById('policyEditor'),
+    policyNotice: document.getElementById('policyNotice'),
+    policyDetails: document.getElementById('policyDetails'),
+    detailGrid: document.getElementById('detailGrid'),
+  };
+
+  const statusMap = {
+    init: '初始化中', planning: '规划中', executing: '执行中', verifying: '验证中',
+    repairing: '修复中', replanning: '重新规划中', running: '运行中', paused: '已暂停',
+    blocked: '已阻塞', partial: '部分完成', done: '已完成', completed: '已完成',
+    success: '已完成', failed: '失败', failure: '失败', unknown: '未知', pending: '待处理',
+    applied: '已应用', rejected: '已拒绝', suppressed: '已忽略', expired: '已过期',
+  };
+	  const cueMap = {
+	    needs_human: '需人工', blocked: '被阻塞', needs_review: '需评审', watch: '观察中',
+	  };
+	  const ACTIVE_PROJECT_WINDOW_MS = 24 * 60 * 60 * 1000;
+	  const actionMap = {
+	    pause_run: '暂停运行', resume_run: '继续运行', request_replan: '请求重新规划',
+	    retry_task: '请求重试', mark_requires_human: '标记需人工', skip_task: '跳过任务',
+	    escalate_mode: '提升模式', downgrade_mode: '降低模式', inject_steering_note: '追加说明',
+	  };
+  const policyTabs = [
+    { id: 'run:start-run', label: 'Run · 当前 run' },
+    { id: 'run:runtime-next-stage', label: 'Run · 下一阶段' },
+    { id: 'project:', label: 'Project 默认' },
+    { id: 'global:', label: 'Global 默认' },
+  ];
+  const policyStageOrder = [
+    'translator', 'planner', 'executor', 'discuss',
+    'reviewer.cross_review', 'reviewer.arbitration', 'reviewer.final_review',
+  ];
+
+  function esc(value) {
+    const div = document.createElement('div');
+    div.textContent = String(value == null ? '' : value);
+    return div.innerHTML;
+  }
+
+  function humanizeStatus(status) {
+    return statusMap[status] || status || '未知';
+  }
+
+  function humanizeAction(action) {
+    return actionMap[action] || action || '操作';
+  }
+
+  function badgeClass(status) {
+    if (['done', 'completed', 'success', 'healthy', 'merged', 'verified', 'applied'].includes(status)) return 'ok';
+    if (['failed', 'failure', 'blocked', 'worker_failed', 'merge_blocked', 'rejected'].includes(status)) return 'danger';
+    if (['partial', 'paused', 'review_failed', 'degraded', 'expired'].includes(status)) return 'warn';
+    if (['running', 'init', 'planning', 'executing', 'verifying', 'repairing', 'replanning', 'pending'].includes(status)) return 'info';
+    return 'muted';
+  }
+
+	  function relativeTime(iso) {
+	    if (!iso) return '—';
+	    const time = new Date(iso).getTime();
+    if (!time) return '—';
+    const sec = Math.max(0, Math.floor((Date.now() - time) / 1000));
+    if (sec < 10) return '刚刚';
+    if (sec < 60) return sec + ' 秒前';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + ' 分钟前';
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + ' 小时前';
+	    return Math.floor(hr / 24) + ' 天前';
+	  }
+
+	  function projectNameFromCwd(cwd) {
+	    if (!cwd) return '—';
+	    const parts = String(cwd).split('/').filter(Boolean);
+	    return parts[parts.length - 1] || cwd;
+	  }
+
+	  function preferredActiveRun() {
+	    return state.activeRuns[0] || null;
+	  }
+
+	  function normalizeCwdInput(value) {
+	    return String(value || '').trim().replace(/\/+$/, '') || null;
+	  }
+
+	  function setCwdInputValue(value, options = {}) {
+	    if (!el.cwdInput) return;
+	    const nextValue = String(value || '');
+	    if (options.force !== true && document.activeElement === el.cwdInput && el.cwdInput.value !== nextValue) {
+	      return;
+	    }
+	    if (el.cwdInput.value !== nextValue) {
+	      el.cwdInput.value = nextValue;
+	    }
+	  }
+
+	  function syncUrlSelection(cwd, runId = null, options = {}) {
+	    const replace = options.replace !== false;
+	    const url = new URL(window.location.href);
+	    const nextCwd = normalizeCwdInput(cwd);
+	    const nextRunId = String(runId || '').trim();
+	    if (nextCwd) url.searchParams.set('cwd', nextCwd);
+	    else url.searchParams.delete('cwd');
+	    if (nextCwd && nextRunId) url.searchParams.set('runId', nextRunId);
+	    else url.searchParams.delete('runId');
+	    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+	    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+	    if (nextUrl === currentUrl) return;
+	    const method = replace ? 'replaceState' : 'pushState';
+	    window.history[method]({}, '', nextUrl);
+	  }
+
+	  function ensureSelectedRun() {
+	    if (!state.currentProjectCwd) {
+	      state.currentRunId = null;
+	      return;
+	    }
+	    const preferred = state.activeRuns.find(run => run.project.cwd === state.currentProjectCwd);
+	    if (!state.currentRunId || !state.runs.some(run => run.id === state.currentRunId)) {
+	      state.currentRunId = (preferred && state.runs.some(run => run.id === preferred.run_id))
+	        ? preferred.run_id
+	        : (state.runs[0]?.id || null);
+	    }
+	  }
+
+	  function isFreshUiRun(run) {
+	    if (!run || !run.is_active) return false;
+	    const time = new Date(run.updated_at || '').getTime();
+	    if (!Number.isFinite(time) || time <= 0) return false;
+	    return Date.now() - time <= ACTIVE_PROJECT_WINDOW_MS;
+	  }
+
+	  function nextLoadVersion() {
+	    state.loadVersion += 1;
+	    return state.loadVersion;
+	  }
+
+	  function isLatestLoad(version) {
+	    return version === state.loadVersion;
+	  }
+
+	  function isFreshActiveProject(project) {
+	    if (!project || Number(project.active_count || 0) <= 0) return false;
+	    const time = new Date(project.updated_at || '').getTime();
+	    if (!Number.isFinite(time) || time <= 0) return true;
+	    return Date.now() - time <= ACTIVE_PROJECT_WINDOW_MS;
+	  }
+
+	  function splitProjects(projects) {
+	    const active = [];
+	    const archived = [];
+	    for (const project of projects || []) {
+	      if (isFreshActiveProject(project)) active.push(project);
+	      else archived.push(project);
+	    }
+	    return { active, archived };
+	  }
+
+	  function preferredProjectCwd(projects) {
+	    const { active } = splitProjects(projects);
+	    return active[0]?.cwd || projects[0]?.cwd || null;
+	  }
+
+	  function renderProjectCard(project, options = {}) {
+	    const archived = options.archived === true;
+	    const selected = project.cwd === state.currentProjectCwd;
+	    const live = !archived && isFreshActiveProject(project);
+	    const status = live ? (project.active_status || 'running') : (project.recent_status || project.active_status || 'unknown');
+	    const runId = live ? (project.active_run_id || project.recent_run_id || '—') : (project.recent_run_id || project.active_run_id || '—');
+	    const goal = live ? (project.active_goal || project.recent_goal || '-') : (project.recent_goal || project.active_goal || '-');
+	    return `
+	      <button class="project-card ${selected ? 'active' : ''} ${archived ? 'archived' : ''}" data-project-cwd="${esc(project.cwd)}">
+	        <div class="card-head">
+	          <div>
+	            <div class="card-title">${esc(project.name)}</div>
+	            <div class="card-sub">${esc(project.cwd)}</div>
+	          </div>
+	          <span class="badge ${badgeClass(status)}">${archived ? '归档' : '运行中'} · ${esc(humanizeStatus(status))}</span>
+	        </div>
+	        <div class="kv">
+	          <div><div class="kv-label">${archived ? '最近 run' : '当前关注的 run'}</div><div class="kv-value">${esc(runId)}</div></div>
+	          <div><div class="kv-label">${archived ? '归档原因' : '活跃数量'}</div><div class="kv-value">${archived ? '近期无更新 / 已结束' : project.active_count}</div></div>
+	          <div><div class="kv-label">最近更新</div><div class="kv-value">${esc(relativeTime(project.updated_at))}</div></div>
+	        </div>
+	        <div class="card-sub" style="margin-top:12px">${esc(goal)}</div>
+	      </button>
+	    `;
+	  }
+
+	  function showNotice(message, tone = 'info') {
+	    el.notice.style.display = 'block';
+    el.notice.style.borderColor = tone === 'danger' ? 'rgba(255,107,107,0.3)' : tone === 'warn' ? 'rgba(246,179,63,0.3)' : 'rgba(108,182,255,0.3)';
+    el.notice.style.background = tone === 'danger' ? 'rgba(255,107,107,0.1)' : tone === 'warn' ? 'rgba(246,179,63,0.1)' : 'rgba(108,182,255,0.1)';
+    el.notice.textContent = message;
+    clearTimeout(state.noticeTimer);
+    state.noticeTimer = setTimeout(() => {
+      el.notice.style.display = 'none';
+    }, 6000);
+  }
+
+	  function showPolicyNotice(saveResult) {
+	    if (!el.policyNotice) return;
+	    if (el.policyDetails) el.policyDetails.open = true;
+	    el.policyNotice.style.display = 'block';
+	    el.policyNotice.innerHTML = `${esc(saveResult.message)}<br><span style="color:var(--muted)">文件：${esc(saveResult.path)}</span><br><span style="color:var(--muted)">影响范围：${esc(saveResult.impact)}</span>`;
+	  }
+
+  async function api(path, options) {
+    const response = await fetch(path, options);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ error: response.statusText }));
+      throw new Error(payload.error || response.statusText);
+    }
+    return response.json();
+  }
+
+	  function withCwd(pathname) {
+	    if (!state.currentProjectCwd) return pathname;
+	    const sep = pathname.includes('?') ? '&' : '?';
+	    return `${pathname}${sep}cwd=${encodeURIComponent(state.currentProjectCwd)}`;
+	  }
+
+	  function currentProject() {
+	    const found = state.projects.find(project => project.cwd === state.currentProjectCwd);
+	    if (found) return found;
+	    if (!state.currentProjectCwd) return null;
+	    return {
+	      cwd: state.currentProjectCwd,
+	      name: projectNameFromCwd(state.currentProjectCwd),
+	    };
+	  }
+
+  function currentRun() {
+    return state.runs.find(run => run.id === state.currentRunId) || null;
+  }
+
+  function parsePolicyTab(tab) {
+    const [scope, mode] = tab.split(':');
+    return { scope, mode: mode || undefined };
+  }
+
+  function findPolicyLayer(snapshot, tabId) {
+    const policy = snapshot && snapshot.model_policy;
+    if (!policy) return null;
+    const { scope, mode } = parsePolicyTab(tabId);
+    return (policy.layers || []).find(layer => layer.scope === scope && String(layer.mode || '') === String(mode || '')) || null;
+  }
+
+  function stagePatch(stage, model, fallback) {
+    const payload = { model, fallback };
+    if (stage === 'translator') return { translator: payload };
+    if (stage === 'planner') return { planner: payload };
+    if (stage === 'executor') return { executor: payload };
+    if (stage === 'discuss') return { discuss: payload };
+    if (stage === 'reviewer.cross_review') return { reviewer: { cross_review: payload } };
+    if (stage === 'reviewer.arbitration') return { reviewer: { arbitration: payload } };
+    return { reviewer: { final_review: payload } };
+  }
+
+  function normalizeStageMode(stage) {
+    if (stage.source === '继承') return 'inherit';
+    if (stage.configured_model === 'auto') return 'auto';
+    return 'fixed';
+  }
+
+  function normalizeStageModel(stage) {
+    if (stage.configured_model === '-' || stage.source === '继承') return 'auto';
+    if (Array.isArray(stage.configured_model)) return stage.configured_model[0] || 'auto';
+    return stage.configured_model;
+  }
+
+  function normalizeStageFallback(stage) {
+    if (stage.configured_fallback === '-' || stage.source === '继承') return '';
+    return stage.configured_fallback || '';
+  }
+
+	  async function loadModelOptions() {
+	    const data = await api('/api/model-options');
+	    state.modelOptions = data.models || [];
+	  }
+
+	  async function loadActiveRuns() {
+	    const data = await api('/api/active-runs');
+	    state.activeRuns = data.runs || [];
+	  }
+
+	  async function loadProjects() {
+	    const data = await api('/api/projects');
+	    state.projects = data.projects || [];
+	  }
+
+  async function loadRuns() {
+    if (!state.currentProjectCwd) {
+      state.runs = [];
+      state.currentRunId = null;
+      return;
+    }
+	    const data = await api(withCwd('/api/runs'));
+	    state.runs = data.runs || [];
+	    ensureSelectedRun();
+	  }
+
+  async function loadSnapshot() {
+    if (!state.currentProjectCwd || !state.currentRunId) {
+      state.snapshot = null;
+      return;
+    }
+    state.snapshot = await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}`));
+  }
+
+	  async function refreshAll() {
+	    const loadVersion = nextLoadVersion();
+	    try {
+	      if (!state.modelOptions.length) await loadModelOptions();
+	      if (!isLatestLoad(loadVersion)) return;
+	      await loadProjects();
+	      if (!isLatestLoad(loadVersion)) return;
+	      await loadActiveRuns();
+	      if (!isLatestLoad(loadVersion)) return;
+	      await loadRuns();
+	      if (!isLatestLoad(loadVersion)) return;
+	      syncUrlSelection(state.currentProjectCwd, state.currentRunId);
+	      await loadSnapshot();
+	      if (!isLatestLoad(loadVersion)) return;
+	      renderAll();
+	    } catch (error) {
+	      if (!isLatestLoad(loadVersion)) return;
+	      showNotice(error.message || String(error), 'danger');
+	    }
+	  }
+
+	  async function openProjectHistory(cwd, runId = null) {
+	    const nextCwd = normalizeCwdInput(cwd);
+	    if (!nextCwd) {
+	      showNotice('先输入一个项目 cwd。', 'warn');
+	      return;
+	    }
+	    const loadVersion = nextLoadVersion();
+	    state.currentProjectCwd = nextCwd;
+	    state.currentRunId = String(runId || '').trim() || null;
+	    state.cwdDraft = nextCwd;
+	    setCwdInputValue(nextCwd, { force: true });
+	    syncUrlSelection(state.currentProjectCwd, state.currentRunId);
+	    try {
+	      await loadRuns();
+	      if (!isLatestLoad(loadVersion)) return;
+	      syncUrlSelection(state.currentProjectCwd, state.currentRunId);
+	      await loadSnapshot();
+	      if (!isLatestLoad(loadVersion)) return;
+	    } catch (error) {
+	      if (!isLatestLoad(loadVersion)) return;
+	      showNotice(error.message || String(error), 'danger');
+	    }
+	    if (!isLatestLoad(loadVersion)) return;
+	    renderAll();
+	  }
+
+	  function renderActiveRuns() {
+	    if (!state.activeRuns.length) {
+	      el.activeRunGrid.innerHTML = '<div class="empty">当前没有正在执行或待处理的 run。旧项目历史不会默认堆在这里。</div>';
+	      return;
+	    }
+	    el.activeRunGrid.innerHTML = state.activeRuns.map((run) => `
+	      <button class="run-card active-run-card ${run.needs_user ? 'needs-user' : ''}" data-active-project="${esc(run.project.cwd)}" data-active-run="${esc(run.run_id)}">
+	        <div class="card-head">
+	          <div>
+	            <div class="card-title">${esc(run.project.name)}</div>
+	            <div class="card-sub">${esc(run.project.cwd)}</div>
+	          </div>
+	          <div style="display:grid;gap:6px;justify-items:end">
+	            <span class="badge ${badgeClass(run.status)}">${esc(humanizeStatus(run.status))}</span>
+	            <span class="badge ${run.needs_user ? 'warn' : 'info'}">${run.needs_user ? '需要你处理' : '自动推进中'}</span>
+	          </div>
+	        </div>
+	        <div class="card-sub">${esc(run.run_id)}</div>
+	        <div class="kv">
+	          <div><div class="kv-label">当前结论</div><div class="kv-value">${esc(run.headline)}</div></div>
+	          <div><div class="kv-label">最近更新</div><div class="kv-value">${esc(relativeTime(run.updated_at))}</div></div>
+	          <div><div class="kv-label">关注任务</div><div class="kv-value">${run.attention_count}</div></div>
+	        </div>
+	        <div class="card-sub">${esc(run.why_stopped)}</div>
+	      </button>
+	    `).join('');
+	    el.activeRunGrid.querySelectorAll('[data-active-run]').forEach(node => {
+	      node.addEventListener('click', async () => {
+	        await openProjectHistory(
+	          node.getAttribute('data-active-project'),
+	          node.getAttribute('data-active-run'),
+	        );
+	      });
+	    });
+	  }
+
+	  function renderHistoryBrowser() {
+	    const projects = state.projects || [];
+	    setCwdInputValue(state.cwdDraft || '');
+	    if (el.projectSuggestions) {
+	      el.projectSuggestions.innerHTML = projects
+	        .slice(0, 32)
+	        .map(project => `<option value="${esc(project.cwd)}">${esc(project.name)}</option>`)
+	        .join('');
+	    }
+	    if (el.knownProjectCount) {
+	      el.knownProjectCount.textContent = `${projects.length} 个`;
+	    }
+	    if (el.historyHint) {
+	      el.historyHint.textContent = state.currentProjectCwd
+	        ? `当前查看：${state.currentProjectCwd}。这里会展示这个项目的全部 run；首页上方仍只保留当前活跃 run。`
+	        : '输入 cwd 后查看这个项目的全部 run 历史；首页默认只显示当前活跃 run。';
+	    }
+	    if (el.knownProjectList) {
+	      el.knownProjectList.innerHTML = projects.length
+	        ? projects.slice(0, 24).map(project => `
+	          <button class="chip-btn" data-known-project="${esc(project.cwd)}">${esc(project.name)}</button>
+	        `).join('')
+	        : '<div class="empty" style="width:100%;">当前还没有可用的项目记录。</div>';
+	      el.knownProjectList.querySelectorAll('[data-known-project]').forEach(node => {
+	        node.addEventListener('click', async () => {
+	          await openProjectHistory(node.getAttribute('data-known-project'));
+	        });
+	      });
+	    }
+	  }
+
+	  function renderRuns() {
+	    if (!state.currentProjectCwd) {
+	      el.runGrid.innerHTML = '<div class="empty">先从上面的当前运行进入，或者输入 cwd 打开某个项目历史。</div>';
+	      return;
+	    }
+	    if (!state.runs.length) {
+	      el.runGrid.innerHTML = '<div class="empty">这个项目还没有可展示的 run。</div>';
+	      return;
+	    }
+	    const liveRuns = state.runs.filter(run => isFreshUiRun(run));
+	    const archivedRuns = state.runs.filter(run => !isFreshUiRun(run));
+	    const renderRunCard = (run) => `
+	      <button class="run-card ${run.id === state.currentRunId ? 'active' : ''}" data-run-id="${esc(run.id)}">
+	        <div class="card-head">
+	          <div>
+	            <div class="card-title">${esc(run.id)}</div>
+	            <div class="card-sub">${esc(run.goal || '-')}</div>
+	          </div>
+	          <div style="display:grid;gap:6px;justify-items:end">
+	            <span class="badge ${badgeClass(run.status)}">${esc(humanizeStatus(run.status))}</span>
+	            <span class="badge ${run.source === 'worker' ? 'warn' : 'muted'}">${run.source === 'worker' ? 'worker-only' : 'run'}</span>
+	          </div>
+	        </div>
+	        <div class="kv">
+	          <div><div class="kv-label">是否活跃</div><div class="kv-value">${run.is_active ? '是' : '否'}</div></div>
+	          <div><div class="kv-label">最近更新</div><div class="kv-value">${esc(relativeTime(run.updated_at))}</div></div>
+	        </div>
+	      </button>
+	    `;
+	    const liveHtml = liveRuns.length
+	      ? `<div class="project-subsection">
+	          <div class="subsection-head">
+	            <div class="subsection-title">
+	              <strong>当前 / 待处理</strong>
+	              <span class="badge info">${liveRuns.length} 个</span>
+	            </div>
+	            <div class="subsection-note">这些 run 还在推进或仍需你判断。</div>
+	          </div>
+	          <div class="run-grid">${liveRuns.map(renderRunCard).join('')}</div>
+	        </div>`
+	      : '';
+	    const archiveHtml = archivedRuns.length
+	      ? `<div class="archive-panel" style="grid-column:1 / -1;">
+	          <details>
+	            <summary>
+	              <div class="subsection-title">
+	                <strong>历史归档</strong>
+	                <span class="badge muted">${archivedRuns.length} 个</span>
+	              </div>
+	              <span class="subsection-note">完成 / 失败 / 旧 run 在这里，按需再看。</span>
+	            </summary>
+	            <div class="run-grid">${archivedRuns.map(renderRunCard).join('')}</div>
+	          </details>
+	        </div>`
+	      : '';
+	    el.runGrid.innerHTML = liveHtml || archiveHtml
+	      ? `${liveHtml}${archiveHtml}`
+	      : '<div class="empty">这个项目还没有可展示的 run。</div>';
+	    el.runGrid.querySelectorAll('[data-run-id]').forEach(node => {
+	      node.addEventListener('click', async () => {
+	        state.currentRunId = node.getAttribute('data-run-id');
+	        syncUrlSelection(state.currentProjectCwd, state.currentRunId);
+	        await loadSnapshot();
+        renderAll();
+      });
+    });
+  }
+
+	  function renderHero() {
+	    if (!state.snapshot) {
+	      el.hero.className = 'hero info';
+	      el.hero.innerHTML = '<div class="hero-title">当前没有选中 run</div><div class="hero-reason">先从上面的当前运行进入，或者输入 cwd 打开某个项目历史。</div>';
+	      return;
+	    }
+    const snapshot = state.snapshot;
+    const verdict = snapshot.verdict;
+    const severity = verdict.severity === 'critical' ? 'danger' : verdict.severity === 'warning' ? 'warn' : verdict.severity === 'ok' ? 'ok' : 'info';
+    const statusBadge = `<span class="badge ${badgeClass(snapshot.truth.status)}">${esc(humanizeStatus(snapshot.truth.status))}</span>`;
+    const updated = relativeTime(snapshot.updated_at);
+    const nextAction = snapshot.truth.next_action && snapshot.truth.next_action !== '-' ? snapshot.truth.next_action : '无';
+    const actionBtn = verdict.suggested_action && verdict.suggested_action.action_type
+      ? `<button class="btn primary" data-hero-action="${esc(verdict.suggested_action.action_type)}">${esc(verdict.suggested_action.label)}</button>`
+      : '<span class="badge muted">当前没有直接按钮，先看下面任务卡片</span>';
+    el.hero.className = `hero ${severity}`;
+    el.hero.innerHTML = `
+      <div class="hero-top">
+        <div style="display:grid;gap:10px;min-width:0">
+          <div class="hero-meta">
+            ${statusBadge}
+            <span class="badge muted">${esc(snapshot.project.name)}</span>
+            <span class="badge muted">${esc(snapshot.runId)}</span>
+            <span class="badge muted">${esc(updated)}</span>
+          </div>
+          <div class="hero-title">${esc(verdict.headline)}</div>
+          <div class="hero-reason">${esc(verdict.why_stopped)}</div>
+        </div>
+        <div class="hero-actions">${actionBtn}</div>
+      </div>
+      <div class="kv">
+        <div><div class="kv-label">目标</div><div class="kv-value">${esc(snapshot.truth.goal)}</div></div>
+        <div><div class="kv-label">下一步动作</div><div class="kv-value">${esc(nextAction)}</div></div>
+        <div><div class="kv-label">当前轮次</div><div class="kv-value">${snapshot.truth.round}${snapshot.truth.max_rounds ? ' / ' + snapshot.truth.max_rounds : ''}</div></div>
+        <div><div class="kv-label">最优分数</div><div class="kv-value">${snapshot.truth.score_best == null ? '—' : snapshot.truth.score_best}</div></div>
+      </div>
+    `;
+    const button = el.hero.querySelector('[data-hero-action]');
+    if (button) {
+      button.addEventListener('click', async () => {
+        await doAction(button.getAttribute('data-hero-action'), { reason: verdict.why_stopped });
+      });
+    }
+  }
+
+	  function renderFocus() {
+	    if (!state.snapshot) {
+	      el.focusCard.innerHTML = '<strong>先决定你现在要看哪条线</strong><p>如果只是盯当前执行，先看上面的当前运行；如果要回看历史，再输入 cwd 打开项目。</p>';
+	      return;
+	    }
+    const focus = state.snapshot.focus;
+    const checks = (focus.checks || []).map(item => `<li>${esc(item)}</li>`).join('');
+    el.focusCard.innerHTML = `
+      <strong>${esc(focus.title)}</strong>
+      <p>${esc(focus.message)}</p>
+      <ul class="checklist">${checks}</ul>
+    `;
+  }
+
+  function renderTasks() {
+    if (!state.snapshot) {
+      el.taskGrid.innerHTML = '<div class="empty">先选一个 run。</div>';
+      return;
+    }
+    const tasks = state.snapshot.attention_tasks || [];
+    if (!tasks.length) {
+      const verdict = state.snapshot.verdict;
+      const message = verdict.needs_user
+        ? '当前没有 task 级按钮；这是 run 级问题，先用上面的主按钮或运行级操作。'
+        : '当前没有需要你点的 task；先不要钻 Provider、Compact 或完整状态。';
+      el.taskGrid.innerHTML = `<div class="empty">${esc(message)}</div>`;
+      return;
+    }
+    el.taskGrid.innerHTML = tasks.map(task => `
+      <div class="task-card">
+        <div class="card-head">
+          <div>
+            <div class="card-title">${esc(task.task_id)}</div>
+            <div class="card-sub">${esc(task.cue_reason)}</div>
+          </div>
+          <span class="badge ${badgeClass(task.status)}">${esc(cueMap[task.cue] || task.cue)} · ${esc(humanizeStatus(task.status))}</span>
+        </div>
+        <div class="task-meta">模型：${esc(task.model || '-')} · 重试次数：${task.retry_count}</div>
+        <div class="task-meta">摘要：${esc(task.summary || '-')}</div>
+        <div class="task-actions">
+          ${(task.suggested_actions || []).map((action, index) => `
+            <button class="tiny-btn ${index === 0 ? 'ok' : ''}" data-task-action="${esc(action.action_type)}" data-task-id="${esc(task.task_id)}" data-task-reason="${esc(action.reason)}">
+              ${esc(action.label)}
+            </button>
+          `).join('')}
+          <button class="tiny-btn inline" data-open-details="${esc(task.task_id)}">展开详情</button>
+        </div>
+      </div>
+    `).join('');
+
+    el.taskGrid.querySelectorAll('[data-task-action]').forEach(node => {
+      node.addEventListener('click', async () => {
+        await doAction(node.getAttribute('data-task-action'), {
+          taskId: node.getAttribute('data-task-id'),
+          reason: node.getAttribute('data-task-reason'),
+        });
+      });
+    });
+    el.taskGrid.querySelectorAll('[data-open-details]').forEach(node => {
+      node.addEventListener('click', () => {
+        document.querySelector('details')?.setAttribute('open', 'open');
+        document.getElementById('allTasksAnchor')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    });
+  }
+
+  function renderRunActions() {
+    if (!state.snapshot) {
+      el.runActions.innerHTML = '<span class="muted">当前没有可执行的运行级操作。</span>';
+      return;
+    }
+    const verdict = state.snapshot.verdict;
+    const buttons = [];
+    if (state.snapshot.attention.paused) {
+      buttons.push({ label: '继续运行', action: 'resume_run', tone: 'ok' });
+    } else {
+      buttons.push({ label: '暂停运行', action: 'pause_run', tone: '' });
+    }
+    buttons.push({ label: '请求重新规划', action: 'request_replan', tone: 'warn' });
+    if (verdict.needs_user) {
+      buttons.push({ label: '标记需人工判断', action: 'mark_requires_human', tone: 'danger' });
+    }
+    el.runActions.innerHTML = buttons.map(button => `
+      <button class="btn ${button.tone === 'ok' ? 'primary' : ''}" data-run-action="${esc(button.action)}">${esc(button.label)}</button>
+    `).join('');
+    el.runActions.querySelectorAll('[data-run-action]').forEach(node => {
+      node.addEventListener('click', async () => {
+        await doAction(node.getAttribute('data-run-action'), { reason: state.snapshot.verdict.why_stopped });
+      });
+    });
+  }
+
+  function renderPolicyTabs() {
+    el.policyTabs.innerHTML = policyTabs.map(tab => `
+      <button class="policy-tab ${tab.id === state.policyTab ? 'active' : ''}" data-policy-tab="${tab.id}">${esc(tab.label)}</button>
+    `).join('');
+    el.policyTabs.querySelectorAll('[data-policy-tab]').forEach(node => {
+      node.addEventListener('click', () => {
+        state.policyTab = node.getAttribute('data-policy-tab');
+        renderPolicyEditor();
+      });
+    });
+  }
+
+  async function savePolicyStage(layer, stageId) {
+    const mode = document.querySelector(`[data-stage-mode="${CSS.escape(stageId)}"]`)?.value || 'inherit';
+    if (mode === 'inherit') {
+      await resetPolicyStage(layer, stageId);
+      return;
+    }
+    const selectedModel = document.querySelector(`[data-stage-model="${CSS.escape(stageId)}"]`)?.value || 'auto';
+    const fallbackValue = document.querySelector(`[data-stage-fallback="${CSS.escape(stageId)}"]`)?.value || '';
+    const patch = stagePatch(stageId, mode === 'auto' ? 'auto' : selectedModel, fallbackValue);
+    let saveResult = null;
+    if (layer.scope === 'run') {
+      const data = await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}/model-policy`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: layer.mode || 'start-run', patch }),
+      });
+      saveResult = data.save_result;
+    } else {
+      const data = await api(withCwd(`/api/config-policy/${encodeURIComponent(layer.scope)}?runId=${encodeURIComponent(state.currentRunId)}`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patch }),
+      });
+      saveResult = data.save_result;
+    }
+    if (saveResult) {
+      state.lastSaveResult = saveResult;
+      showPolicyNotice(saveResult);
+      showNotice(`${esc(saveResult.message)}`, 'ok');
+    } else {
+      showNotice(`已保存 ${stageId} 到 ${layer.title}`);
+    }
+    await loadSnapshot();
+    renderAll();
+  }
+
+  async function resetPolicyStage(layer, stageId) {
+    if (!layer.writable) return;
+    let saveResult = null;
+    if (layer.scope === 'run') {
+      const data = await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}/model-policy/stages/${encodeURIComponent(stageId)}?source=${encodeURIComponent(layer.mode || 'start-run')}`), {
+        method: 'DELETE',
+      });
+      saveResult = data.save_result;
+    } else {
+      const data = await api(withCwd(`/api/config-policy/${encodeURIComponent(layer.scope)}/stages/${encodeURIComponent(stageId)}?runId=${encodeURIComponent(state.currentRunId)}`), {
+        method: 'DELETE',
+      });
+      saveResult = data.save_result;
+    }
+    if (saveResult) {
+      state.lastSaveResult = saveResult;
+      showPolicyNotice(saveResult);
+      showNotice(`${esc(saveResult.message)}`, 'ok');
+    } else {
+      showNotice(`已让 ${stageId} 恢复继承`);
+    }
+    await loadSnapshot();
+    renderAll();
+  }
+
+  function renderPolicyEditor() {
+    if (el.policyNotice) el.policyNotice.style.display = 'none';
+    if (!state.snapshot) {
+      el.policyEditor.innerHTML = '<div class="empty">先选一个 run 才能看策略。</div>';
+      return;
+    }
+    const layer = findPolicyLayer(state.snapshot, state.policyTab);
+    if (!layer) {
+      el.policyEditor.innerHTML = '<div class="empty">当前层没有可展示的策略数据。</div>';
+      return;
+    }
+    const readonly = !layer.writable;
+    const blocked = layer.blocked_reason ? `<div class="policy-summary-box">${esc(layer.blocked_reason)}</div>` : '';
+    const saveResult = state.snapshot.model_policy.save_result;
+    const saveNote = saveResult
+      ? `<div class=\"policy-summary-box\" style=\"border-color:rgba(62,207,142,0.3);background:rgba(62,207,142,0.06);\">${esc(saveResult.message)}<br><span style=\"color:var(--muted)\">文件：${esc(saveResult.path)}</span><br><span style=\"color:var(--muted)\">影响范围：${esc(saveResult.impact)}</span></div>` : '';
+    el.policyEditor.innerHTML = `
+      <div class="policy-header">
+        <div class="card-head">
+          <div>
+            <div class="card-title">${esc(layer.title)}</div>
+            <div class="card-sub">${esc(layer.path)}</div>
+          </div>
+          <span class="badge ${readonly ? 'muted' : 'info'}">${readonly ? '只读' : '可编辑'}</span>
+        </div>
+        <p>${esc(layer.summary)}</p>
+        <p>${esc(layer.impact)}</p>
+        ${saveNote}
+        ${blocked}
+      </div>
+      <div class="policy-stage-grid">
+        ${(layer.stages || []).map(stage => {
+          const stageMode = normalizeStageMode(stage);
+          const currentModel = normalizeStageModel(stage);
+          const currentFallback = normalizeStageFallback(stage);
+          return `
+            <div class="policy-stage-card">
+              <div class="policy-stage-head">
+                <div>
+                  <div class="policy-stage-title">${esc(stage.label)}</div>
+                  <div class="policy-stage-note">当前来源：${esc(stage.effective_source)}</div>
+                </div>
+                <span class="badge ${badgeClass(stage.source === '继承' ? 'paused' : 'running')}">${esc(stage.source)}</span>
+              </div>
+              <div class="field">
+                <label>编辑模式</label>
+                <select data-stage-mode="${esc(stage.stage)}" ${readonly ? 'disabled' : ''}>
+                  <option value="inherit" ${stageMode === 'inherit' ? 'selected' : ''}>恢复继承</option>
+                  <option value="auto" ${stageMode === 'auto' ? 'selected' : ''}>使用 auto</option>
+                  <option value="fixed" ${stageMode === 'fixed' ? 'selected' : ''}>固定到具体模型</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Primary model</label>
+                <select data-stage-model="${esc(stage.stage)}" ${readonly ? 'disabled' : ''}>
+                  <option value="auto" ${currentModel === 'auto' ? 'selected' : ''}>auto</option>
+                  ${state.modelOptions.map(option => `<option value="${esc(option.id)}" ${option.id === currentModel ? 'selected' : ''}>${esc(option.id)} · ${esc(option.provider)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field">
+                <label>Fallback</label>
+                <select data-stage-fallback="${esc(stage.stage)}" ${readonly ? 'disabled' : ''}>
+                  <option value="" ${!currentFallback ? 'selected' : ''}>不显式指定</option>
+                  ${state.modelOptions.map(option => `<option value="${esc(option.id)}" ${option.id === currentFallback ? 'selected' : ''}>${esc(option.id)} · ${esc(option.provider)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="policy-summary-box">
+                当前生效：${esc(stage.effective_model)}${stage.effective_fallback !== '-' ? ` · fallback ${esc(stage.effective_fallback)}` : ''}<br>
+                route：${esc(stage.route_summary)}
+              </div>
+              <div class="policy-stage-actions">
+                ${readonly ? '<span class="muted">Global 当前只读，先用它做参考。</span>' : `
+                  <button class="tiny-btn ok" data-policy-save-stage="${esc(stage.stage)}">保存这一项</button>
+                  <button class="tiny-btn" data-policy-reset-stage="${esc(stage.stage)}">恢复继承</button>
+                `}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+    el.policyEditor.querySelectorAll('[data-policy-save-stage]').forEach(node => {
+      node.addEventListener('click', async () => {
+        await savePolicyStage(layer, node.getAttribute('data-policy-save-stage'));
+      });
+    });
+    el.policyEditor.querySelectorAll('[data-policy-reset-stage]').forEach(node => {
+      node.addEventListener('click', async () => {
+        await resetPolicyStage(layer, node.getAttribute('data-policy-reset-stage'));
+      });
+    });
+  }
+
+  function renderDetails() {
+    if (!state.snapshot) {
+      el.detailGrid.innerHTML = '<div class="empty">先选一个 run。</div>';
+      return;
+    }
+    const snapshot = state.snapshot;
+    const allTasks = (snapshot.tasks || []).map(task => `<div class="detail-card"><div class="card-title">${esc(task.task_id)}</div><div class="card-sub">${esc(humanizeStatus(task.status))} · ${esc(task.model || '-')}</div><div class="card-sub">${esc(task.summary || '-')}</div></div>`).join('') || '<div class="empty">暂无任务明细</div>';
+    const provider = snapshot.provider
+      ? `<div class="detail-card"><div class="card-title">Provider</div><div class="card-sub">正常 ${snapshot.provider.healthy} · 降级 ${snapshot.provider.degraded} · 断开 ${snapshot.provider.open} · 探测 ${snapshot.provider.probing}</div><div class="card-sub">${esc(snapshot.provider.summary)}</div></div>`
+      : '<div class="detail-card"><div class="card-title">Provider</div><div class="card-sub">当前没有 Provider 异常数据。</div></div>';
+    const steering = (snapshot.steering || []).map(item => `${humanizeAction(item.action_type)} · ${humanizeStatus(item.status)}${item.outcome ? ' · ' + item.outcome : ''}`).join('\n') || '当前没有干预记录';
+    const truth = `目标：${snapshot.truth.goal}\n状态：${snapshot.truth.status}\n轮次：${snapshot.truth.round}${snapshot.truth.max_rounds ? '/' + snapshot.truth.max_rounds : ''}\n下一步：${snapshot.truth.next_action}\n原因：${snapshot.truth.next_reason}\n摘要：${snapshot.truth.summary}`;
+    const compact = snapshot.compact ? snapshot.compact.markdown : '当前没有 compact 数据';
+    el.detailGrid.innerHTML = `
+      <div class="detail-card" id="allTasksAnchor">
+        <div class="card-title">全部任务</div>
+        <div class="card-sub">这里只是补充，不是你第一屏该盯的地方。</div>
+        <div class="run-grid" style="margin-top:12px">${allTasks}</div>
+      </div>
+      ${provider}
+      <div class="detail-card">
+        <div class="card-title">当前状态</div>
+        <pre>${esc(truth)}</pre>
+      </div>
+      <div class="detail-card">
+        <div class="card-title">干预记录</div>
+        <pre>${esc(steering)}</pre>
+      </div>
+      <div class="detail-card" style="grid-column:1 / -1;">
+        <details>
+          <summary>展开 Compact Markdown</summary>
+          <pre>${esc(compact)}</pre>
+        </details>
+      </div>
+    `;
+  }
+
+	  function renderHeaderMeta() {
+	    const project = currentProject();
+	    const run = currentRun();
+	    el.currentProjectPill.textContent = `项目：${project ? project.name : '—'}`;
+	    el.currentRunPill.textContent = `Run：${run ? run.id : '—'}`;
+	    el.updatedPill.textContent = `更新时间：${state.snapshot ? relativeTime(state.snapshot.updated_at) : '—'}`;
+	    if (!state.snapshot) {
+	      el.topSummary.textContent = state.activeRuns.length > 0
+	        ? `当前有 ${state.activeRuns.length} 条活跃 run，先从上面进入最需要关注的一条。`
+	        : '当前没有活跃 run；如果要回看历史，请输入 cwd 打开某个项目。';
+	      return;
+	    }
+    const attentionCount = state.snapshot.attention_tasks ? state.snapshot.attention_tasks.length : 0;
+    el.topSummary.textContent = attentionCount > 0
+      ? `当前最该看 ${attentionCount} 个任务，不要先钻 Provider / Compact。`
+      : `当前先看 ${state.snapshot.verdict.headline}，必要时再展开细节。`;
+  }
+
+	  function renderAll() {
+	    renderHeaderMeta();
+	    renderActiveRuns();
+	    renderHistoryBrowser();
+	    renderRuns();
+	    renderHero();
+	    renderFocus();
+    renderTasks();
+    renderRunActions();
+    renderPolicyTabs();
+    renderPolicyEditor();
+    renderDetails();
+  }
+
+  async function doAction(actionType, options = {}) {
+    if (!state.currentRunId) return;
+    await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}/actions/${encodeURIComponent(actionType)}`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: options.reason || 'web dashboard',
+        taskId: options.taskId || undefined,
+      }),
+    });
+    showNotice(`${humanizeAction(actionType)} 已提交`);
+    await loadSnapshot();
+    renderAll();
+  }
+
+	  function syncAutoRefresh() {
+	    clearInterval(state.autoTimer);
+	    if (!el.autoRefresh.checked) return;
+	    state.autoTimer = setInterval(refreshAll, 3000);
+	  }
+
+	  async function openProjectFromInput() {
+	    await openProjectHistory(el.cwdInput && el.cwdInput.value);
+	  }
+
+	  el.refreshBtn.addEventListener('click', refreshAll);
+	  el.autoRefresh.addEventListener('change', syncAutoRefresh);
+	  if (el.cwdForm) {
+	    el.cwdForm.addEventListener('submit', async (event) => {
+	      event.preventDefault();
+	      await openProjectFromInput();
+	    });
+	  }
+	  if (el.cwdInput) {
+	    el.cwdInput.addEventListener('input', () => {
+	      state.cwdDraft = el.cwdInput.value;
+	    });
+	  }
+	  if (el.useActiveProjectBtn) {
+	    el.useActiveProjectBtn.addEventListener('click', async () => {
+	      const preferred = preferredActiveRun();
+	      if (!preferred) {
+	        showNotice('当前没有活跃 run 可切回。', 'warn');
+	        return;
+	      }
+	      await openProjectHistory(preferred.project.cwd, preferred.run_id);
+	    });
+	  }
+	  window.addEventListener('popstate', async () => {
+	    const params = new URLSearchParams(window.location.search);
+	    state.currentProjectCwd = normalizeCwdInput(params.get('cwd'));
+	    state.currentRunId = String(params.get('runId') || '').trim() || null;
+	    state.cwdDraft = state.currentProjectCwd || '';
+	    setCwdInputValue(state.cwdDraft, { force: true });
+	    await refreshAll();
+	  });
+
+	  refreshAll();
+	  syncAutoRefresh();
+})();
+</script>
+</body>
+</html>

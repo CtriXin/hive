@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import type { RunSpec, RunState } from '../orchestrator/types.js';
+import type { RunSpec, RunState, ReviewResult } from '../orchestrator/types.js';
 import { main } from '../orchestrator/index.js';
+import { formatWatch } from '../orchestrator/watch-format.js';
+import type { WatchData } from '../orchestrator/watch-loader.js';
 
 const TMP_DIR = '/tmp/hive-cli-surface-test';
 const RUN_ID = 'run-cli-surface';
@@ -223,5 +225,330 @@ describe('CLI host-visible surfaces', () => {
     expect(restore.stdout).toContain('Use this workspace restore card as the smallest resume surface.');
     expect(restore.stdout).toContain('Validate workspace restore fallback');
     expect(restore.stdout).not.toContain('🧾 latest run:');
+  });
+
+  it('watch --once shows Authority section when review results contain degradation', async () => {
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'spec.json'), makeSpec({
+      goal: 'Surface authority degradation in watch',
+    }));
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'state.json'), makeState({
+      status: 'partial',
+      final_summary: 'authority degraded to single reviewer',
+    }));
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'result.json'), {
+      plan: {
+        id: 'plan-1',
+        goal: 'Surface authority degradation in watch',
+        cwd: TMP_DIR,
+        tasks: [],
+        execution_order: [],
+        context_flow: {},
+        created_at: new Date().toISOString(),
+      },
+      worker_results: [],
+      review_results: [{
+        taskId: 'task-a',
+        final_stage: 'cross-review',
+        passed: true,
+        findings: [],
+        iterations: 1,
+        duration_ms: 1,
+        authority: {
+          source: 'authority-layer',
+          mode: 'single',
+          members: ['claude-sonnet-4-6'],
+          reviewer_runtime_failures: [
+            { model: 'kimi-k2.5', reason: 'bridge_unavailable' },
+          ],
+        },
+      }],
+      score_updates: [],
+      total_duration_ms: 0,
+      cost_estimate: { total_usd: 0, by_model: {} },
+    });
+
+    const result = await runCli(['watch', '--cwd', TMP_DIR, '--run-id', RUN_ID, '--once']);
+
+    expect(result.exitCode).toBeUndefined();
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('== Authority ==');
+    expect(result.stdout).toContain('kimi-k2.5');
+    expect(result.stdout).toContain('bridge_unavailable');
+  });
+});
+
+function baseWatchData(overrides?: Partial<WatchData>): WatchData {
+  return {
+    run_id: 'run-cli-surface-001',
+    status: 'executing',
+    round: 2,
+    max_rounds: 6,
+    phase: 'executing',
+    mode: { current_mode: 'execute-standard', escalated: false, escalation_history: [] },
+    focus_task: 'task-a',
+    focus_agent: 'worker-1',
+    focus_summary: 'Implement auth middleware',
+    latest_reason: 'execute: Dispatching tasks',
+    steering: { is_paused: false, pending_count: 0, recent_actions: [] },
+    provider: { total: 0, healthy: 0, degraded: 0, open: 0, probing: 0, any_unhealthy: false, details: [] },
+    updated_at: '2026-04-11T10:00:00.000Z',
+    artifacts_available: ['spec', 'state'],
+    artifacts_missing: [],
+    taskCues: [],
+    ...overrides,
+  };
+}
+
+describe('CLI conclusion-first surfaces', () => {
+  describe('first-screen conclusions stable across states', () => {
+    it('blocked state shows BLOCKED in first section', () => {
+      const data = baseWatchData({ status: 'blocked', latest_reason: 'request_human: Need clarification' });
+      const output = formatWatch(data);
+      const firstBlock = output.split('\n\n')[1] || '';
+      expect(firstBlock).toContain('BLOCKED');
+    });
+
+    it('paused state shows PAUSED in first section', () => {
+      const data = baseWatchData({
+        status: 'executing',
+        steering: { is_paused: true, pending_count: 1, recent_actions: [] },
+      });
+      const output = formatWatch(data);
+      const firstBlock = output.split('\n\n')[1] || '';
+      expect(firstBlock).toContain('PAUSED');
+    });
+
+    it('done state shows DONE in first section', () => {
+      const data = baseWatchData({ status: 'done' });
+      const output = formatWatch(data);
+      const firstBlock = output.split('\n\n')[1] || '';
+      expect(firstBlock).toContain('DONE');
+    });
+
+    it('partial state shows PARTIAL in first section', () => {
+      const data = baseWatchData({ status: 'partial' });
+      const output = formatWatch(data);
+      const firstBlock = output.split('\n\n')[1] || '';
+      expect(firstBlock).toContain('PARTIAL');
+    });
+
+    it('running state shows focus in first section', () => {
+      const data = baseWatchData();
+      const output = formatWatch(data);
+      const firstBlock = output.split('\n\n')[1] || '';
+      expect(firstBlock).toContain('focus:');
+    });
+  });
+
+  describe('authority degradation appears in high-priority area', () => {
+    it('watch shows Authority section when degradation present', () => {
+      const reviewResults: ReviewResult[] = [{
+        taskId: 'task-a', final_stage: 'light', passed: true, findings: [],
+        iterations: 1, duration_ms: 1,
+        authority: {
+          source: 'authority-layer', mode: 'single', members: ['model-a'],
+          reviewer_runtime_failures: [
+            { model: 'kimi-k2.5', reason: 'bridge_unavailable' },
+          ],
+        },
+      }];
+      const output = formatWatch(baseWatchData(), undefined, { reviewResults });
+      expect(output).toContain('Authority');
+      expect(output).toContain('kimi-k2.5');
+      expect(output).toContain('bridge_unavailable');
+    });
+  });
+
+  describe('provider visibility', () => {
+    it('normal provider shows concise line', () => {
+      const data = baseWatchData({
+        provider: {
+          total: 2, healthy: 2, degraded: 0, open: 0, probing: 0,
+          any_unhealthy: false, details: [
+            { provider: 'openai', breaker: 'healthy' },
+            { provider: 'anthropic', breaker: 'healthy' },
+          ],
+        },
+      });
+      const output = formatWatch(data);
+      expect(output).toContain('2 tracked, 2 healthy');
+    });
+
+    it('degraded provider shows detail with subtype', () => {
+      const data = baseWatchData({
+        provider: {
+          total: 3, healthy: 2, degraded: 1, open: 0, probing: 0,
+          any_unhealthy: true, details: [
+            { provider: 'kimi', breaker: 'degraded', subtype: 'rate_limit' },
+          ],
+          summary_text: '3 total | 2 healthy | 1 degraded',
+        },
+      });
+      const output = formatWatch(data);
+      expect(output).toContain('degraded');
+      expect(output).toContain('kimi');
+    });
+
+    it('no provider section when no data', () => {
+      const output = formatWatch(baseWatchData());
+      expect(output).not.toContain('Provider');
+    });
+  });
+
+  describe('normal run not verbose', () => {
+    it('healthy run has concise output', () => {
+      const data = baseWatchData();
+      const output = formatWatch(data);
+      const lineCount = output.split('\n').length;
+      expect(lineCount).toBeLessThan(25);
+    });
+  });
+});
+
+describe('CLI alias + latest-run ergonomics', () => {
+  beforeEach(() => {
+    resetDir();
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TMP_DIR)) {
+      fs.rmSync(TMP_DIR, { recursive: true, force: true });
+    }
+  });
+
+  function setupRun(runId: string, cwd: string = TMP_DIR): void {
+    writeJson(path.join(cwd, '.ai', 'runs', runId, 'spec.json'), makeSpec({ id: runId }));
+    writeJson(path.join(cwd, '.ai', 'runs', runId, 'state.json'), makeState({ run_id: runId }));
+  }
+
+  describe('short aliases route to original commands', () => {
+    it('hive s is equivalent to hive status', async () => {
+      setupRun('run-alias-test');
+      const sResult = await runCli(['s', '--cwd', TMP_DIR]);
+      const statusResult = await runCli(['status', '--cwd', TMP_DIR]);
+      expect(sResult.exitCode).toBe(statusResult.exitCode);
+      expect(sResult.stdout).toContain('run-alias-test');
+      expect(statusResult.stdout).toContain('run-alias-test');
+    });
+
+    it('hive c is equivalent to hive compact', async () => {
+      setupRun('run-alias-compact');
+      const cResult = await runCli(['c', '--cwd', TMP_DIR]);
+      const compactResult = await runCli(['compact', '--cwd', TMP_DIR]);
+      expect(cResult.exitCode).toBe(compactResult.exitCode);
+      expect(cResult.stdout).toContain('# Hive Compact Packet');
+      expect(compactResult.stdout).toContain('# Hive Compact Packet');
+    });
+
+    it('hive w --once is equivalent to hive watch --once', async () => {
+      setupRun('run-alias-watch');
+      const wResult = await runCli(['w', '--cwd', TMP_DIR, '--once']);
+      const watchResult = await runCli(['watch', '--cwd', TMP_DIR, '--once']);
+      expect(wResult.exitCode).toBe(watchResult.exitCode);
+      expect(wResult.stdout).toContain('==');
+      expect(watchResult.stdout).toContain('==');
+    });
+
+    it('hive r is equivalent to hive resume', async () => {
+      setupRun('run-alias-resume');
+      const rResult = await runCli(['r', '--cwd', TMP_DIR]);
+      const resumeResult = await runCli(['resume', '--cwd', TMP_DIR]);
+      expect(rResult.exitCode).toBe(resumeResult.exitCode);
+      expect(rResult.stdout).toContain('run-alias-resume');
+      expect(resumeResult.stdout).toContain('run-alias-resume');
+    });
+
+    it('hive ws is equivalent to hive workers', async () => {
+      setupRun('run-alias-workers');
+      const wsResult = await runCli(['ws', '--cwd', TMP_DIR]);
+      const workersResult = await runCli(['workers', '--cwd', TMP_DIR]);
+      expect(wsResult.exitCode).toBe(workersResult.exitCode);
+    });
+  });
+
+  describe('latest-run default fallback', () => {
+    it('hive s without --run-id shows latest run', async () => {
+      setupRun('run-oldest');
+      setupRun('run-newest');
+      const result = await runCli(['s', '--cwd', TMP_DIR]);
+      expect(result.stdout).toContain('run-newest');
+    });
+
+    it('hive c without --run-id uses latest run', async () => {
+      setupRun('run-oldest-compact');
+      setupRun('run-newest-compact');
+      const result = await runCli(['c', '--cwd', TMP_DIR]);
+      expect(result.stdout).toContain('run-newest-compact');
+    });
+
+    it('hive score without --run-id uses latest run', async () => {
+      setupRun('run-oldest-score');
+      setupRun('run-newest-score');
+      const scoreDir = path.join(TMP_DIR, '.ai', 'runs', 'run-newest-score');
+      writeJson(path.join(scoreDir, 'score-history.json'), {
+        run_id: 'run-newest-score',
+        goal: 'score test',
+        latest_score: 75,
+        best_score: 80,
+        rounds: [{ round: 1, action: 'dispatch', status: 'completed', score: 75, delta_from_previous: null, summary: 'test' }],
+        updated_at: new Date().toISOString(),
+      });
+      const result = await runCli(['score', '--cwd', TMP_DIR]);
+      expect(result.stdout).toContain('run-newest-score');
+    });
+  });
+
+  describe('missing run error message', () => {
+    it('hive s with no runs shows clear error', async () => {
+      const result = await runCli(['s', '--cwd', TMP_DIR]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('no run found');
+    });
+
+    it('hive c with no runs falls back to workspace packet', async () => {
+      const result = await runCli(['c', '--cwd', TMP_DIR]);
+      // compact gracefully falls back to workspace packet, no run required
+      expect(result.stdout).toContain('# Hive Workspace Restore Card');
+    });
+
+    it('hive score with no runs shows clear error', async () => {
+      const result = await runCli(['score', '--cwd', TMP_DIR]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('no run');
+    });
+  });
+
+  describe('short command stability', () => {
+    it('hive s works on a run with minimal artifacts', async () => {
+      setupRun('run-minimal');
+      const result = await runCli(['s', '--cwd', TMP_DIR]);
+      expect(result.exitCode).toBeUndefined();
+      expect(result.stdout).toContain('run-minimal');
+    });
+
+    it('hive r --execute works without explicit --run-id', async () => {
+      setupRun('run-execute-test');
+      const result = await runCli(['r', '--cwd', TMP_DIR, '--execute']);
+      expect(result.exitCode).toBeUndefined();
+      expect(result.stdout).toContain('run-execute-test');
+    });
+
+    it('hive help shows quick path', async () => {
+      const result = await runCli(['help']);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('hive s');
+      expect(result.stdout).toContain('hive w --once');
+      expect(result.stdout).toContain('hive c');
+      expect(result.stdout).toContain('hive r --execute');
+    });
+
+    it('no args shows quick path', async () => {
+      const result = await runCli([]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toContain('hive s');
+      expect(result.stdout).toContain('hive w --once');
+      expect(result.stdout).toContain('hive c');
+      expect(result.stdout).toContain('hive r --execute');
+    });
   });
 });

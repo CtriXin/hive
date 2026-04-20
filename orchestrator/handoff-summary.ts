@@ -18,10 +18,15 @@ import {
   latestProviderDecision,
   summarizeProviderHealth,
 } from './provider-surface.js';
+import {
+  extractAuthorityDegradation,
+  formatAuthorityDegradation,
+} from './authority-surface.js';
 
 export interface HandoffSummary {
   run_id: string;
   current_truth: string; // one-line: status + round + mode
+  authority_warning?: string; // present when authority degraded
   provider_summary?: string;
   latest_route?: string;
   latest_resilience?: string;
@@ -48,6 +53,7 @@ export function generateHandoffSummary(args: {
     extractLatestProviderRoute({ reviewResults, providerHealth }),
   );
   const latestResilience = formatProviderDecision(latestProviderDecision(providerHealth));
+  const authority = extractAuthorityDegradation(reviewResults);
 
   // Current truth: one-line status
   const currentTruth = state
@@ -71,6 +77,7 @@ export function generateHandoffSummary(args: {
   return {
     run_id: runId,
     current_truth: currentTruth,
+    authority_warning: authority.degradation ? authority.degradation.description : undefined,
     provider_summary: providerSummary,
     latest_route: latestRoute,
     latest_resilience: latestResilience,
@@ -121,6 +128,11 @@ export function formatHandoffSummary(handoff: HandoffSummary): string {
 
   // Current truth
   lines.push(`Truth: ${handoff.current_truth}`);
+
+  // Authority warning (immediately after truth — high visibility)
+  if (handoff.authority_warning) {
+    lines.push(`\u26A0\uFE0F Authority: ${handoff.authority_warning}`);
+  }
 
   if (handoff.latest_route) {
     lines.push(`Latest Route: ${handoff.latest_route}`);

@@ -1,4 +1,9 @@
 // orchestrator/provider-cooldown-store.ts — Durable provider cooldown persistence
+//
+// DEPRECATED: This class is no longer the authority source for provider health.
+// All production code now uses ProviderHealthStore (provider-resilience.ts) which
+// unifies cooldown, circuit breaker, failure taxonomy, and fallback decisions.
+// This file is kept for backward compatibility only.
 import fs from 'fs';
 import path from 'path';
 

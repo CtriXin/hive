@@ -107,10 +107,10 @@
     "kimi-k2.5": {
       "scores": {
         "implementation": {
-          "value": 0.9962597855813986,
-          "samples": 44,
-          "effective_samples": 42.750000000000014,
-          "last_updated": "2026-04-11T12:14:49.471Z"
+          "value": 0.9978613940182312,
+          "samples": 47,
+          "effective_samples": 45.30000000000002,
+          "last_updated": "2026-04-13T07:28:36.910Z"
         },
         "review": {
           "value": 0.85,
@@ -161,10 +161,10 @@
     "glm-5-turbo": {
       "scores": {
         "implementation": {
-          "value": 0.9974135274836049,
-          "samples": 83,
-          "effective_samples": 78.49999999999997,
-          "last_updated": "2026-04-11T12:41:00.633Z"
+          "value": 0.9998778305789073,
+          "samples": 98,
+          "effective_samples": 92.29999999999993,
+          "last_updated": "2026-04-20T06:36:55.927Z"
         },
         "review": {
           "value": 0.5,
@@ -179,16 +179,16 @@
           "last_updated": "2026-04-11T12:41:00.633Z"
         },
         "integration": {
-          "value": 0.9940798085440891,
-          "samples": 36,
-          "effective_samples": 34.95000000000001,
-          "last_updated": "2026-04-11T12:41:00.633Z"
+          "value": 0.9988491782287521,
+          "samples": 44,
+          "effective_samples": 42.350000000000016,
+          "last_updated": "2026-04-20T06:11:57.499Z"
         },
         "spec_adherence": {
-          "value": 0.8,
-          "samples": 2,
-          "effective_samples": 2,
-          "last_updated": "2026-03-24"
+          "value": 0.7000000000000001,
+          "samples": 3,
+          "effective_samples": 3,
+          "last_updated": "2026-04-13T15:31:49.394Z"
         },
         "scope_discipline": {
           "value": 0.93,
@@ -197,10 +197,10 @@
           "last_updated": "2026-03-24"
         },
         "turnaround_speed": {
-          "value": 0.7405975,
-          "samples": 5,
-          "effective_samples": 4.85,
-          "last_updated": "2026-04-11T12:41:00.633Z"
+          "value": 0.7626467125,
+          "samples": 6,
+          "effective_samples": 5.699999999999999,
+          "last_updated": "2026-04-19T15:06:20.240Z"
         }
       },
       "domain_tags": [
@@ -370,9 +370,9 @@
       "scores": {
         "implementation": {
           "value": 1,
-          "samples": 4,
-          "effective_samples": 4.6,
-          "last_updated": "2026-04-11T12:29:09.012Z"
+          "samples": 7,
+          "effective_samples": 8.2,
+          "last_updated": "2026-04-16T11:58:56.863Z"
         },
         "review": {
           "value": 0.5,
@@ -382,15 +382,15 @@
         },
         "repair": {
           "value": 1,
-          "samples": 1,
-          "effective_samples": 1.15,
-          "last_updated": "2026-04-11T12:29:09.012Z"
+          "samples": 2,
+          "effective_samples": 2.45,
+          "last_updated": "2026-04-14T16:25:09.101Z"
         },
         "integration": {
           "value": 1,
-          "samples": 2,
-          "effective_samples": 2.45,
-          "last_updated": "2026-04-11T12:29:09.012Z"
+          "samples": 3,
+          "effective_samples": 3.75,
+          "last_updated": "2026-04-14T16:25:09.101Z"
         },
         "spec_adherence": {
           "value": 0.5,
@@ -406,9 +406,9 @@
         },
         "turnaround_speed": {
           "value": 1,
-          "samples": 1,
-          "effective_samples": 1.15,
-          "last_updated": "2026-04-11T12:29:09.012Z"
+          "samples": 2,
+          "effective_samples": 2.45,
+          "last_updated": "2026-04-14T16:25:09.101Z"
         }
       },
       "domain_tags": [],
@@ -466,9 +466,9 @@
       "scores": {
         "implementation": {
           "value": 1,
-          "samples": 1,
-          "effective_samples": 1,
-          "last_updated": "2026-04-02T03:11:47.391Z"
+          "samples": 166,
+          "effective_samples": 166.15,
+          "last_updated": "2026-04-20T09:04:40.202Z"
         },
         "review": {
           "value": 0.5,
@@ -477,22 +477,22 @@
           "last_updated": null
         },
         "repair": {
-          "value": 0.5,
-          "samples": 0,
-          "effective_samples": 0,
-          "last_updated": null
+          "value": 0.9625,
+          "samples": 3,
+          "effective_samples": 3.15,
+          "last_updated": "2026-04-19T15:05:19.340Z"
         },
         "integration": {
-          "value": 0.5,
-          "samples": 0,
-          "effective_samples": 0,
-          "last_updated": null
+          "value": 1,
+          "samples": 1,
+          "effective_samples": 1.15,
+          "last_updated": "2026-04-14T16:22:25.890Z"
         },
         "spec_adherence": {
-          "value": 0.5,
-          "samples": 0,
-          "effective_samples": 0,
-          "last_updated": null
+          "value": 0.4,
+          "samples": 1,
+          "effective_samples": 1,
+          "last_updated": "2026-04-17T15:16:13.697Z"
         },
         "scope_discipline": {
           "value": 0.5,
@@ -501,10 +501,10 @@
           "last_updated": null
         },
         "turnaround_speed": {
-          "value": 0.5,
-          "samples": 0,
-          "effective_samples": 0,
-          "last_updated": null
+          "value": 0.9812500000000001,
+          "samples": 3,
+          "effective_samples": 3.15,
+          "last_updated": "2026-04-19T15:05:19.340Z"
         }
       },
       "domain_tags": [],
@@ -514,9 +514,9 @@
       "scores": {
         "implementation": {
           "value": 1,
-          "samples": 1,
-          "effective_samples": 0.85,
-          "last_updated": "2026-04-02T07:15:51.007Z"
+          "samples": 2,
+          "effective_samples": 1.7,
+          "last_updated": "2026-04-14T07:52:39.557Z"
         },
         "review": {
           "value": 0.5,
@@ -525,10 +525,10 @@
           "last_updated": null
         },
         "repair": {
-          "value": 0.5,
-          "samples": 0,
-          "effective_samples": 0,
-          "last_updated": null
+          "value": 1,
+          "samples": 1,
+          "effective_samples": 0.85,
+          "last_updated": "2026-04-14T07:52:39.557Z"
         },
         "integration": {
           "value": 0.5,
@@ -549,10 +549,10 @@
           "last_updated": null
         },
         "turnaround_speed": {
-          "value": 0.5,
-          "samples": 0,
-          "effective_samples": 0,
-          "last_updated": null
+          "value": 1,
+          "samples": 1,
+          "effective_samples": 0.85,
+          "last_updated": "2026-04-14T07:52:39.557Z"
         }
       },
       "domain_tags": [],

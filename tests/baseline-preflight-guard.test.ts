@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunSpec, RunState, VerificationResult } from '../orchestrator/types.js';
 
+const { extractAndSaveUserProfileMock } = vi.hoisted(() => ({
+  extractAndSaveUserProfileMock: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('../orchestrator/planner-runner.js', () => ({
   planGoal: vi.fn(),
 }));
@@ -94,6 +98,10 @@ vi.mock('../orchestrator/recovery-room-handler.js', () => ({
 
 vi.mock('../orchestrator/review-room-handler.js', () => ({
   maybeRunExternalReviewSlot: vi.fn(),
+}));
+
+vi.mock('../orchestrator/user-profile-extractor.js', () => ({
+  extractAndSaveUserProfile: extractAndSaveUserProfileMock,
 }));
 
 vi.mock('../orchestrator/model-registry.js', () => {
@@ -250,5 +258,27 @@ describe('baseline preflight guard', () => {
 
     expect(planGoal).toHaveBeenCalledOnce();
     expect(state.status).toBe('blocked');
+  });
+
+  it('fires best-effort user profile extraction on early record-only completion', async () => {
+    vi.mocked(runVerificationSuite).mockReturnValue([buildPass]);
+
+    const spec = {
+      ...makeSpec('Record the run only'),
+      execution_mode: 'record-only' as const,
+    };
+    const initialState = makeInitialState(spec);
+
+    await executeRun(spec, initialState);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(extractAndSaveUserProfileMock).toHaveBeenCalledTimes(1);
+    expect(extractAndSaveUserProfileMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: spec.id,
+      goal: spec.goal,
+      finalSummary: expect.stringContaining('Record-only'),
+      executionMode: 'record-only',
+      changedFiles: [],
+    }));
   });
 });

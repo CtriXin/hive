@@ -89,17 +89,17 @@ describe('Phase 6A: Rule Selector', () => {
 
   // ── File pattern matching ──
 
-  describe('file pattern matching → recommendation', () => {
-    it('recommends rule when file patterns match', () => {
+  describe('file pattern matching → auto-applied', () => {
+    it('auto-selects rule when file patterns match', () => {
       const task = makeTask({ estimated_files: ['src/utils/helpers.ts'] });
       const rules = {
         'test-rule': makeRule({ file_patterns: ['src/utils'] }),
       };
       const result = selectRuleForTask(task, rules);
       expect(result.selected_rule).toBe('test-rule');
-      expect(result.confidence).toBe(0.6);
-      expect(result.auto_applied).toBe(false);
-      expect(result.basis).toBe('learning_suggest');
+      expect(result.confidence).toBe(0.75);
+      expect(result.auto_applied).toBe(true);
+      expect(result.basis).toBe('learning_auto_pick');
     });
 
     it('returns empty result when no file patterns match', () => {
@@ -275,7 +275,7 @@ describe('Phase 6A: Rule Selector', () => {
 
   describe('auto-selection triggers', () => {
     it('auto-selects only when confidence >= 0.7 threshold', () => {
-      const task = makeTask({ category: 'build' });
+      const task = makeTask({ category: 'build', estimated_files: [] });
       // Low supporting runs → low confidence → no auto
       const lessons: Lesson[] = [
         makeLesson({

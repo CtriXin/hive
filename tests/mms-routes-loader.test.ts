@@ -3,6 +3,7 @@ import fs from 'fs';
 import {
   loadMmsRoutes, resolveModelRoute, resolveModelRouteFull,
   resolveModelByPrefix, getAvailableModelIds, isMmsAvailable, invalidateCache,
+  getClaudeCliMode, isClaudeCodeDirectRoute,
 } from '../orchestrator/mms-routes-loader.js';
 
 const MOCK_ROUTES = {
@@ -16,6 +17,25 @@ const MOCK_ROUTES = {
     'kimi-k2.5': { anthropic_base_url: 'http://d', api_key: 'k4', provider_id: 'xin', priority: 125, role: 'auto' },
     'kimi-for-coding': { anthropic_base_url: 'http://e', api_key: 'k5', provider_id: 'xin', priority: 100, role: 'auto' },
     'qwen3-max': { anthropic_base_url: 'http://f', api_key: 'k6', provider_id: 'xin', priority: 125, role: 'auto' },
+    'glm-5-turbo': {
+      anthropic_base_url: 'http://g',
+      api_key: 'k7',
+      provider_id: 'xin',
+      priority: 110,
+      role: 'auto',
+      capabilities: ['tool_use', 'bridge_required'],
+      cli_modes: { claude: 'bridge' },
+      bridge_clis: ['claude', 'codex'],
+    },
+    'claude-sonnet-4-6': {
+      anthropic_base_url: 'http://claude-native',
+      api_key: 'k8',
+      provider_id: 'xin',
+      priority: 200,
+      role: 'auto',
+      cli_modes: { claude: 'native', codex: 'bridge' },
+      capabilities: ['tool_use', 'reasoning'],
+    },
   },
 };
 
@@ -56,7 +76,7 @@ describe('mms-routes-loader', () => {
     it('loads and parses routes table', () => {
       const table = loadMmsRoutes();
       expect(table).not.toBeNull();
-      expect(Object.keys(table!.routes)).toHaveLength(8);
+      expect(Object.keys(table!.routes)).toHaveLength(10);
     });
 
     it('returns null when file not found', () => {
@@ -152,10 +172,33 @@ describe('mms-routes-loader', () => {
   describe('getAvailableModelIds', () => {
     it('returns all model IDs sorted by priority desc', () => {
       const ids = getAvailableModelIds();
-      expect(ids.length).toBe(8);
+      expect(ids.length).toBe(10);
       // priority 125 models should come before 85/100
       const lastTwoIds = ids.slice(-2);
       expect(lastTwoIds).toContain('MiniMax-M2');
+    });
+  });
+
+  describe('Claude transport metadata', () => {
+    it('marks bridge-required routes as not direct-compatible for Claude Code SDK', () => {
+      const route = resolveModelRoute('glm-5-turbo');
+      expect(route).not.toBeNull();
+      expect(getClaudeCliMode(route!)).toBe('bridge');
+      expect(isClaudeCodeDirectRoute(route!)).toBe(false);
+    });
+
+    it('keeps legacy routes direct-compatible when no bridge metadata is present', () => {
+      const route = resolveModelRoute('kimi-for-coding');
+      expect(route).not.toBeNull();
+      expect(getClaudeCliMode(route!)).toBe('direct');
+      expect(isClaudeCodeDirectRoute(route!)).toBe(true);
+    });
+
+    it('treats native Claude routes as direct-compatible for Claude Code SDK', () => {
+      const route = resolveModelRoute('claude-sonnet-4-6');
+      expect(route).not.toBeNull();
+      expect(getClaudeCliMode(route!)).toBe('native');
+      expect(isClaudeCodeDirectRoute(route!)).toBe(true);
     });
   });
 

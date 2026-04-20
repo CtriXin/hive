@@ -91,6 +91,7 @@ describe('hive-config (extended)', () => {
         { model: 'glm-5-turbo', final_score: 0.7, blocked_by: [] },
         { model: 'qwen3-max', final_score: 0.6, blocked_by: [] },
       ],
+      canResolveForModel: () => true,
     } as any;
 
     const task: SubTask = {
@@ -113,7 +114,7 @@ describe('hive-config (extended)', () => {
     it('returns fallback_worker when different from failed model', () => {
       const result = resolveFallback('qwen3-max', 'server_error', task, DEFAULT_CONFIG, {
         ...mockRegistry,
-        get: () => ({ provider: 'bailian' }),
+        get: (model: string) => model === 'qwen3-max' ? { provider: 'xin' } : { provider: 'bailian' },
         rankModelsForTask: () => [],
       } as any);
       expect(result).toBe('glm-5-turbo');

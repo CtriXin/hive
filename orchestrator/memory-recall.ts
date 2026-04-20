@@ -1,13 +1,20 @@
 // ═══════════════════════════════════════════════════════════════════
-// orchestrator/memory-recall.ts — Phase 7A: Cross-Session Recall
+// orchestrator/memory-recall.ts — Phase 7A + 7B: Cross-Session Recall
 // ═══════════════════════════════════════════════════════════════════
 /**
  * Recall relevant project memories for the current task context.
  *
- * Recall policy:
+ * Recall policy (enhanced Phase 7B):
  * - filter by active, non-stale memories
- * - score by relevance to current goal/task/files/failure_class
- * - rank by composite: relevance (50%) + confidence (30%) + recency (20%)
+ * - score by multi-signal relevance:
+ *     goal keyword match (20%)
+ *     phrase / near-phrase match (20%)
+ *     task type / category match (15%)
+ *     file overlap (all categories, not just risky_area) (15%)
+ *     failure class match (20%)
+ *     category bonus for recurring_failure in repair contexts (10%)
+ * - rank by composite: relevance (40%) + confidence (40%) + recency (20%)
+ *   with a recency floor so old-but-high-confidence memories stay visible
  * - return top-N compact results with evidence summary
  *
  * Guardrails:
@@ -141,47 +148,64 @@ function scoreRelevance(
 ): ScoredMemory {
   let score = 0;
   const reasons: string[] = [];
+  const subScores: Record<string, number> = {};
 
-  // 1. Goal keyword match (strongest signal)
+  // 1. Goal keyword match — single-word overlap (20%)
   const goalScore = keywordMatchScore(input.goal, entry);
   if (goalScore > 0) {
-    score += goalScore * 0.3;
+    score += goalScore * 0.2;
+    subScores.keyword = goalScore * 0.2;
     reasons.push(`goal keywords match memory summary`);
   }
 
-  // 2. Task type / category match
+  // 2. Phrase / near-phrase match — multi-word continuity (20%)
+  const phraseScore = phraseMatchScore(input.goal, entry);
+  if (phraseScore > 0) {
+    score += phraseScore * 0.2;
+    subScores.phrase = phraseScore * 0.2;
+    reasons.push(`phrase "${bestPhrase(input.goal, entry)}" overlaps memory`);
+  }
+
+  // 3. Task type / category match (15%)
   if (input.task_type) {
     const typeScore = categoryMatchScore(input.task_type, entry);
     if (typeScore > 0) {
-      score += typeScore * 0.25;
+      score += typeScore * 0.15;
+      subScores.taskType = typeScore * 0.15;
       reasons.push(`task type "${input.task_type}" aligns with ${entry.category}`);
     }
   }
 
-  // 3. File overlap (for risky_area memories)
+  // 4. File overlap — ALL categories, not just risky_area (15%)
   if (input.touched_files && input.touched_files.length > 0) {
     const fileScore = fileOverlapScore(input.touched_files, entry);
     if (fileScore > 0) {
-      score += fileScore * 0.2;
+      score += fileScore * 0.15;
+      subScores.fileOverlap = fileScore * 0.15;
       reasons.push(`touched files overlap with memory evidence`);
     }
   }
 
-  // 4. Failure class match (for repair context)
+  // 5. Failure class match (20%)
   if (input.failure_class) {
     const fcScore = failureClassMatchScore(input.failure_class, entry);
     if (fcScore > 0) {
-      score += fcScore * 0.25;
+      score += fcScore * 0.2;
+      subScores.failureClass = fcScore * 0.2;
       reasons.push(`failure class "${input.failure_class}" matches memory`);
     }
   }
 
-  // Category bonus: recurring_failure memories get a small boost in repair contexts
+  // 6. Category bonus: recurring_failure gets boost in repair, risky_area with files (10%)
+  let bonus = 0;
   if (entry.category === 'recurring_failure' && input.failure_class) {
-    score += 0.05;
+    bonus = 0.1;
+  } else if (entry.category === 'risky_area' && input.touched_files?.length) {
+    bonus = 0.1;
   }
-  if (entry.category === 'risky_area' && input.touched_files?.length) {
-    score += 0.05;
+  if (bonus > 0) {
+    score += bonus;
+    subScores.categoryBonus = bonus;
   }
 
   return {
@@ -192,11 +216,13 @@ function scoreRelevance(
 }
 
 function compositeScore(scored: ScoredMemory): number {
-  // Composite: relevance (50%) + confidence (30%) + recency (20%)
+  // Phase 7B: confidence ↑ to 40%, relevance 40%, recency 20% with a floor
+  // so old-but-high-confidence memories still compete.
+  const recencyFloor = Math.max(scored.entry.recency, 0.25);
   return (
-    scored.relevance_score * 0.5 +
-    scored.entry.confidence * 0.3 +
-    scored.entry.recency * 0.2
+    scored.relevance_score * 0.4 +
+    scored.entry.confidence * 0.4 +
+    recencyFloor * 0.2
   );
 }
 
@@ -235,15 +261,20 @@ function categoryMatchScore(taskType: string, entry: ProjectMemoryEntry): number
 }
 
 function fileOverlapScore(touchedFiles: string[], entry: ProjectMemoryEntry): number {
-  if (entry.category !== 'risky_area') return 0;
+  // Phase 7B: file overlap applies to ALL categories, not just risky_area
+  // Search evidence signals + summary + detail for file references
+  const searchable = [
+    entry.evidence.map(e => e.signal.toLowerCase()).join(' '),
+    entry.summary.toLowerCase(),
+    entry.detail.toLowerCase(),
+  ].join(' ');
 
-  const evidenceSignals = entry.evidence.map(e => e.signal.toLowerCase()).join(' ');
   const touchedLower = touchedFiles.map(f => f.toLowerCase());
 
   let hits = 0;
   for (const file of touchedLower) {
     const basename = file.split('/').pop() || file;
-    if (evidenceSignals.includes(basename)) hits++;
+    if (searchable.includes(basename)) hits++;
   }
 
   return touchedFiles.length === 0 ? 0 : hits / touchedFiles.length;
@@ -258,6 +289,44 @@ function failureClassMatchScore(fc: FailureClass, entry: ProjectMemoryEntry): nu
   // Partial match (e.g. "build" in "build_fail")
   if (text.includes(fcLower.slice(0, 4))) return 0.4;
   return 0;
+}
+
+function phraseMatchScore(text: string, entry: ProjectMemoryEntry): number {
+  const lower = text.toLowerCase();
+  const entryText = (entry.summary + ' ' + entry.detail).toLowerCase();
+  const entryPhrases = extractPhrases(entry.summary + ' ' + entry.detail);
+
+  let bestHit = 0;
+  for (const phrase of entryPhrases) {
+    if (lower.includes(phrase)) {
+      const ratio = phrase.split(/\s+/).length;
+      bestHit = Math.max(bestHit, ratio / 4); // cap at 4-word phrase = 1.0
+    }
+  }
+  return bestHit;
+}
+
+function extractPhrases(text: string): string[] {
+  const tokens = tokenize(text);
+  const phrases: string[] = [];
+  for (let len = 2; len <= Math.min(4, tokens.length); len++) {
+    for (let i = 0; i <= tokens.length - len; i++) {
+      phrases.push(tokens.slice(i, i + len).join(' '));
+    }
+  }
+  return phrases;
+}
+
+function bestPhrase(text: string, entry: ProjectMemoryEntry): string {
+  const lower = text.toLowerCase();
+  const entryPhrases = extractPhrases(entry.summary + ' ' + entry.detail);
+  let best = '';
+  for (const phrase of entryPhrases) {
+    if (lower.includes(phrase) && phrase.length > best.length) {
+      best = phrase;
+    }
+  }
+  return best || '(weak)';
 }
 
 function tokenize(text: string): string[] {

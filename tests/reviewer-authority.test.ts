@@ -9,7 +9,7 @@ const defaultAuthorityPolicy = {
   default_mode: 'single',
   max_models: 2,
   primary_candidates: ['kimi-k2.5', 'MiniMax-M2.5'],
-  fallback_order: ['kimi-k2.5', 'MiniMax-M2.5'],
+  fallback_order: ['kimi-k2.5', 'MiniMax-M2.5', 'claude-sonnet-4-6', 'claude-opus-4-6'],
   escalate_on: ['low_confidence', 'failed_review', 'disagreement'],
   low_confidence_threshold: 0.75,
   timeout_ms: 30000,
@@ -1175,5 +1175,462 @@ describe('reviewer authority path', () => {
     expect(result.findings[0]?.issue).toContain('forbids file edits');
     expect(result.authority?.source).toBe('authority-layer');
     expect(queryModelTextMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('domestic candidate hard filter', () => {
+  it('kimi-k2.5 is not hard-filtered by provider_resolution_failed', () => {
+    const registry = new ModelRegistry();
+    expect(registry.canResolveForModel('kimi-k2.5')).toBe(true);
+  });
+
+  it('MiniMax-M2.5 is not hard-filtered by provider_resolution_failed', () => {
+    const registry = new ModelRegistry();
+    expect(registry.canResolveForModel('MiniMax-M2.5')).toBe(true);
+  });
+
+  it('models with no valid provider and no MMS route are still hard-filtered', () => {
+    const registry = new ModelRegistry();
+    // A model that doesn't exist in model-capabilities.json and has no MMS route
+    expect(registry.canResolveForModel('totally-unknown-model-xyz')).toBe(false);
+  });
+
+  it('rankModelsForTask does not block kimi-k2.5 or MiniMax-M2.5 via hard filter', () => {
+    const registry = new ModelRegistry();
+    const ranked = registry.rankModelsForTask({
+      role: 'review',
+      domains: ['typescript', 'tests'],
+      complexity: 'medium',
+      needs_strict_boundary: false,
+      needs_fast_turnaround: false,
+      is_repair_round: false,
+    });
+
+    const kimi = ranked.find((r) => r.model === 'kimi-k2.5');
+    const minimax = ranked.find((r) => r.model === 'MiniMax-M2.5');
+
+    // They may be blocked by other filters (e.g. complexity), but NOT by provider_resolution_failed
+    expect(kimi?.blocked_by ?? []).not.toContain('provider_resolution_failed');
+    expect(minimax?.blocked_by ?? []).not.toContain('provider_resolution_failed');
+  });
+
+  it('authority pair mode works with domestic primary candidates', async () => {
+    // Uses defaultAuthorityPolicy which has kimi-k2.5 and MiniMax-M2.5 as primary_candidates
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      // Force pair mode for this test
+      default_mode: 'pair',
+    };
+
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ passed: true, confidence: 0.9, flagged_issues: [], summary: 'ok' }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ passed: true, confidence: 0.88, flagged_issues: [], summary: 'ok' }),
+        tokenUsage: { input: 12, output: 6 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-domestic-pair',
+      description: 'Test domestic pair mode',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-domestic-pair',
+      goal: 'test domestic pair',
+      tasks: [task],
+      execution_order: [['task-domestic-pair']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-domestic-pair',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/domestic-pair-test',
+      branch: 'worker-task-domestic-pair',
+      sessionId: 'worker-task-domestic-pair',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    // With pair mode and domestic candidates available, we should get pair review
+    expect(result.authority?.source).toBe('authority-layer');
+    expect(result.authority?.mode).toBe('pair');
+    expect(result.authority?.members.length).toBe(2);
+    // Members should include at least one domestic model
+    const hasDomestic = result.authority!.members.some(
+      (m) => m.startsWith('kimi-') || m.startsWith('MiniMax-') || m.startsWith('glm-') || m.startsWith('qwen'),
+    );
+    expect(hasDomestic).toBe(true);
+  });
+});
+
+describe('authority runtime degradation', () => {
+  it('degrades to single when all reviewer candidates fail at runtime', async () => {
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      default_mode: 'pair',
+    };
+
+    // All queryModelText calls fail — simulating bridge unavailable for all candidates
+    queryModelTextMock.mockRejectedValue(new Error('Bridge transport unavailable for model'));
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-all-fail',
+      description: 'All candidates fail',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-all-fail',
+      goal: 'test all candidates fail',
+      tasks: [task],
+      execution_order: [['task-all-fail']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-all-fail',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/all-fail-test',
+      branch: 'worker-task-all-fail',
+      sessionId: 'worker-task-all-fail',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.authority?.source).toBe('authority-layer');
+    expect(result.authority?.mode).toBe('single');
+    expect(result.authority?.members).toEqual([]);
+    expect(result.authority?.reviewer_runtime_failures).toBeDefined();
+    expect(result.authority!.reviewer_runtime_failures!.length).toBeGreaterThan(0);
+    expect(result.authority!.reviewer_runtime_failures![0].reason).toBe('bridge_unavailable');
+    expect(result.passed).toBe(false);
+    expect(result.findings[0]?.issue).toContain('All reviewer candidates failed at runtime');
+  });
+
+  it('degrades pair to single when challenger fails at runtime but primary succeeds', async () => {
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      default_mode: 'pair',
+    };
+
+    // Primary review: 1st call succeeds
+    // Challenger review: 2nd call fails (runCrossReview catches and returns failed result)
+    // Challenger fallback (within runCrossReview): 3rd call also fails
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ passed: true, confidence: 0.9, flagged_issues: [], summary: 'primary ok' }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockRejectedValueOnce(new Error('Bridge transport unavailable for challenger'))
+      .mockRejectedValueOnce(new Error('Bridge transport unavailable for challenger fallback'));
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-challenger-fail',
+      description: 'Challenger fails',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-challenger-fail',
+      goal: 'test challenger runtime failure',
+      tasks: [task],
+      execution_order: [['task-challenger-fail']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-challenger-fail',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/challenger-fail-test',
+      branch: 'worker-task-challenger-fail',
+      sessionId: 'worker-task-challenger-fail',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    // Should degrade to single since challenger failed and no other candidates available
+    expect(result.authority?.mode).toBe('single');
+    expect(result.authority?.members.length).toBe(1);
+    expect(result.authority?.reviewer_runtime_failures).toBeDefined();
+    expect(result.authority!.reviewer_runtime_failures!.length).toBeGreaterThan(0);
+    expect(result.passed).toBe(true);
+  });
+
+  it('runtime failure reason is classified correctly', async () => {
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      default_mode: 'pair',
+    };
+
+    queryModelTextMock.mockRejectedValue(new Error('API key not configured for provider "kimi"'));
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-missing-env',
+      description: 'Missing env test',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-missing-env',
+      goal: 'test missing env classification',
+      tasks: [task],
+      execution_order: [['task-missing-env']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-missing-env',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/missing-env-test',
+      branch: 'worker-task-missing-env',
+      sessionId: 'worker-task-missing-env',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.authority?.reviewer_runtime_failures).toBeDefined();
+    expect(result.authority!.reviewer_runtime_failures![0].reason).toBe('missing_env');
+    expect(result.authority!.reviewer_runtime_failures![0].error_hint).toContain('API key not configured');
+  });
+
+  it('legitimate policy filter (complexity capacity) is not confused with runtime failure', async () => {
+    // A model blocked by hard filter should NOT appear in reviewer_runtime_failures
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      default_mode: 'pair',
+    };
+
+    queryModelTextMock
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ passed: true, confidence: 0.9, flagged_issues: [], summary: 'ok' }),
+        tokenUsage: { input: 10, output: 5 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ passed: true, confidence: 0.88, flagged_issues: [], summary: 'ok' }),
+        tokenUsage: { input: 12, output: 6 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-policy-filter',
+      description: 'Policy filter test',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-policy-filter',
+      goal: 'test policy vs runtime distinction',
+      tasks: [task],
+      execution_order: [['task-policy-filter']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-policy-filter',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/policy-filter-test',
+      branch: 'worker-task-policy-filter',
+      sessionId: 'worker-task-policy-filter',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    // No runtime failures on a healthy run
+    expect(result.authority?.reviewer_runtime_failures).toBeUndefined();
+    expect(result.passed).toBe(true);
+    expect(result.authority?.mode).toBe('pair');
+  });
+
+  it('primary candidate fallback succeeds, review completes normally', async () => {
+    // When runCrossReview's internal fallback works, the review succeeds
+    // without degradation. This tests that the pipeline handles
+    // a single-candidate failure gracefully.
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      default_mode: 'single',
+    };
+
+    // First call (primary attempt) fails, second call (internal fallback within runCrossReview) succeeds
+    queryModelTextMock
+      .mockRejectedValueOnce(new Error('BRIDGE_REQUIRED'))
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ passed: true, confidence: 0.85, flagged_issues: [], summary: 'fallback candidate ok' }),
+        tokenUsage: { input: 12, output: 6 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-fallback-ok',
+      description: 'Fallback succeeds',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-fallback-ok',
+      goal: 'test internal fallback succeeds',
+      tasks: [task],
+      execution_order: [['task-fallback-ok']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-fallback-ok',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/fallback-ok-test',
+      branch: 'worker-task-fallback-ok',
+      sessionId: 'worker-task-fallback-ok',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    // Review should succeed via internal fallback
+    expect(result.passed).toBe(true);
+    expect(result.authority?.mode).toBe('single');
+    // No degradation recorded because the fallback worked
+    expect(result.authority?.reviewer_runtime_failures).toBeUndefined();
+  });
+
+  it('authority retry picks next candidate when first candidate fully fails', async () => {
+    // Tests the multi-candidate retry: first candidate fails (both attempts),
+    // next authority candidate succeeds. Degradation is recorded.
+    authorityPolicyMock = {
+      ...defaultAuthorityPolicy,
+      default_mode: 'pair',
+    };
+
+    // 1st: primary attempt fails
+    // 2nd: primary internal fallback also fails (same model via mocked resolveFallback)
+    // 3rd: next candidate succeeds
+    // 4th: challenger succeeds
+    queryModelTextMock
+      .mockRejectedValueOnce(new Error('Bridge unavailable for primary'))
+      .mockRejectedValueOnce(new Error('Bridge unavailable for primary fallback'))
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ passed: true, confidence: 0.85, flagged_issues: [], summary: 'next candidate ok' }),
+        tokenUsage: { input: 12, output: 6 },
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ passed: true, confidence: 0.88, flagged_issues: [], summary: 'challenger ok' }),
+        tokenUsage: { input: 12, output: 6 },
+      });
+
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-multi-candidate',
+      description: 'Multi-candidate retry',
+      category: 'api',
+      complexity: 'medium',
+      estimated_files: ['src/app.ts'],
+      depends_on: [],
+      assigned_model: 'qwen3.5-plus',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-multi-candidate',
+      goal: 'test multi-candidate retry',
+      tasks: [task],
+      execution_order: [['task-multi-candidate']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-multi-candidate',
+      model: 'qwen3.5-plus',
+      worktreePath: '/tmp/multi-candidate-test',
+      branch: 'worker-task-multi-candidate',
+      sessionId: 'worker-task-multi-candidate',
+      output: [],
+      changedFiles: ['src/app.ts'],
+      success: true,
+      duration_ms: 1000,
+      token_usage: { input: 20, output: 10 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    // Review should succeed after retrying next candidate
+    expect(result.passed).toBe(true);
+    expect(result.authority?.mode).toBe('pair');
+    // Runtime failure should be recorded for the first candidate
+    expect(result.authority?.reviewer_runtime_failures).toBeDefined();
+    expect(result.authority!.reviewer_runtime_failures!.length).toBeGreaterThan(0);
+    expect(result.authority!.reviewer_runtime_failures![0].reason).toBe('bridge_unavailable');
   });
 });

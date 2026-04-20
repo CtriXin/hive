@@ -262,6 +262,25 @@ describe('mcp-surface', () => {
     expect(extractRunnableTaskPlan({ plan, planner_error: null })).toEqual(plan);
     expect(extractRunnableTaskPlan({ plan: null, planner_error: 'bad output' })).toBeNull();
     expect(extractRunnableTaskPlan({ nope: true })).toBeNull();
+    expect(extractRunnableTaskPlan({
+      ...plan,
+      cwd: undefined,
+    })).toBeNull();
+    expect(extractRunnableTaskPlan({
+      plan: {
+        ...plan,
+        cwd: '   ',
+      },
+    })).toBeNull();
+  });
+
+  it('falls back to the target path when relPath inputs are invalid', () => {
+    const cwd = makeTempDir();
+    const target = path.join(cwd, '.ai', 'mcp', 'latest-plan.json');
+
+    expect(relPath('', target)).toBe(target);
+    expect(relPath(cwd, '')).toBe('');
+    expect(relPath(cwd, target)).toBe('.ai/mcp/latest-plan.json');
   });
 
   it('prefers the saved latest-plan pointer when resolving the next execute_plan target', () => {

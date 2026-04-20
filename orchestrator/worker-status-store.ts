@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { trackWorkerSnapshot } from './global-run-registry.js';
 import type {
   CollabStatusSnapshot,
   WorkerTranscriptEntry,
@@ -339,6 +340,7 @@ export function updateWorkerStatus(
   };
 
   writeSnapshot(cwd, runId, nextSnapshot);
+  trackWorkerSnapshot(cwd, nextSnapshot);
 
   const shouldLogEvent = previous?.status !== update.status
     || Boolean(update.event_message)

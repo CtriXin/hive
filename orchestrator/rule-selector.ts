@@ -74,17 +74,17 @@ export function selectRuleForTask(
     };
   }
 
-  // Priority 2: File-pattern matching (existing suggestVerificationProfile)
+  // Priority 2: File-pattern matching (deterministic, auto-applied)
   if (task.estimated_files.length > 0) {
     const fileMatch = suggestVerificationProfile(task.estimated_files, rules);
     if (fileMatch) {
       return {
         selected_rule: fileMatch,
-        confidence: 0.6,
-        selection_reason: `File pattern match: task estimated_files matched rule "${fileMatch}" file_patterns.`,
-        basis: 'learning_suggest',
-        evidence_summary: [`Files: ${task.estimated_files.join(', ')} matched rule: ${fileMatch}`],
-        auto_applied: false,
+        confidence: 0.75,
+        selection_reason: `Auto-selected rule "${fileMatch}" via file pattern match on task estimated_files.`,
+        basis: 'learning_auto_pick',
+        evidence_summary: [`Files: ${task.estimated_files.join(', ')} matched rule "${fileMatch}" file_patterns.`],
+        auto_applied: true,
         relevant_lessons: [],
       };
     }

@@ -102,12 +102,14 @@ Instead of burning $5+ per session on Claude Opus for everything, Hive routes ~8
 - **Worker Uncertainty Protocol** — When a worker's confidence drops below threshold, it triggers a structured cross-model discussion instead of guessing. Mandatory pushback prevents echo chambers.
 - **4-Stage Review Cascade** — Progressively expensive review. 70%+ complete at Stage 1-2 using only domestic models (near-free).
 - **Two-Layer Config System** — Global config in `~/.hive/config.json` and per-project overrides in `<repo>/.hive/config.json`.
+- **Browser Decision Surface** — `hive web` exposes a local browser dashboard focused on verdict, blocker, next action, and compact drill-down instead of raw artifacts.
+- **Layered Model Policy Center** — Inspect `Run > Project > Global > Default` precedence, route summaries, and safe-point behavior from the Web surface.
 - **Gateway / Direct Provider Modes** — Run everything through a unified gateway, or resolve each provider directly from `config/providers.json`.
 - **MCP Server Included** — Hive exposes planning, execution, translation, health-check, and reporting tools over MCP.
 
 ## Status
 
-🚧 **Under active development.** Core orchestrator, MCP server, review pipeline, and config system are now in place; docs and workflow polish are still ongoing.
+✅ **Hive v2.1.0 mainline is released.** Core orchestrator, MCP server, review pipeline, Web decision surface, and layered model policy controls are in place; ongoing work continues as incremental follow-up slices.
 
 Want to contribute? See [Contributing](#contributing).
 
@@ -133,6 +135,7 @@ npm install && npm run build
 
 ```bash
 hive
+hive web --port 3100
 hive-config
 ```
 
@@ -166,6 +169,7 @@ Common settings include:
 - `gateway.url` / `gateway.auth_token_env`
 - `providers_path`
 - per-task `overrides`
+- run-scoped overrides in `.ai/runs/<run-id>/model-overrides.json`
 
 ### Runtime Layout
 

@@ -44,6 +44,12 @@ export {
   saveCompactPacket,
   saveWorkspaceCompactPacket,
 } from './compact-packet.js';
+export {
+  loadWebDashboardSnapshot,
+  listWebRuns,
+  submitWebSteeringAction,
+} from './web-dashboard.js';
+export { createDashboardServer, startDashboardServer } from './web-dashboard-server.js';
 export * from './types.js';
 
 // ── CLI entry (only runs when executed directly) ──
@@ -52,6 +58,17 @@ export async function main() {
   await maybePrintUpgradeNotice();
 
   const args = process.argv.slice(2);
+  const aliasMap: Record<string, string> = {
+    s: 'status',
+    w: 'watch',
+    c: 'compact',
+    r: 'resume',
+    ws: 'workers',
+    h: 'help',
+  };
+  if (args[0] && aliasMap[args[0]]) {
+    args[0] = aliasMap[args[0]];
+  }
   const command = args[0];
   const flagsWithValues = new Set([
     '--goal',
@@ -80,6 +97,28 @@ export async function main() {
   const getFlag = (flag: string): string | undefined => {
     const idx = args.indexOf(flag);
     return idx >= 0 ? args[idx + 1] : undefined;
+  };
+  const printUsage = (exitCode: number): never => {
+    console.log('Usage:');
+    console.log('  hive s');
+    console.log('  hive w --once');
+    console.log('  hive c');
+    console.log('  hive r --execute');
+    console.log('');
+    console.log('More:');
+    console.log('  hive run "Build auth system"');
+    console.log('  hive --goal "构建认证系统" --cwd /path --translate');
+    console.log('  hive --plan plan.json --cwd /path');
+    console.log('  hive status');
+    console.log('  hive steer');
+    console.log('  hive workers');
+    console.log('  hive score');
+    console.log('  hive watch [--run-id <id>] [--once] [--interval-ms <ms>]');
+    console.log('  hive compact');
+    console.log('  hive restore');
+    console.log('  hive runs');
+    console.log('  hive web [--port <port>]');
+    process.exit(exitCode);
   };
   const isTerminal = (s: string) => s === 'done' || s === 'blocked';
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -860,7 +899,7 @@ export async function main() {
 
     const { loadWatchData } = await import('./watch-loader.js');
     const { formatWatch } = await import('./watch-format.js');
-    const { listRuns } = await import('./run-store.js');
+    const { listRuns, loadRunResult } = await import('./run-store.js');
 
     const resolvedRunId = runId || await resolveWorkerRunId(cwd) || listRuns(cwd)[0]?.id;
     if (!resolvedRunId) {
@@ -874,7 +913,8 @@ export async function main() {
         console.error(`❌ no watch data for run: ${resolvedRunId}`);
         return false;
       }
-      console.log(formatWatch(data));
+      const result = loadRunResult(cwd, resolvedRunId);
+      console.log(formatWatch(data, undefined, { reviewResults: result?.review_results }));
       return true;
     };
 
@@ -907,25 +947,25 @@ export async function main() {
     return;
   }
 
+  if (command === 'web') {
+    const cwd = getFlag('--cwd') || process.cwd();
+    const port = Number(getFlag('--port') || firstPositionalAfterCommand || 3100);
+    const { startDashboardServer } = await import('./web-dashboard-server.js');
+    startDashboardServer({ cwd, port });
+    return;
+  }
+
+  if (command === 'help') {
+    printUsage(0);
+  }
+
   const goalIdx = args.indexOf('--goal');
   const cwdIdx = args.indexOf('--cwd');
   const planIdx = args.indexOf('--plan');
   const translateFlag = args.includes('--translate');
 
   if (goalIdx < 0 && planIdx < 0) {
-    console.log('Usage:');
-    console.log('  hive run "Build auth system"');
-    console.log('  hive --goal "构建认证系统" --cwd /path --translate');
-    console.log('  hive --plan plan.json --cwd /path');
-    console.log('  hive status');
-    console.log('  hive steer');
-    console.log('  hive workers');
-    console.log('  hive score');
-    console.log('  hive watch [--run-id <id>] [--once] [--interval-ms <ms>]');
-    console.log('  hive compact');
-    console.log('  hive restore');
-    console.log('  hive runs');
-    process.exit(1);
+    printUsage(1);
   }
 
   const cwd = cwdIdx >= 0 ? args[cwdIdx + 1] : process.cwd();

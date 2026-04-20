@@ -23,6 +23,17 @@
         "rule": "For test tasks, prefer splitting into smaller scopes; glm-5-turbo may silently fail on larger test files",
         "severity": "high",
         "created_at": "2026-04-03T12:00:00Z"
+      },
+      {
+        "id": "les-1776094309394-itf5",
+        "run_id": "plan-1776094264200",
+        "task_id": "task-1",
+        "category": "docs",
+        "failure_type": "partial_implementation",
+        "description": "Review failed: Model \"kimi-k2.5\" resolved to non-Claude-compatible base URL \"https://bridge.example.test/openai\". Ex",
+        "rule": "Reduce task scope or increase complexity rating",
+        "severity": "medium",
+        "created_at": "2026-04-13T15:31:49.394Z"
       }
     ],
     "kimi-k2.5": [
@@ -105,12 +116,38 @@
         "severity": "high",
         "created_at": "2026-04-04T21:31:00Z"
       }
+    ],
+    "qwen3.5-plus": [
+      {
+        "id": "les-1776183745892-tvs6",
+        "run_id": "plan-1776183143573",
+        "task_id": "task-b",
+        "category": "tests",
+        "failure_type": "worker_timeout",
+        "description": "Diff truncated at line 293 - cannot see the actual test implementation for provider route fix proof flow that the task describes",
+        "rule": "Avoid assigning large-file edits; split into smaller targeted changes",
+        "severity": "medium",
+        "created_at": "2026-04-14T16:22:25.892Z"
+      },
+      {
+        "id": "les-1776438973697-eq3m",
+        "run_id": "plan-1776438927765",
+        "task_id": "task-a",
+        "category": "CRUD",
+        "failure_type": "partial_implementation",
+        "description": "Logic bug: filters item.done === true, counting completed items instead of open ones. Should filter for !item.done to count open todos.",
+        "rule": "Reduce task scope or increase complexity rating",
+        "severity": "medium",
+        "created_at": "2026-04-17T15:16:13.697Z"
+      }
     ]
   },
   "rules": {
     "glm-5-turbo": [
       "Weak at cross-file API references: when writing tests or code that imports another module, MUST include exact function signatures (name, params, return type) in the task description",
-      "May produce zero output on complex tasks: prefer splitting into smaller scopes, each targeting 1 file with clear acceptance criteria"
+      "May produce zero output on complex tasks: prefer splitting into smaller scopes, each targeting 1 file with clear acceptance criteria",
+      "When assigning test-writing tasks, include exact function signatures from the module under test",
+      "For test tasks, prefer splitting into smaller scopes; glm-5-turbo may silently fail on larger test files"
     ],
     "kimi-k2.5": [
       "Aggressively expands modification scope: ALWAYS include 'ONLY modify these files: [explicit list]' in task prompt. Will modify unrelated files if not constrained.",
@@ -121,6 +158,7 @@
     "gpt-5.4": [
       "Worker may write tool call JSON instead of content: When dispatching benchmark tasks, EXPLICITLY instruct 'use Write tool to save markdown content' and verify output format",
       "File output may be tool_use JSON instead of markdown: Add explicit requirement 'file content must be markdown format, not JSON tool call records'"
-    ]
+    ],
+    "qwen3.5-plus": []
   }
 }

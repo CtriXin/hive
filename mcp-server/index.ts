@@ -174,6 +174,81 @@ function parseJsonBlock<T>(raw: string): T {
   throw new Error('Planner did not return valid JSON');
 }
 
+function validateExecutePlanArgs(planJson?: string, planPath?: string): string | null {
+  const hasPlanJson = typeof planJson === 'string' && planJson.trim().length > 0;
+  const hasPlanPath = typeof planPath === 'string' && planPath.trim().length > 0;
+  if (hasPlanJson && hasPlanPath) {
+    return 'execute_plan accepts either plan_json or plan_path, not both.';
+  }
+  if (planJson !== undefined && !hasPlanJson) {
+    return 'execute_plan plan_json must be a non-empty JSON string.';
+  }
+  if (planPath !== undefined && !hasPlanPath) {
+    return 'execute_plan plan_path must be a non-empty file path.';
+  }
+  return null;
+}
+
+function resolveExecutePlanFromPayload(payload: unknown): { plan: TaskPlan | null; error?: string } {
+  const runnablePlan = extractRunnableTaskPlan(payload);
+  if (!runnablePlan) {
+    return {
+      plan: null,
+      error: 'execute_plan input does not contain a runnable plan object.',
+    };
+  }
+  if (!runnablePlan.cwd || typeof runnablePlan.cwd !== 'string' || runnablePlan.cwd.trim().length === 0) {
+    return {
+      plan: null,
+      error: 'execute_plan plan is missing cwd. Re-run plan_tasks or provide a TaskPlan with a non-empty cwd.',
+    };
+  }
+  return { plan: runnablePlan };
+}
+
+function loadExecutePlanFromJson(planJson: string): { plan: TaskPlan | null; error?: string } {
+  try {
+    const parsed = JSON.parse(planJson);
+    return resolveExecutePlanFromPayload(parsed);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      plan: null,
+      error: `execute_plan plan_json is not valid JSON: ${message}`,
+    };
+  }
+}
+
+function loadExecutePlanFromPath(effectiveCwd: string, planPath: string): { plan: TaskPlan | null; error?: string; resolvedPath?: string } {
+  if (planPath.endsWith('.md')) {
+    return {
+      plan: null,
+      error: `execute_plan expects runnable JSON, not markdown plan notes (${planPath}). Use .ai/mcp/${LATEST_PLAN_ARTIFACT} or run execute_plan with no args after plan_tasks.`,
+    };
+  }
+  const resolvedPath = path.isAbsolute(planPath) ? planPath : path.resolve(effectiveCwd, planPath);
+  if (!fs.existsSync(resolvedPath)) {
+    return {
+      plan: null,
+      error: `execute_plan plan_path not found: ${planPath}`,
+      resolvedPath,
+    };
+  }
+  try {
+    const raw = fs.readFileSync(resolvedPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const resolved = resolveExecutePlanFromPayload(parsed);
+    return { ...resolved, resolvedPath };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      plan: null,
+      error: `execute_plan could not read ${planPath} as JSON: ${message}`,
+      resolvedPath,
+    };
+  }
+}
+
 function startExecutePlanHeartbeat(
   cwd: string,
   runId: string,
@@ -570,43 +645,33 @@ server.tool(
   },
   async ({ plan_json, plan_path, report_language, resume_plan_id }) => {
     const effectiveCwd = process.cwd();
+    const argError = validateExecutePlanArgs(plan_json, plan_path);
+    if (argError) {
+      return {
+        content: [{ type: 'text', text: argError }],
+        isError: true,
+      };
+    }
+
     let plan: TaskPlan;
     if (plan_json) {
-      const parsed = JSON.parse(plan_json);
-      const runnablePlan = extractRunnableTaskPlan(parsed);
-      if (!runnablePlan) {
+      const resolved = loadExecutePlanFromJson(plan_json);
+      if (!resolved.plan) {
         return {
-          content: [{
-            type: 'text',
-            text: 'execute_plan received plan_json, but it does not contain a runnable plan.',
-          }],
+          content: [{ type: 'text', text: resolved.error || 'execute_plan could not load plan_json.' }],
           isError: true,
         };
       }
-      plan = runnablePlan;
+      plan = resolved.plan;
     } else if (plan_path) {
-      if (plan_path.endsWith('.md')) {
+      const resolved = loadExecutePlanFromPath(effectiveCwd, plan_path);
+      if (!resolved.plan) {
         return {
-          content: [{
-            type: 'text',
-            text: `execute_plan expects runnable JSON, not markdown plan notes (${plan_path}). Use .ai/mcp/${LATEST_PLAN_ARTIFACT} or run execute_plan with no args after plan_tasks.`,
-          }],
+          content: [{ type: 'text', text: resolved.error || `execute_plan could not load ${plan_path}.` }],
           isError: true,
         };
       }
-      const raw = fs.readFileSync(path.resolve(effectiveCwd, plan_path), 'utf-8');
-      const parsed = JSON.parse(raw);
-      const runnablePlan = extractRunnableTaskPlan(parsed);
-      if (!runnablePlan) {
-        return {
-          content: [{
-            type: 'text',
-            text: `execute_plan found ${plan_path}, but it does not contain a runnable plan. Re-run plan_tasks first.`,
-          }],
-          isError: true,
-        };
-      }
-      plan = runnablePlan;
+      plan = resolved.plan;
     } else {
       const latestPlanPath = resolvePreferredLatestPlanArtifact(effectiveCwd);
       if (!latestPlanPath) {
@@ -618,28 +683,36 @@ server.tool(
           isError: true,
         };
       }
-      const raw = fs.readFileSync(latestPlanPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      const runnablePlan = extractRunnableTaskPlan(parsed);
-      if (!runnablePlan) {
+      const resolved = loadExecutePlanFromPath(effectiveCwd, latestPlanPath);
+      if (!resolved.plan) {
         return {
           content: [{
             type: 'text',
-            text: `execute_plan found .ai/mcp/${LATEST_PLAN_ARTIFACT}, but it does not contain a runnable plan. Re-run plan_tasks first.`,
+            text: resolved.error || `execute_plan found .ai/mcp/${LATEST_PLAN_ARTIFACT}, but it does not contain a runnable plan. Re-run plan_tasks first.`,
           }],
           isError: true,
         };
       }
-      plan = runnablePlan;
+      plan = resolved.plan;
     }
     const registry = new ModelRegistry();
-    const config = loadConfig(plan.cwd);
+    const planCwd = plan.cwd;
+    if (!planCwd || typeof planCwd !== 'string' || planCwd.trim().length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: 'execute_plan plan is missing cwd. Re-run plan_tasks or provide a TaskPlan with a non-empty cwd.',
+        }],
+        isError: true,
+      };
+    }
+    const config = loadConfig(planCwd);
     server.sendLoggingMessage({
       level: 'info',
       logger: 'hive',
-      data: `[execute_plan] run=${plan.id} start tasks=${plan.tasks.length} cwd=${plan.cwd}`,
+      data: `[execute_plan] run=${plan.id} start tasks=${plan.tasks.length} cwd=${planCwd}`,
     });
-    const stopHeartbeat = startExecutePlanHeartbeat(plan.cwd, plan.id);
+    const stopHeartbeat = startExecutePlanHeartbeat(planCwd, plan.id);
     let dispatchResult;
     try {
       dispatchResult = await dispatchBatch(plan, registry, resume_plan_id, { recordBudget: false });
@@ -682,7 +755,7 @@ server.tool(
       if (review.passed) {
         const task = plan.tasks.find(t => t.id === wr.taskId);
         const msg = `task ${wr.taskId}: ${task?.description.slice(0, 80) || wr.taskId}`;
-        const mr = commitAndMergeWorktree(wr.worktreePath, wr.branch, msg, plan.cwd);
+        const mr = commitAndMergeWorktree(wr.worktreePath, wr.branch, msg, planCwd);
         mergeResults.push({ taskId: wr.taskId, ...mr });
       } else {
         mergeResults.push({ taskId: wr.taskId, merged: false, error: 'review not passed — worktree kept for inspection' });
@@ -763,13 +836,13 @@ server.tool(
       claude_equivalent_usd: claudeEquivalent,
       savings_usd: claudeEquivalent - actualCost,
     };
-    const budgetStatus = recordSpending(plan.cwd, actualCost);
+    const budgetStatus = recordSpending(planCwd, actualCost);
     orchestratorResult.budget_status = budgetStatus ?? undefined;
     orchestratorResult.budget_warning = budgetStatus?.warning ?? null;
 
     // Persist final result to disk
     const { saveFinalResult } = await import('../orchestrator/result-store.js');
-    saveFinalResult(plan.id, plan.cwd, orchestratorResult);
+    saveFinalResult(plan.id, planCwd, orchestratorResult);
 
     // Resolve reporter model from tiers config
     const reporterModel = resolveTierModel(
@@ -790,19 +863,19 @@ server.tool(
 
     // Persist execution snapshot for run_status
     persistMcpExecutionSnapshot(plan, orchestratorResult);
-    const reportPath = writeMcpTextArtifact(plan.cwd, 'execute-plan-report', report);
+    const reportPath = writeMcpTextArtifact(planCwd, 'execute-plan-report', report);
     server.sendLoggingMessage({
       level: 'info',
       logger: 'hive',
-      data: `[execute_plan] run=${plan.id} done report=${relPath(plan.cwd, reportPath)}`,
+      data: `[execute_plan] run=${plan.id} done report=${relPath(planCwd, reportPath)}`,
     });
-    const compactPacket = loadCompactPacket(plan.cwd, plan.id);
+    const compactPacket = loadCompactPacket(planCwd, plan.id);
     return {
       content: [{
         type: 'text',
         text: summarizeExecutionCard(plan, orchestratorResult, {
           mergeResults,
-          reportPath: relPath(plan.cwd, reportPath),
+          reportPath: relPath(planCwd, reportPath),
           compactPacket,
         }),
       }],

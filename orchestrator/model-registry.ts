@@ -15,8 +15,8 @@ import type { TaskFingerprint } from './task-fingerprint.js';
 import { buildTaskFingerprint } from './task-fingerprint.js';
 import { getModelForTask, loadConfig } from './hive-config.js';
 import { resolveProjectPath } from './project-paths.js';
-import { resolveProvider as resolveConfiguredProvider } from './provider-resolver.js';
-import { loadMmsRoutes, resolveModelRoute } from './mms-routes-loader.js';
+import { resolveProvider as resolveConfiguredProvider, getAllProviders } from './provider-resolver.js';
+import { isClaudeCodeDirectRoute, loadMmsRoutes, resolveModelRoute } from './mms-routes-loader.js';
 import type { StaticModelConfig, StaticClaudeTierConfig, StaticCapabilitiesConfig } from './model-defaults.js';
 import { normalizeModelId, titleCaseModelId, inferMaxComplexity, guessProviderFamily } from './model-defaults.js';
 import {
@@ -274,8 +274,12 @@ export class ModelRegistry {
       role: 'planning', domains: ['typescript', 'architecture'], complexity: 'high',
       needs_strict_boundary: true, needs_fast_turnaround: false, is_repair_round: false,
     }).filter((c) => !c.model.startsWith('claude-'));
-    return ranked.find((c) => !c.blocked_by?.length)?.model
-      || this.firstKnownModel(['qwen3-max', 'kimi-for-coding', 'glm-5-turbo']);
+    const directDomestic = ranked.find((c) => !c.blocked_by?.length)?.model;
+    if (directDomestic) return directDomestic;
+
+    const claudeFallback = this.getClaudeTier('sonnet')?.id || this.getClaudeTier('opus')?.id;
+    return claudeFallback
+      || this.firstKnownModel(['claude-sonnet-4-6', 'qwen3-max', 'kimi-for-coding', 'glm-5-turbo']);
   }
 
   selectForArbitration(): string {
@@ -292,8 +296,12 @@ export class ModelRegistry {
       role: 'review', domains: ['typescript', 'architecture', 'integration'], complexity: 'high',
       needs_strict_boundary: true, needs_fast_turnaround: false, is_repair_round: false,
     }).filter((c) => !c.model.startsWith('claude-'));
-    return ranked.find((c) => !c.blocked_by?.length)?.model
-      || this.firstKnownModel(['qwen3-max', 'kimi-for-coding', 'kimi-k2.5']);
+    const directDomestic = ranked.find((c) => !c.blocked_by?.length)?.model;
+    if (directDomestic) return directDomestic;
+
+    const claudeFallback = this.getClaudeTier('sonnet')?.id || this.getClaudeTier('opus')?.id;
+    return claudeFallback
+      || this.firstKnownModel(['claude-sonnet-4-6', 'qwen3-max', 'kimi-for-coding', 'kimi-k2.5']);
   }
 
   selectForReporter(): string {
@@ -420,16 +428,42 @@ export class ModelRegistry {
 
   // ── Provider resolution ──
 
+  /**
+   * Check if a model has a resolvable provider path.
+   *
+   * Resolution chain:
+   * 1. MMS route exists AND is direct/compat/native → resolvable
+   * 2. MMS route exists but requires bridge → check if model also has a
+   *    provider entry in providers.json. If so, the model is still resolvable
+   *    through the provider path (bridge transport is handled at runtime).
+   * 3. No MMS route → fall back to provider existence check
+   * 4. No provider entry → truly unresolvable
+   *
+   * This distinction matters: kimi-k2.5 and MiniMax-M2.5 have MMS routes that
+   * require bridge mode, but they also have valid provider configs (kimi,
+   * minimax-cn). They should NOT be hard-filtered from authority candidates.
+   */
   canResolveForModel(modelId: string): boolean {
     const cacheKey = `model:${modelId}`;
     const cached = this.providerResolutionCache.get(cacheKey);
     if (cached !== undefined) return cached;
 
     const mmsRoute = resolveModelRoute(modelId);
-    if (mmsRoute) { this.providerResolutionCache.set(cacheKey, true); return true; }
+    if (mmsRoute) {
+      if (isClaudeCodeDirectRoute(mmsRoute)) {
+        this.providerResolutionCache.set(cacheKey, true);
+        return true;
+      }
+      // MMS route exists but requires bridge. Fall through to provider check —
+      // if the model has a valid provider entry, it's resolvable.
+    }
 
     const model = this.models.get(modelId);
-    if (model) return this.canResolveProvider(model.provider);
+    if (model) {
+      const ok = this.canResolveProvider(model.provider);
+      this.providerResolutionCache.set(cacheKey, ok);
+      return ok;
+    }
 
     this.providerResolutionCache.set(cacheKey, false);
     return false;
@@ -496,11 +530,33 @@ export class ModelRegistry {
     return [...this.models.keys()][0] || '';
   }
 
+  /**
+   * Check if a provider can be resolved for a model.
+   *
+   * Two-tier check:
+   * 1. Provider exists in config → resolvable (runtime env issues like missing
+   *    API keys will fail at call time, not here).
+   * 2. Provider doesn't exist at all → truly unresolvable.
+   *
+   * This distinction matters: kimi-k2.5 (provider "kimi") and MiniMax-M2.5
+   * (provider "minimax-cn") have valid provider configs but may lack runtime
+   * env vars. They should NOT be hard-filtered from authority candidates.
+   */
   private canResolveProvider(providerId: string): boolean {
     const cached = this.providerResolutionCache.get(providerId);
     if (cached !== undefined) return cached;
-    let ok = true;
-    try { resolveConfiguredProvider(providerId); } catch { ok = false; }
+
+    // First check: does the provider exist in config?
+    const providers = getAllProviders();
+    const providerExists = Object.prototype.hasOwnProperty.call(providers, providerId);
+
+    // Also check MMS routes — if a model has a direct MMS route, it's resolvable
+    // even without a providers.json entry
+    const hasMmsRoute = (() => {
+      try { return resolveModelRoute(providerId) !== null; } catch { return false; }
+    })();
+
+    const ok = providerExists || hasMmsRoute;
     this.providerResolutionCache.set(providerId, ok);
     return ok;
   }

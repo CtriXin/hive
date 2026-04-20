@@ -10,11 +10,8 @@
  * - Merge updates into the global user profile store
  */
 
-import type { UserProfileEvidence, UserProfileStore, UserProfileDimension } from './user-profile-store.js';
+import type { UserProfileEvidence, UserProfileDimension } from './user-profile-store.js';
 import { initUserProfile, upsertUserProfile, saveUserProfile } from './user-profile-store.js';
-
-// TODO: wire in actual model call via sdk-query-safe or hive-discuss ModelCaller
-// For the skeleton, we expose the interface and a placeholder implementation.
 
 export interface ExtractorInput {
   runId: string;
@@ -75,13 +72,151 @@ function buildPrompt(input: ExtractorInput): string {
     .replace('{{{MODE}}}', input.executionMode || 'safe');
 }
 
-/**
- * Placeholder: call a cheap model to extract preferences.
- */
-async function callExtractorModel(_prompt: string): Promise<ExtractorOutput> {
-  // TODO: implement with safeQuery or a dedicated discuss-tier model caller.
-  // Return empty for now so the skeleton compiles and tests pass.
-  return { updates: [] };
+const VALID_DIMENSIONS: UserProfileDimension[] = [
+  'communication_style',
+  'tech_stack',
+  'focus_project',
+  'recent_blocker',
+  'special_habit',
+];
+
+const EXTRACTOR_MODEL = 'glm-5-turbo';
+const EXTRACTOR_TIMEOUT_MS = 30_000;
+
+function clampConfidence(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function extractJsonObject(text: string): string | null {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]?.trim()) {
+    return fenced[1].trim();
+  }
+
+  const braceStart = text.indexOf('{');
+  if (braceStart < 0) {
+    return null;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = braceStart; i < text.length; i += 1) {
+    const char = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(braceStart, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function normalizeUpdate(raw: unknown): ExtractorOutput['updates'][number] | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const candidate = raw as Record<string, unknown>;
+  const dimension = typeof candidate.dimension === 'string'
+    ? candidate.dimension.trim()
+    : '';
+  if (!VALID_DIMENSIONS.includes(dimension as UserProfileDimension)) {
+    return null;
+  }
+
+  const summary = typeof candidate.summary === 'string'
+    ? candidate.summary.trim()
+    : '';
+  const signal = typeof candidate.signal === 'string'
+    ? candidate.signal.trim()
+    : '';
+  if (!summary || !signal) {
+    return null;
+  }
+
+  const confidence = Number(candidate.confidence);
+  if (!Number.isFinite(confidence)) {
+    return null;
+  }
+
+  const detail = typeof candidate.detail === 'string' && candidate.detail.trim()
+    ? candidate.detail.trim()
+    : undefined;
+
+  return {
+    dimension: dimension as UserProfileDimension,
+    summary,
+    detail,
+    confidence: clampConfidence(confidence),
+    signal,
+  };
+}
+
+async function callExtractorModel(prompt: string): Promise<ExtractorOutput> {
+  try {
+    const { safeQuery, extractTextFromMessages } = await import('./sdk-query-safe.js');
+    const { buildSdkEnv } = await import('./project-paths.js');
+    const { resolveProviderForModel } = await import('./provider-resolver.js');
+
+    let env: Record<string, string>;
+    try {
+      const resolved = resolveProviderForModel(EXTRACTOR_MODEL);
+      env = buildSdkEnv(EXTRACTOR_MODEL, resolved.baseUrl, resolved.apiKey);
+    } catch {
+      env = buildSdkEnv(EXTRACTOR_MODEL);
+    }
+
+    const result = await safeQuery({
+      prompt,
+      options: { cwd: process.cwd(), maxTurns: 1, env, model: EXTRACTOR_MODEL },
+      timeoutMs: EXTRACTOR_TIMEOUT_MS,
+    });
+    const text = extractTextFromMessages(result.messages);
+    return parseExtractorText(text);
+  } catch {
+    return { updates: [] };
+  }
+}
+
+export function parseExtractorText(text: string): ExtractorOutput {
+  try {
+    const candidate = extractJsonObject(text);
+    if (!candidate) {
+      return { updates: [] };
+    }
+
+    const parsed = JSON.parse(candidate) as { updates?: unknown };
+    if (!Array.isArray(parsed?.updates)) {
+      return { updates: [] };
+    }
+
+    return {
+      updates: parsed.updates
+        .map((item) => normalizeUpdate(item))
+        .filter((item): item is ExtractorOutput['updates'][number] => !!item),
+    };
+  } catch {
+    return { updates: [] };
+  }
 }
 
 /**

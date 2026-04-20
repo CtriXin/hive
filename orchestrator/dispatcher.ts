@@ -13,7 +13,11 @@ import {
   type ProviderFailureSubtype,
 } from './types.js';
 import { getTaskExecutionContract } from './task-contract.js';
-import { resolveProvider, quickPing } from './provider-resolver.js';
+import {
+  isUnsupportedMmsTransportError,
+  resolveProvider,
+  quickPing,
+} from './provider-resolver.js';
 import { triggerDiscussion } from './discuss-bridge.js';
 import { createWorktree, getWorktreeDiff } from './worktree-manager.js';
 import { buildContextPacket, formatContextForWorker } from './context-recycler.js';
@@ -142,6 +146,167 @@ function resolvePinnedProvider(
     : policy.providerByFamily.non_gpt;
 }
 
+function buildFallbackTask(config: WorkerConfig): SubTask {
+  return {
+    id: config.taskId,
+    description: config.prompt.slice(0, 200),
+    complexity: 'medium',
+    category: 'general',
+    assigned_model: config.model,
+    assignment_reason: '',
+    estimated_files: [],
+    acceptance_criteria: [],
+    discuss_threshold: config.discussThreshold,
+    depends_on: [],
+    review_scale: 'auto',
+  };
+}
+
+interface ResolvedWorkerFallback {
+  model: string;
+  provider: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
+function isHardPingFailure(error?: string): boolean {
+  if (!error) return false;
+  return /BRIDGE_REQUIRED|401|403|404|auth|forbidden|unauthorized|invalid/i.test(error);
+}
+
+async function resolveRunnableFallback(
+  failedModel: string,
+  failureType: 'rate_limit' | 'server_error' | 'quality_fail',
+  task: SubTask,
+  cwd: string,
+  registry: ReturnType<typeof getRegistry>,
+  options: {
+    providerHealthDir?: string;
+    excludeModels?: string[];
+    excludeProviders?: string[];
+    pingTimeoutMs?: number;
+    allowClaudeFallback?: boolean;
+    allowSoftPingFailure?: boolean;
+  } = {},
+): Promise<ResolvedWorkerFallback | null> {
+  const hiveConfig = loadConfig(cwd);
+  const excludedModels = new Set<string>([failedModel, ...(options.excludeModels || [])]);
+  const excludedProviders = new Set<string>(options.excludeProviders || []);
+  const healthStore = options.providerHealthDir
+    ? new ProviderHealthStore(options.providerHealthDir)
+    : null;
+  let softFallback: ResolvedWorkerFallback | null = null;
+
+  const tryCandidate = async (candidate: string, attempt: number): Promise<ResolvedWorkerFallback | null> => {
+    if (!candidate || excludedModels.has(candidate)) return null;
+    const provider = registry.get(candidate)?.provider || candidate;
+    if (excludedProviders.has(provider)) {
+      excludedModels.add(candidate);
+      return null;
+    }
+
+    if (healthStore) {
+      const { avoid, state } = healthStore.shouldAvoid(provider);
+      if (avoid) {
+        healthStore.recordDecision({
+          provider,
+          failure_subtype: 'provider_unavailable',
+          action: 'block',
+          action_reason: `fallback candidate ${candidate} skipped: provider breaker ${state}`,
+          dispatch_affected: true,
+          backoff_ms: 0,
+          attempt,
+          timestamp: Date.now(),
+        });
+        excludedModels.add(candidate);
+        excludedProviders.add(provider);
+        return null;
+      }
+    }
+
+    try {
+      const resolved = resolveProvider(provider, candidate);
+      const ping = await quickPing(candidate, options.pingTimeoutMs ?? 5000);
+      if (!ping.ok) {
+        healthStore?.recordDecision({
+          provider,
+          failure_subtype: 'provider_unavailable',
+          action: 'fallback',
+          action_reason: `fallback candidate ${candidate} preflight failed: ${ping.error || 'unknown'}`,
+          dispatch_affected: true,
+          backoff_ms: 0,
+          attempt,
+          timestamp: Date.now(),
+        });
+        if (options.allowSoftPingFailure && !isHardPingFailure(ping.error)) {
+          softFallback ||= {
+            model: candidate,
+            provider,
+            baseUrl: resolved.baseUrl,
+            apiKey: resolved.apiKey,
+          };
+          return null;
+        }
+        excludedModels.add(candidate);
+        excludedProviders.add(provider);
+        return null;
+      }
+      return {
+        model: candidate,
+        provider,
+        baseUrl: resolved.baseUrl,
+        apiKey: resolved.apiKey,
+      };
+    } catch {
+      excludedModels.add(candidate);
+      excludedProviders.add(provider);
+      return null;
+    }
+  };
+
+  try {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidate = resolveFallback(
+        failedModel,
+        failureType,
+        task,
+        hiveConfig,
+        registry,
+        {
+          excludeModels: [...excludedModels],
+          excludeProviders: [...excludedProviders],
+        },
+      );
+      if (!candidate || excludedModels.has(candidate)) {
+        break;
+      }
+
+      const resolved = await tryCandidate(candidate, attempt + 1);
+      if (resolved) return resolved;
+    }
+
+    if (options.allowClaudeFallback) {
+      const claudeCandidates = [
+        registry.getClaudeTier?.('sonnet')?.id,
+        registry.getClaudeTier?.('opus')?.id,
+        'claude-sonnet-4-6',
+        'claude-opus-4-6',
+      ].filter((candidate): candidate is string => Boolean(candidate));
+      for (const [index, candidate] of claudeCandidates.entries()) {
+        const resolved = await tryCandidate(candidate, 100 + index);
+        if (resolved) return resolved;
+      }
+    }
+    if (softFallback) {
+      return softFallback;
+    }
+  } finally {
+    healthStore?.save();
+  }
+
+  return null;
+}
+
 export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   const startTime = Date.now();
   let worktreePath = config.cwd;
@@ -166,10 +331,59 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
 
   ensureStageModelAllowed('executor', currentModel);
 
-  // 1. Resolve provider (MMS route → providers.json fallback)
-  let { baseUrl, apiKey } = resolveProvider(currentProvider, config.model);
   let providerFailureSubtype: ProviderFailureSubtype | undefined;
   let providerFallbackUsed = false;
+  const failedProviders = new Set<string>();
+  const attemptedModels = new Set<string>([config.model]);
+
+  // Phase 8A: Initialize provider health store for this run
+  const healthStore = config.providerHealthDir
+    ? new ProviderHealthStore(config.providerHealthDir)
+    : null;
+
+  // 1. Resolve provider (MMS route → providers.json fallback)
+  let baseUrl: string;
+  let apiKey: string;
+  try {
+    ({ baseUrl, apiKey } = resolveProvider(currentProvider, config.model));
+  } catch (err) {
+    if (!isUnsupportedMmsTransportError(err)) {
+      throw err;
+    }
+    const registry = getRegistry();
+    const fallback = await resolveRunnableFallback(
+      config.model,
+      'server_error',
+      buildFallbackTask(config),
+      config.cwd,
+      registry,
+      {
+        providerHealthDir: config.providerHealthDir,
+        excludeModels: [...attemptedModels],
+        allowClaudeFallback: true,
+        allowSoftPingFailure: true,
+      },
+    );
+    if (!fallback) {
+      throw err;
+    }
+    ({ baseUrl, apiKey } = fallback);
+    currentModel = fallback.model;
+    currentProvider = fallback.provider;
+    attemptedModels.add(fallback.model);
+    providerFallbackUsed = true;
+    healthStore?.recordDecision({
+      provider: config.provider,
+      failure_subtype: 'provider_unavailable',
+      action: 'fallback',
+      action_reason: `route requires bridge transport; fallback to ${fallback.model}`,
+      dispatch_affected: true,
+      fallback_provider: fallback.provider,
+      backoff_ms: 0,
+      attempt: 1,
+      timestamp: Date.now(),
+    });
+  }
 
   const reportStatus = (
     status: 'starting' | 'running' | 'discussing' | 'completed' | 'failed',
@@ -304,11 +518,6 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     },
     onMessage: handleLiveMessage,
   };
-
-  // Phase 8A: Initialize provider health store for this run
-  const healthStore = config.providerHealthDir
-    ? new ProviderHealthStore(config.providerHealthDir)
-    : null;
   const recordProviderDecision = (
     provider: string,
     failureSubtype: ProviderFailureSubtype,
@@ -336,9 +545,18 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
 
   let result;
   const requestedModel = config.model;
-  const requestedProvider = currentProvider;
+  const requestedProvider = pinnedProvider || config.provider;
 
+  // Phase 8B: Wrap all provider calls in try-finally for health store persistence
   try {
+    // ── Same-provider bounded retry loop ──
+    // Max 2 retries after original attempt (3 total).
+    // Non-retryable failures block immediately.
+    // Retry budget exhausted → proceed to channel/model fallback.
+    let retryAttempt = 0;
+    let primaryErrorType: ProviderFailureSubtype | undefined;
+
+  while (!result) {
     try {
       result = await safeQuery(queryOpts);
       assertNoProviderApiError(result);
@@ -347,153 +565,166 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       }
     } catch (err: any) {
       const errorType = classifyError(err);
-      providerFailureSubtype = errorType;
 
-      if (healthStore) {
-        healthStore.recordFailure(currentProvider, errorType);
+      // First failure: record it
+      if (retryAttempt === 0) {
+        providerFailureSubtype = errorType;
+        if (healthStore) {
+          healthStore.recordFailure(currentProvider, errorType);
+        }
+        failedProviders.add(currentProvider);
       }
 
-      const retryInfo = decideRetryAction(errorType, 1);
+      const retryInfo = decideRetryAction(errorType, retryAttempt + 1);
       recordProviderDecision(currentProvider, errorType, retryInfo.action, retryInfo.reason, {
         dispatchAffected: retryInfo.action !== 'immediate_retry',
         backoffMs: retryInfo.backoff_ms,
-        attempt: 1,
+        attempt: retryAttempt + 1,
       });
+
+      // Non-retryable or block: throw immediately
       if (retryInfo.action === 'block') {
+        primaryErrorType = errorType;
         throw new Error(`Provider failure [${errorType}]: ${retryInfo.reason}`);
       }
 
-      if (retryInfo.backoff_ms > 0) {
-        console.error(`⏱️ Provider ${currentProvider} [${errorType}]: ${retryInfo.reason}`);
-        await new Promise((r) => setTimeout(r, Math.min(retryInfo.backoff_ms, 5000)));
-      }
-
+      // Retry budget exhausted: record and break to fallback
       if (retryInfo.action === 'cooldown') {
-        console.error(`⛔ Provider ${currentProvider} [${errorType}]: ${retryInfo.reason} — skipping fallback`);
+        console.error(`⛔ Provider ${currentProvider} [${errorType}]: ${retryInfo.reason} — proceeding to fallback`);
+        primaryErrorType = errorType;
+        break;
       }
 
-      const disableChannelFallback = !!config.benchmarkRoutingPolicy?.disable_channel_fallback;
-      const disableModelFallback = !!config.benchmarkRoutingPolicy?.disable_model_fallback;
-
-      if (!disableChannelFallback && retryInfo.action !== 'cooldown') {
-        const channelFallbacks = getModelFallbackRoutes(currentModel);
-        for (const fb of channelFallbacks) {
-          if (fb.provider_id === currentProvider) continue;
-
-          if (healthStore) {
-            const { avoid } = healthStore.shouldAvoid(fb.provider_id);
-            if (avoid) {
-              console.error(`  ⛔ Skipping channel fallback to ${fb.provider_id} (circuit breaker open)`);
-              continue;
-            }
-          }
-
-          try {
-            console.error(`⚠️ ${currentModel}@${currentProvider} ${errorType}, trying channel ${fb.provider_id}`);
-            const fbUrl = fb.anthropic_base_url;
-            result = await safeQuery({
-              prompt: fullPrompt,
-              options: {
-                cwd: worktreePath,
-                model: currentModel,
-                env: buildSdkEnv(currentModel, fbUrl, fb.api_key),
-                maxTurns: config.maxTurns,
-              },
-              onMessage: handleLiveMessage,
-            });
-            assertNoProviderApiError(result);
-            providerFallbackUsed = true;
-            currentProvider = fb.provider_id;
-            baseUrl = fbUrl;
-            apiKey = fb.api_key;
-            recordProviderDecision(requestedProvider, errorType, 'fallback', `channel fallback to ${fb.provider_id}`, {
-              dispatchAffected: true,
-              fallbackProvider: fb.provider_id,
-              attempt: 1,
-            });
-
-            if (healthStore) {
-              healthStore.recordSuccess(fb.provider_id);
-            }
-            break;
-          } catch {
-            if (healthStore) {
-              healthStore.recordFailure(fb.provider_id, errorType);
-            }
-          }
-        }
+      // Apply backoff before retry
+      if (retryInfo.backoff_ms > 0) {
+        const cappedDelay = Math.min(retryInfo.backoff_ms, 5000);
+        console.error(`⏱️ Provider ${currentProvider} [${errorType}]: ${retryInfo.reason} — retry ${retryAttempt + 1} after ${cappedDelay}ms`);
+        await new Promise((r) => setTimeout(r, cappedDelay));
       }
 
-      if (!result && disableModelFallback) {
-        throw new Error(`No-fallback benchmark mode: ${currentModel}@${currentProvider} failed with ${errorType}`);
-      }
+      retryAttempt++;
+    }
+  }
 
-      if (!result) {
-        const hiveConfig = loadConfig(worktreePath);
-        const registry = getRegistry();
-        const taskForFallback: SubTask = {
-          id: config.taskId,
-          description: config.prompt.slice(0, 200),
-          complexity: 'medium',
-          category: 'general',
-          assigned_model: config.model,
-          assignment_reason: '',
-          estimated_files: [],
-          acceptance_criteria: [],
-          discuss_threshold: config.discussThreshold,
-          depends_on: [],
-          review_scale: 'auto',
-        };
+  // ── Channel fallback (only after same-provider retry budget exhausted) ──
+  if (!result) {
+    const disableChannelFallback = !!config.benchmarkRoutingPolicy?.disable_channel_fallback;
+    const disableModelFallback = !!config.benchmarkRoutingPolicy?.disable_model_fallback;
+    const fallbackErrorType = primaryErrorType ?? 'unknown_provider_failure';
 
-        const fallbackModel = resolveFallback(config.model, toLegacyFailureType(errorType), taskForFallback, hiveConfig, registry);
-        const fallbackInfo = registry.get(fallbackModel);
-        const fallbackProvider = fallbackInfo?.provider || fallbackModel;
+    if (!disableChannelFallback) {
+      const channelFallbacks = getModelFallbackRoutes(currentModel);
+      for (const fb of channelFallbacks) {
+        if (fb.provider_id === currentProvider) continue;
+        if (failedProviders.has(fb.provider_id)) continue;
 
         if (healthStore) {
-          const { avoid, state: fbState } = healthStore.shouldAvoid(fallbackProvider);
+          const { avoid } = healthStore.shouldAvoid(fb.provider_id);
           if (avoid) {
-            const reason = `${fallbackProvider} circuit breaker ${fbState}`;
-            recordProviderDecision(currentProvider, errorType, 'block', `model fallback blocked: ${reason}`, {
-              dispatchAffected: true,
-              attempt: 1,
-            });
-            throw new Error(`Model fallback blocked: ${fallbackModel} (${reason})`);
+            console.error(`  ⛔ Skipping channel fallback to ${fb.provider_id} (circuit breaker open)`);
+            continue;
           }
         }
 
-        const fallback = resolveProvider(fallbackProvider, fallbackModel);
-        currentModel = fallbackModel;
-        currentProvider = fallbackProvider;
-        providerFallbackUsed = true;
-        ensureStageModelAllowed('executor', currentModel);
-        baseUrl = fallback.baseUrl;
-        apiKey = fallback.apiKey;
-        recordProviderDecision(requestedProvider, errorType, 'fallback', `model fallback to ${fallbackModel}`, {
-          dispatchAffected: true,
-          fallbackProvider,
-          attempt: 1,
-        });
-        console.error(`⚠️ ${config.model} all channels failed (${errorType}), falling back to model ${fallbackModel}`);
-        reportStatus('running', {
-          active_model: currentModel,
-          provider: currentProvider,
-          task_summary: `Falling back to ${fallbackModel}`,
-          event_message: `Primary provider failed with provider_failure=${errorType}; falling back to ${fallbackModel}`,
-        });
-        appendTranscript('system', `Primary provider failed (${errorType}); falling back to ${fallbackModel}`);
-        result = await safeQuery({
-          prompt: fullPrompt,
-          options: {
-            cwd: worktreePath,
-            model: fallbackModel,
-            env: buildSdkEnv(fallbackModel, fallback.baseUrl, fallback.apiKey),
-            maxTurns: config.maxTurns,
-          },
-          onMessage: handleLiveMessage,
-        });
-        assertNoProviderApiError(result);
+        try {
+          console.error(`⚠️ ${currentModel}@${currentProvider} ${fallbackErrorType}, trying channel ${fb.provider_id}`);
+          const fbUrl = fb.anthropic_base_url;
+          result = await safeQuery({
+            prompt: fullPrompt,
+            options: {
+              cwd: worktreePath,
+              model: currentModel,
+              env: buildSdkEnv(currentModel, fbUrl, fb.api_key),
+              maxTurns: config.maxTurns,
+            },
+            onMessage: handleLiveMessage,
+          });
+          assertNoProviderApiError(result);
+          providerFallbackUsed = true;
+          currentProvider = fb.provider_id;
+          baseUrl = fbUrl;
+          apiKey = fb.api_key;
+          recordProviderDecision(requestedProvider, fallbackErrorType, 'fallback', `channel fallback to ${fb.provider_id}`, {
+            dispatchAffected: true,
+            fallbackProvider: fb.provider_id,
+            attempt: retryAttempt + 1,
+          });
+
+          if (healthStore) {
+            healthStore.recordSuccess(fb.provider_id);
+          }
+          break;
+        } catch {
+          if (healthStore) {
+            healthStore.recordFailure(fb.provider_id, fallbackErrorType);
+          }
+          failedProviders.add(fb.provider_id);
+        }
       }
     }
+
+    if (!result && disableModelFallback) {
+      throw new Error(`No-fallback benchmark mode: ${currentModel}@${currentProvider} failed with ${fallbackErrorType}`);
+    }
+
+    if (!result) {
+      const registry = getRegistry();
+      const taskForFallback = buildFallbackTask(config);
+      const fallback = await resolveRunnableFallback(
+        config.model,
+        toLegacyFailureType(fallbackErrorType),
+        taskForFallback,
+        worktreePath,
+        registry,
+        {
+          providerHealthDir: config.providerHealthDir,
+          excludeModels: [...attemptedModels],
+          excludeProviders: [...failedProviders],
+          allowClaudeFallback: true,
+          allowSoftPingFailure: true,
+        },
+      );
+      if (!fallback) {
+        recordProviderDecision(currentProvider, fallbackErrorType, 'block', 'model fallback blocked: no runnable executor candidate', {
+          dispatchAffected: true,
+          attempt: retryAttempt + 1,
+        });
+        throw new Error(`Model fallback blocked: no runnable executor candidate after ${config.model}@${currentProvider} failed with ${fallbackErrorType}`);
+      }
+
+      currentModel = fallback.model;
+      currentProvider = fallback.provider;
+      attemptedModels.add(fallback.model);
+      providerFallbackUsed = true;
+      ensureStageModelAllowed('executor', currentModel);
+      baseUrl = fallback.baseUrl;
+      apiKey = fallback.apiKey;
+      recordProviderDecision(requestedProvider, fallbackErrorType, 'fallback', `model fallback to ${currentModel}`, {
+        dispatchAffected: true,
+        fallbackProvider: currentProvider,
+        attempt: retryAttempt + 1,
+      });
+      console.error(`⚠️ ${config.model} all channels failed (${fallbackErrorType}), falling back to model ${currentModel}`);
+      reportStatus('running', {
+        active_model: currentModel,
+        provider: currentProvider,
+        task_summary: `Falling back to ${currentModel}`,
+        event_message: `Primary provider failed with provider_failure=${fallbackErrorType}; falling back to ${currentModel}`,
+      });
+      appendTranscript('system', `Primary provider failed (${fallbackErrorType}); falling back to ${currentModel}`);
+      result = await safeQuery({
+        prompt: fullPrompt,
+        options: {
+          cwd: worktreePath,
+          model: currentModel,
+          env: buildSdkEnv(currentModel, fallback.baseUrl, fallback.apiKey),
+          maxTurns: config.maxTurns,
+        },
+        onMessage: handleLiveMessage,
+      });
+      assertNoProviderApiError(result);
+    }
+  }
   } finally {
     healthStore?.save();
   }
@@ -576,7 +807,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
 
   // 6. Collect diff
   let changedFiles: string[] = [];
-  if (config.worktree) {
+  if (worktreePath) {
     const diff = await getWorktreeDiff(worktreePath);
     changedFiles = diff.files;
   }
@@ -603,6 +834,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   return {
     taskId: config.taskId,
     model: currentModel,
+    runId: config.runId,
     requested_model: requestedModel,
     worktreePath,
     branch,
@@ -745,7 +977,7 @@ export async function dispatchBatch(
     );
     const unhealthy = new Set(pingResults.filter(p => !p.ok).map(p => p.model));
     if (unhealthy.size > 0) {
-      const config = loadConfig(plan.cwd);
+      const registry = getRegistry();
       for (const cfg of workerConfigs) {
         if (!unhealthy.has(cfg.model)) continue;
         if (cfg.benchmarkRoutingPolicy?.disable_model_fallback) {
@@ -753,16 +985,57 @@ export async function dispatchBatch(
           continue;
         }
         const task = tasksInGroup.find(t => t.id === cfg.taskId)!;
-        const fb = resolveFallback(cfg.model, 'server_error', task, config, registry);
-        const fbCap = registry.get(fb);
-        console.log(`  🔄 Preflight: ${cfg.model} unhealthy → ${fb} for ${cfg.taskId}`);
-        cfg.model = fb;
-        cfg.provider = fbCap?.provider || fb;
+        const fallback = await resolveRunnableFallback(
+          cfg.model,
+          'server_error',
+          task,
+          plan.cwd,
+          registry,
+          {
+            providerHealthDir: cfg.providerHealthDir,
+            excludeModels: [cfg.model],
+            excludeProviders: [cfg.provider],
+            pingTimeoutMs: 15000,
+          },
+        );
+        if (!fallback) {
+          console.log(`  ⛔ Preflight: no runnable fallback for ${cfg.model} (${cfg.taskId})`);
+          continue;
+        }
+        console.log(`  🔄 Preflight: ${cfg.model} unhealthy → ${fallback.model} for ${cfg.taskId}`);
+        cfg.model = fallback.model;
+        cfg.provider = fallback.provider;
+      }
+    }
+
+    const preflightBlocked = new Map<string, Error>();
+    if (unhealthy.size > 0) {
+      for (const cfg of workerConfigs) {
+        if (!unhealthy.has(cfg.model)) continue;
+        if (cfg.benchmarkRoutingPolicy?.disable_model_fallback) continue;
+        const task = tasksInGroup.find(t => t.id == cfg.taskId)!;
+        const fallback = await resolveRunnableFallback(
+          cfg.model,
+          'server_error',
+          task,
+          plan.cwd,
+          getRegistry(),
+          {
+            providerHealthDir: cfg.providerHealthDir,
+            excludeModels: [cfg.model],
+            excludeProviders: [cfg.provider],
+            pingTimeoutMs: 15000,
+          },
+        );
+        if (!fallback) {
+          preflightBlocked.set(cfg.taskId, new Error(`Model fallback blocked for ${cfg.model}: no runnable provider/model candidates after preflight health checks`));
+        }
       }
     }
 
     // Report queued status for each worker in the group
     for (const cfg of workerConfigs) {
+      if (preflightBlocked.has(cfg.taskId)) continue;
       updateWorkerStatus(plan.cwd, runId, {
         task_id: cfg.taskId,
         status: 'queued',
@@ -785,6 +1058,14 @@ export async function dispatchBatch(
     // Parallel spawn within group
     if (workerConfigs.length > 0) {
       const failResult = (cfg: WorkerConfig, err: Error): WorkerResult => {
+        const failureSubtype = classifyProviderFailure(err);
+        const failureReason = err.message || 'Worker crashed before returning a result';
+        const eventMessage = /invalid provider url|non-claude-compatible base url|requires bridge transport/i.test(failureReason)
+          ? 'Worker failed during provider route resolution'
+          : 'Worker crashed before returning a result';
+        const fallbackUsed = /fallback/i.test(failureReason);
+        const requestedProvider = cfg.provider;
+        const requestedModel = cfg.assignedModel || cfg.model;
         updateWorkerStatus(plan.cwd, runId, {
           task_id: cfg.taskId,
           status: 'failed',
@@ -797,12 +1078,13 @@ export async function dispatchBatch(
           session_id: `error-${cfg.taskId}`,
           worktree_path: cfg.cwd,
           success: false,
-          error: err.message,
+          error: failureReason,
           prompt_policy_version: cfg.promptPolicy?.version,
           prompt_fragments: cfg.promptPolicy?.fragments,
           execution_contract: cfg.execution_contract,
-          provider_fallback_used: false,
-          event_message: 'Worker crashed before returning a result',
+          provider_failure_subtype: failureSubtype,
+          provider_fallback_used: fallbackUsed,
+          event_message: eventMessage,
         });
         appendWorkerTranscriptEntry(plan.cwd, runId, {
           task_id: cfg.taskId,
@@ -815,12 +1097,12 @@ export async function dispatchBatch(
           taskId: cfg.taskId,
           model: cfg.model,
           provider: cfg.provider,
-          requested_model: cfg.assignedModel || cfg.model,
-          requested_provider: cfg.provider,
+          requested_model: requestedModel,
+          requested_provider: requestedProvider,
           worktreePath: cfg.cwd,
           branch: '',
           sessionId: `error-${cfg.taskId}`,
-          output: [{ type: 'error' as const, content: err.message, timestamp: Date.now() }],
+          output: [{ type: 'error' as const, content: failureReason, timestamp: Date.now() }],
           changedFiles: [],
           success: false,
           duration_ms: 0,
@@ -830,12 +1112,19 @@ export async function dispatchBatch(
           prompt_policy_version: cfg.promptPolicy?.version,
           prompt_fragments: cfg.promptPolicy?.fragments,
           execution_contract: cfg.execution_contract,
-          provider_fallback_used: false,
+          provider_failure_subtype: failureSubtype,
+          provider_fallback_used: fallbackUsed,
         };
       };
 
       const results = await Promise.all(
-        workerConfigs.map(cfg => spawnWorker(cfg).catch(err => failResult(cfg, err))),
+        workerConfigs.map((cfg) => {
+          const blockedError = preflightBlocked.get(cfg.taskId);
+          if (blockedError) {
+            return Promise.resolve(failResult(cfg, blockedError));
+          }
+          return spawnWorker(cfg).catch(err => failResult(cfg, err));
+        }),
       );
 
       worker_results.push(...results);

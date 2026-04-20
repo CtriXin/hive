@@ -57,11 +57,36 @@ describe('buildSdkEnv — ANTHROPIC_BASE_URL normalization', () => {
       expect(env.ANTHROPIC_BASE_URL).toBe('https://gateway.example.com');
     });
 
-    it('strips /v1 from inherited ANTHROPIC_BASE_URL for domestic models', () => {
+    it('prefers explicit provider baseUrl for domestic models', () => {
       process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/openapi/v1';
       process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
-      const env = buildSdkEnv('kimi-k2.5', 'https://other.com', 'key');
+      const env = buildSdkEnv('kimi-k2.5', 'https://api.moonshot.ai/anthropic/', 'key');
+      expect(env.ANTHROPIC_BASE_URL).toBe('https://api.moonshot.ai/anthropic/');
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('key');
+    });
+
+    it('falls back to inherited gateway for domestic models without explicit baseUrl', () => {
+      process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/openapi/v1';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
+      const env = buildSdkEnv('kimi-k2.5');
       expect(env.ANTHROPIC_BASE_URL).toBe('https://gateway.example.com/openapi');
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('tok');
+    });
+
+    it('prefers explicit provider baseUrl for kimi-for-coding', () => {
+      process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
+      const env = buildSdkEnv('kimi-for-coding', 'https://api.kimi.com/coding/', 'key');
+      expect(env.ANTHROPIC_BASE_URL).toBe('https://api.kimi.com/coding/');
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('key');
+    });
+
+    it('does not override explicit anthropic route with inherited gateway env', () => {
+      process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/openapi/v1';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
+      const env = buildSdkEnv('glm-5-turbo', 'http://127.0.0.1:4001/anthropic', 'route-key');
+      expect(env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:4001/anthropic');
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('route-key');
     });
   });
 });

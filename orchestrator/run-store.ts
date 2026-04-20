@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import type { RunSpec, RunState, TaskPlan, OrchestratorResult } from './types.js';
+import { trackRunSpec, trackRunState } from './global-run-registry.js';
 
 function runsDir(cwd: string): string {
   return path.join(cwd, '.ai', 'runs');
@@ -32,6 +33,7 @@ function readJson<T>(filePath: string): T | null {
 
 export function saveRunSpec(cwd: string, spec: RunSpec): void {
   writeJson(path.join(runDir(cwd, spec.id), 'spec.json'), spec);
+  trackRunSpec(cwd, spec);
 }
 
 export function loadRunSpec(cwd: string, runId: string): RunSpec | null {
@@ -44,6 +46,7 @@ export function saveRunState(cwd: string, state: RunState): void {
     updated_at: new Date().toISOString(),
   };
   writeJson(path.join(runDir(cwd, state.run_id), 'state.json'), payload);
+  trackRunState(cwd, payload);
 }
 
 export function loadRunState(cwd: string, runId: string): RunState | null {

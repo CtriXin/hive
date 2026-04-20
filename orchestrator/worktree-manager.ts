@@ -19,6 +19,9 @@ export interface WorktreeCreateOptions {
 
 export interface WorktreeDiff {
   files: string[];
+  committedFiles: string[];
+  workingTreeFiles: string[];
+  baseRef?: string;
 }
 
 const WORKTREE_DIR = '.claude/worktrees';
@@ -77,60 +80,135 @@ export function listWorktrees(): WorktreeInfo[] {
 }
 
 const UNTRACKED_MANIFEST = '.untracked-manifest.json';
+const COPIED_FILE_SENTINEL_DATE = new Date('2000-01-01T00:00:00.000Z');
+
+interface UntrackedManifestFileEntry {
+  hash: string;
+  mtimeMs?: number;
+  ctimeMs?: number;
+}
+
+interface UntrackedManifestData {
+  version: 2;
+  baseBranch?: string;
+  files: Record<string, UntrackedManifestFileEntry>;
+}
 
 function fileHash(filePath: string): string {
   const content = fs.readFileSync(filePath);
   return crypto.createHash('md5').update(content).digest('hex');
 }
 
-function copyUntrackedFiles(repoRoot: string, worktreePath: string): void {
+function normalizeManifestFileEntry(value: unknown): UntrackedManifestFileEntry | null {
+  if (typeof value === 'string') {
+    return { hash: value };
+  }
+  if (!value || typeof value !== 'object') return null;
+  const hash = typeof (value as UntrackedManifestFileEntry).hash === 'string'
+    ? (value as UntrackedManifestFileEntry).hash
+    : null;
+  if (!hash) return null;
+  const mtimeMs = typeof (value as UntrackedManifestFileEntry).mtimeMs === 'number'
+    ? (value as UntrackedManifestFileEntry).mtimeMs
+    : undefined;
+  const ctimeMs = typeof (value as UntrackedManifestFileEntry).ctimeMs === 'number'
+    ? (value as UntrackedManifestFileEntry).ctimeMs
+    : undefined;
+  return { hash, mtimeMs, ctimeMs };
+}
+
+function readUntrackedManifest(worktreePath: string): UntrackedManifestData | null {
+  const manifestPath = path.join(worktreePath, UNTRACKED_MANIFEST);
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    if (raw && typeof raw === 'object' && raw.files && typeof raw.files === 'object') {
+      const files = Object.fromEntries(
+        Object.entries(raw.files)
+          .map(([filePath, value]) => [filePath, normalizeManifestFileEntry(value)])
+          .filter((entry): entry is [string, UntrackedManifestFileEntry] => Boolean(entry[1])),
+      );
+      return {
+        version: 2,
+        baseBranch: typeof raw.baseBranch === 'string' ? raw.baseBranch : undefined,
+        files,
+      };
+    }
+
+    const files = Object.fromEntries(
+      Object.entries(raw || {})
+        .map(([filePath, value]) => [filePath, normalizeManifestFileEntry(value)])
+        .filter((entry): entry is [string, UntrackedManifestFileEntry] => Boolean(entry[1])),
+    );
+    return { version: 2, files };
+  } catch {
+    return null;
+  }
+}
+
+function copyUntrackedFiles(repoRoot: string, worktreePath: string, baseBranch?: string): void {
+  const manifest: Record<string, UntrackedManifestFileEntry> = {};
   try {
     const output = execSync(
       'git ls-files --others --exclude-standard',
       { cwd: repoRoot, encoding: 'utf-8' },
     ).trim();
-    if (!output) return;
-
-    const manifest: Record<string, string> = {};
-    for (const relPath of output.split('\n')) {
-      if (!relPath || relPath.startsWith('.claude/') || relPath.startsWith('.ai/')) continue;
-      const src = path.join(repoRoot, relPath);
-      const dst = path.join(worktreePath, relPath);
-      try {
-        const stat = fs.statSync(src);
-        if (!stat.isFile()) continue;
-        fs.mkdirSync(path.dirname(dst), { recursive: true });
-        fs.copyFileSync(src, dst);
-        manifest[relPath] = fileHash(src);
-      } catch {
-        // Skip files that can't be copied
+    if (output) {
+      for (const relPath of output.split('\n')) {
+        if (!relPath || relPath.startsWith('.claude/') || relPath.startsWith('.ai/')) continue;
+        const src = path.join(repoRoot, relPath);
+        const dst = path.join(worktreePath, relPath);
+        try {
+          const stat = fs.statSync(src);
+          if (!stat.isFile()) continue;
+          fs.mkdirSync(path.dirname(dst), { recursive: true });
+          fs.copyFileSync(src, dst);
+          try {
+            fs.utimesSync(dst, COPIED_FILE_SENTINEL_DATE, COPIED_FILE_SENTINEL_DATE);
+          } catch {
+            // Fall back to the filesystem mtime when utimes is unavailable.
+          }
+          manifest[relPath] = {
+            hash: fileHash(src),
+            mtimeMs: fs.statSync(dst).mtimeMs,
+            ctimeMs: fs.statSync(dst).ctimeMs,
+          };
+        } catch {
+          // Skip files that can't be copied
+        }
       }
-    }
-    // Save manifest so we can filter unchanged copies at commit time
-    if (Object.keys(manifest).length > 0) {
-      fs.writeFileSync(
-        path.join(worktreePath, UNTRACKED_MANIFEST),
-        JSON.stringify(manifest),
-      );
     }
   } catch {
     // Non-critical
+  }
+
+  if (Object.keys(manifest).length > 0 || baseBranch) {
+    fs.writeFileSync(
+      path.join(worktreePath, UNTRACKED_MANIFEST),
+      JSON.stringify({
+        version: 2,
+        baseBranch,
+        files: manifest,
+      } satisfies UntrackedManifestData),
+    );
   }
 }
 
 /** Returns files that were copied as untracked but NOT modified by the worker */
 export function getUnchangedCopiedFiles(worktreePath: string): string[] {
-  const manifestPath = path.join(worktreePath, UNTRACKED_MANIFEST);
-  if (!fs.existsSync(manifestPath)) return [];
+  const manifest = readUntrackedManifest(worktreePath);
+  if (!manifest) return [];
   try {
-    const manifest: Record<string, string> = JSON.parse(
-      fs.readFileSync(manifestPath, 'utf-8'),
-    );
     const unchanged: string[] = [];
-    for (const [relPath, originalHash] of Object.entries(manifest)) {
+    for (const [relPath, entry] of Object.entries(manifest.files)) {
       const filePath = path.join(worktreePath, relPath);
       try {
-        if (fs.existsSync(filePath) && fileHash(filePath) === originalHash) {
+        if (!fs.existsSync(filePath)) continue;
+        const stat = fs.statSync(filePath);
+        const sameHash = fileHash(filePath) === entry.hash;
+        const sameMtime = entry.mtimeMs === undefined || stat.mtimeMs === entry.mtimeMs;
+        const sameCtime = entry.ctimeMs === undefined || stat.ctimeMs === entry.ctimeMs;
+        if (sameHash && sameMtime && sameCtime) {
           unchanged.push(relPath);
         }
       } catch {
@@ -188,7 +266,7 @@ export function createWorktree(
   }
 
   // Copy untracked files into worktree so workers can see them
-  copyUntrackedFiles(cwd || process.cwd(), worktreePath);
+  copyUntrackedFiles(cwd || process.cwd(), worktreePath, fromBranch);
 
   return {
     name: worktreeName,
@@ -198,20 +276,81 @@ export function createWorktree(
   };
 }
 
-export function getWorktreeDiff(worktreePath: string): WorktreeDiff {
+function dedupeFiles(files: string[]): string[] {
+  return [...new Set(files)];
+}
+
+function parseNameOnlyChangedFiles(output: string): string[] {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((filePath) => (
+      Boolean(filePath)
+      && !filePath.endsWith('/')
+      && !isTransientWorktreePath(filePath)
+    ));
+}
+
+function getWorktreeBaseRef(worktreePath: string): string | undefined {
+  const manifest = readUntrackedManifest(worktreePath);
+  if (manifest?.baseBranch) return manifest.baseBranch;
   try {
-    const output = execSync('git status --porcelain', {
+    execFileSync('git', ['rev-parse', '--verify', 'main'], {
       cwd: worktreePath,
       encoding: 'utf-8',
+      stdio: 'pipe',
     });
-    const allFiles = parsePorcelainChangedFiles(output);
-    // Filter out untracked files that were copied but not modified
-    const unchangedCopies = new Set(getUnchangedCopiedFiles(worktreePath));
-    const realChanges = allFiles.filter(f => !unchangedCopies.has(f));
-    return { files: realChanges };
+    return 'main';
   } catch {
-    return { files: [] };
+    return undefined;
   }
+}
+
+function listWorkingTreeChangedFiles(worktreePath: string): string[] {
+  try {
+    const output = execFileSync('git', ['status', '--porcelain'], {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    return parsePorcelainChangedFiles(output);
+  } catch {
+    return [];
+  }
+}
+
+function listCommittedChangedFiles(worktreePath: string, baseRef?: string): string[] {
+  if (!baseRef) return [];
+  try {
+    const output = execFileSync('git', ['diff', '--name-only', '--diff-filter=ACDMRTUXB', `${baseRef}...HEAD`], {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    return parseNameOnlyChangedFiles(output);
+  } catch {
+    return [];
+  }
+}
+
+export function getWorktreeDiff(worktreePath: string): WorktreeDiff {
+  const baseRef = getWorktreeBaseRef(worktreePath);
+  const unchangedCopies = new Set(getUnchangedCopiedFiles(worktreePath));
+  const committedFiles = dedupeFiles(
+    listCommittedChangedFiles(worktreePath, baseRef)
+      .filter((filePath) => !unchangedCopies.has(filePath)),
+  );
+  const workingTreeFiles = dedupeFiles(
+    listWorkingTreeChangedFiles(worktreePath)
+      .filter((filePath) => !unchangedCopies.has(filePath)),
+  );
+
+  return {
+    baseRef,
+    committedFiles,
+    workingTreeFiles,
+    files: dedupeFiles([...committedFiles, ...workingTreeFiles]),
+  };
 }
 
 export function parsePorcelainChangedFiles(output: string): string[] {
@@ -288,10 +427,9 @@ export function commitAndMergeWorktree(
   try {
     // Stage only real changes (exclude unchanged untracked copies)
     const diff = getWorktreeDiff(worktreePath);
-    const changedFiles = diff.files;
-    if (changedFiles.length > 0) {
+    if (diff.workingTreeFiles.length > 0) {
       // Stage each real change individually instead of git add -A
-      for (const file of changedFiles) {
+      for (const file of diff.workingTreeFiles) {
         try {
           execFileSync('git', ['add', '--', file], { cwd: worktreePath, encoding: 'utf-8' });
         } catch {

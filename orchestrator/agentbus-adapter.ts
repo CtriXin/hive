@@ -422,6 +422,11 @@ export async function synthesizeWorkerDiscussRepliesWithModel(
       const resolved = resolveProviderForModel(discussTierModel);
       env = buildSdkEnv(discussTierModel, resolved.baseUrl, resolved.apiKey);
     } catch {
+      if (!discussTierModel.startsWith('claude-')) {
+        throw new Error(
+          `Discuss synthesis model "${discussTierModel}" has no direct Claude Code transport route.`,
+        );
+      }
       env = buildSdkEnv(discussTierModel);
     }
 

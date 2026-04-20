@@ -28,8 +28,12 @@ export function isModelProxyRunning(): boolean {
 
 export function resolveProxyTargetUrl(baseUrl: string, requestPath: string): string {
   const normalizedBase = baseUrl.replace(/\/$/, '');
-  const normalizedPath = requestPath.startsWith('/') ? requestPath : `/${requestPath}`;
   const url = new URL(normalizedBase);
+  const requestUrl = new URL(
+    requestPath.startsWith('/') ? requestPath : `/${requestPath}`,
+    'http://model-proxy.local',
+  );
+  const normalizedPath = requestUrl.pathname;
   const basePath = url.pathname.replace(/\/$/, '');
 
   let finalPath = normalizedPath;
@@ -40,8 +44,8 @@ export function resolveProxyTargetUrl(baseUrl: string, requestPath: string): str
   }
 
   url.pathname = finalPath;
-  url.search = '';
-  return url.toString().replace(/\/$/, finalPath === '/' ? '/' : '');
+  url.search = requestUrl.search;
+  return url.toString();
 }
 
 function buildCaseMap(): void {

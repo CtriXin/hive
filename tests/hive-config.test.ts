@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveTierModel, DEFAULT_TIERS, DEFAULT_CONFIG, getModelForTask, ensureStageModelAllowed } from '../orchestrator/hive-config.js';
+import { resolveTierModel, DEFAULT_TIERS, DEFAULT_CONFIG, getModelForTask, ensureStageModelAllowed, resolveFallback } from '../orchestrator/hive-config.js';
 import { ModelRegistry } from '../orchestrator/model-registry.js';
 import type { SubTask } from '../orchestrator/types.js';
 
@@ -70,6 +70,47 @@ describe('hive-config', () => {
       };
       const selected = getModelForTask(baseTask, config, registry);
       expect(selected).not.toMatch(/^claude-/);
+    });
+
+    it('skips non-direct configured defaults when only later runnable candidates remain', () => {
+      const fakeRegistry = {
+        rankModelsForTask: () => [],
+        canResolveForModel: (modelId: string) => modelId === 'qwen3-max',
+        get: (modelId: string) => ({ provider: modelId === 'qwen3-max' ? 'qwen' : 'glm-cn' }),
+      } as unknown as ModelRegistry;
+
+      const selected = getModelForTask(baseTask, DEFAULT_CONFIG, fakeRegistry);
+      expect(selected).toBe('qwen3-max');
+    });
+  });
+
+  describe('resolveFallback', () => {
+    const task: SubTask = {
+      id: 'task-fallback',
+      description: 'Fix the execution path',
+      complexity: 'medium',
+      category: 'api',
+      assigned_model: 'kimi-for-coding',
+      assignment_reason: '',
+      estimated_files: ['src/task.ts'],
+      acceptance_criteria: ['task succeeds'],
+      discuss_threshold: 0.7,
+      depends_on: [],
+      review_scale: 'auto',
+    };
+
+    it('skips unrunnable fallback candidates and returns the next direct-executable model', () => {
+      const fakeRegistry = {
+        rankModelsForTask: () => [
+          { model: 'glm-5-turbo', blocked_by: [] },
+          { model: 'qwen3-max', blocked_by: [] },
+        ],
+        canResolveForModel: (modelId: string) => modelId === 'qwen3-max',
+        get: (modelId: string) => ({ provider: modelId === 'qwen3-max' ? 'qwen' : 'glm-cn' }),
+      } as unknown as ModelRegistry;
+
+      const selected = resolveFallback('kimi-for-coding', 'server_error', task, DEFAULT_CONFIG, fakeRegistry);
+      expect(selected).toBe('qwen3-max');
     });
   });
 

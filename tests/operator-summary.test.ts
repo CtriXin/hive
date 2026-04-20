@@ -528,4 +528,78 @@ describe('generateRunSummary', () => {
       expect(summary.latest_resilience).toContain('kimi | timeout -> fallback -> kimi-alt');
     });
   });
+
+  describe('rule selection visibility', () => {
+    it('exposes rule_selection_basis on success items', () => {
+      const spec = createMockSpec();
+      const state = createMockState({
+        task_states: {
+          'task-a': {
+            task_id: 'task-a',
+            status: 'merged',
+            round: 1,
+            changed_files: ['a.ts'],
+            merged: true,
+            worker_success: true,
+            review_passed: true,
+            retry_count: 0,
+            rule_selection: { basis: 'learning_auto_pick', confidence: 0.75, selection_reason: 'auto', evidence_summary: [], auto_applied: true, relevant_lessons: [] },
+          } as any,
+        },
+      });
+      const plan = { tasks: [{ id: 'task-a', description: 'Task A' }] };
+
+      const summary = generateRunSummary({ runId: spec.id, spec, state, plan });
+
+      expect(summary.top_successes[0].rule_selection_basis).toBe('learning_auto_pick');
+    });
+
+    it('exposes rule_selection_basis on failure items', () => {
+      const spec = createMockSpec();
+      const state = createMockState({
+        task_states: {
+          'task-a': {
+            task_id: 'task-a',
+            status: 'worker_failed',
+            round: 1,
+            changed_files: [],
+            merged: false,
+            worker_success: false,
+            review_passed: false,
+            retry_count: 1,
+            last_error: 'Build failed',
+            failure_class: 'build',
+            rule_selection: { basis: 'explicit_config', confidence: 1, selection_reason: 'explicit', evidence_summary: [], auto_applied: true, relevant_lessons: [] },
+          } as any,
+        },
+      });
+
+      const summary = generateRunSummary({ runId: spec.id, spec, state });
+
+      expect(summary.top_failures[0].rule_selection_basis).toBe('explicit_config');
+    });
+
+    it('omits rule_selection_basis when not set', () => {
+      const spec = createMockSpec();
+      const state = createMockState({
+        task_states: {
+          'task-a': {
+            task_id: 'task-a',
+            status: 'merged',
+            round: 1,
+            changed_files: ['a.ts'],
+            merged: true,
+            worker_success: true,
+            review_passed: true,
+            retry_count: 0,
+          } as any,
+        },
+      });
+      const plan = { tasks: [{ id: 'task-a', description: 'Task A' }] };
+
+      const summary = generateRunSummary({ runId: spec.id, spec, state, plan });
+
+      expect(summary.top_successes[0].rule_selection_basis).toBeUndefined();
+    });
+  });
 });

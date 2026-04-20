@@ -11,7 +11,7 @@ import type {
 import type { ModelRegistry } from './model-registry.js';
 import { getRegistry } from './model-registry.js';
 import { ensureStageModelAllowed, loadConfig, resolveTierModel } from './hive-config.js';
-import { resolveProviderForModel } from './provider-resolver.js';
+import { isUnsupportedMmsTransportError, resolveProviderForModel } from './provider-resolver.js';
 import { buildSdkEnv } from './project-paths.js';
 import { safeQuery, extractTextFromMessages } from './sdk-query-safe.js';
 
@@ -23,7 +23,10 @@ function resolveProviderConfig(
   try {
     const result = resolveProviderForModel(modelId);
     return { baseUrl: result.baseUrl, apiKey: result.apiKey };
-  } catch {
+  } catch (err) {
+    if (!modelId.startsWith('claude-') || isUnsupportedMmsTransportError(err)) {
+      throw err;
+    }
     const envKey = modelId.toUpperCase().replace(/-/g, '_');
     return {
       baseUrl: process.env[`${envKey}_BASE_URL`] || '',

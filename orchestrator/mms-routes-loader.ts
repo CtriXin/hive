@@ -12,6 +12,10 @@ export interface MmsRoute {
   priority: number;
   role: string;
   openai_base_url?: string;
+  capabilities?: string[];
+  native_clis?: string[];
+  bridge_clis?: string[];
+  cli_modes?: Record<string, string>;
   fallback_routes?: MmsFallbackRoute[];
 }
 
@@ -22,6 +26,10 @@ export interface MmsFallbackRoute {
   priority: number;
   role: string;
   openai_base_url?: string;
+  capabilities?: string[];
+  native_clis?: string[];
+  bridge_clis?: string[];
+  cli_modes?: Record<string, string>;
 }
 
 export interface MmsRouteTable {
@@ -176,6 +184,23 @@ export function loadMmsRoutes(): MmsRouteTable | null {
 export interface ResolvedModelRoute {
   modelId: string;   // actual model ID resolved (may differ from input)
   route: MmsRoute;
+}
+
+function hasCapability(route: Pick<MmsRoute, 'capabilities'>, capability: string): boolean {
+  return Array.isArray(route.capabilities) && route.capabilities.includes(capability);
+}
+
+export function getClaudeCliMode(route: Pick<MmsRoute, 'cli_modes' | 'capabilities' | 'bridge_clis'>): string {
+  const cliMode = route.cli_modes?.claude?.trim().toLowerCase();
+  if (cliMode) return cliMode;
+  if (hasCapability(route, 'bridge_required')) return 'bridge';
+  if (Array.isArray(route.bridge_clis) && route.bridge_clis.includes('claude')) return 'bridge';
+  return 'direct';
+}
+
+export function isClaudeCodeDirectRoute(route: Pick<MmsRoute, 'cli_modes' | 'capabilities' | 'bridge_clis'>): boolean {
+  const mode = getClaudeCliMode(route);
+  return mode === 'direct' || mode === 'compat' || mode === 'native';
 }
 
 /**

@@ -13,7 +13,7 @@ function baseData(): WatchData {
     phase: 'executing',
     phase_reason: 'Dispatching tasks',
     mode: {
-      current_mode: 'auto',
+      current_mode: 'execute-standard',
       escalated: false,
       escalation_history: [],
     },
@@ -59,7 +59,7 @@ describe('watch-format', () => {
 
     it('renders mode with icon', () => {
       const output = formatWatch(baseData());
-      expect(output).toContain('mode: auto');
+      expect(output).toContain('mode: execute-standard');
     });
 
     it('renders focus task', () => {
@@ -72,7 +72,7 @@ describe('watch-format', () => {
       const data = baseData();
       data.mode.escalated = true;
       data.mode.escalation_history = [
-        { from: 'quick', to: 'think', reason: 'high risk', round: 1 },
+        { from: 'auto-execute-small', to: 'execute-parallel', reason: 'high risk', round: 1 },
       ];
       const output = formatWatch(data);
       expect(output).toContain('[ESCALATED]');
@@ -154,43 +154,36 @@ describe('watch-format', () => {
         },
       };
       const output = formatWatch(data);
-      expect(output).toContain('latest resilience: openai | server_error -> fallback -> azure');
-      expect(output).toContain('latest route: task-route | gpt-5-mini@openai -> gpt-5-mini@azure [fallback] | server_error');
+      expect(output).toContain('resilience: openai | server_error -> fallback -> azure');
+      expect(output).toContain('route: task-route | gpt-5-mini@openai -> gpt-5-mini@azure [fallback] | server_error');
     });
 
     it('shows mode escalation history section', () => {
       const data = baseData();
       data.mode.escalated = true;
       data.mode.escalation_history = [
-        { from: 'quick', to: 'think', reason: 'high_risk_task', round: 1 },
+        { from: 'auto-execute-small', to: 'execute-parallel', reason: 'high_risk_task', round: 1 },
       ];
       const output = formatWatch(data);
       expect(output).toContain('Mode Escalation');
-      expect(output).toContain('quick');
-      expect(output).toContain('think');
+      expect(output).toContain('auto-execute-small');
+      expect(output).toContain('execute-parallel');
     });
 
-    it('shows missing artifacts when present', () => {
+    it('does not show missing artifacts section (clean output)', () => {
       const output = formatWatch(baseData());
-      expect(output).toContain('Missing Artifacts');
-      expect(output).toContain('provider-health');
-    });
-
-    it('does not show missing artifacts section when none missing', () => {
-      const data = baseData();
-      data.artifacts_missing = [];
-      const output = formatWatch(data);
       expect(output).not.toContain('Missing Artifacts');
     });
 
-    it('shows no steering actions when empty', () => {
+    it('omits steering section when no actions', () => {
       const output = formatWatch(baseData());
-      expect(output).toContain('no steering actions');
+      expect(output).not.toContain('no steering actions');
     });
 
-    it('shows no provider health data when total is 0', () => {
+    it('omits provider section when total is 0 (clean output)', () => {
       const output = formatWatch(baseData());
-      expect(output).toContain('no provider health data');
+      expect(output).not.toContain('no provider health data');
+      expect(output).not.toContain('Provider');
     });
   });
 
@@ -200,7 +193,7 @@ describe('watch-format', () => {
       expect(output).toContain('run-test-001');
       expect(output).toContain('executing');
       expect(output).toContain('r2');
-      expect(output).toContain('auto');
+      expect(output).toContain('execute-standard');
     });
 
     it('includes paused indicator', () => {
@@ -251,12 +244,12 @@ describe('watch-format', () => {
       expect(output).not.toContain('Suggested Commands');
     });
 
-    it('includes action field in next actions', () => {
+    it('includes description in next actions', () => {
       const data = baseData();
       data.status = 'executing';
       data.steering.is_paused = true;
       const output = formatWatch(data);
-      expect(output).toContain('action:');
+      expect(output).toContain('Resume the paused run');
     });
   });
 });

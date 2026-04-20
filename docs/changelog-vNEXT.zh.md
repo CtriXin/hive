@@ -1,10 +1,18 @@
-# Hive vNEXT 变更通知
+# Hive v2.1.0 变更通知
 
-> 版本: 2.1.0（预发布）
-> 日期: 2026-04-04
-> 状态: 实现完成，待合并
+> 版本: 2.1.0
+> 日期: 2026-04-20
+> 状态: 正式发布
 
-本文档汇总 Hive vNEXT 中所有破坏性变更、新增功能以及迁移指引。请在升级前完整阅读。
+本文档汇总 Hive 2.1.0 中所有破坏性变更、新增功能以及迁移指引。请在升级前完整阅读。
+
+本次正式版额外收口了以下主线能力：
+
+- `hive web` 本地 browser Web decision surface，包含中文化首屏与最小 steering
+- 模型策略中心，支持 `Run > Project > Global > Default` 生效链路查看
+- Run / Project 级模型策略写入与 safe-point 生效语义
+- active run registry + project 视角，支持从 Web 聚焦当前活跃 run
+- provider resilience、authority surface、live watch、memory recall 等 RC 主线能力一并并入
 
 ---
 

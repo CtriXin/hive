@@ -1,13 +1,20 @@
-# Hive vNEXT Changelog
+# Hive v2.1.0 Changelog
 
-**Release Date:** TBD
-**Status:** In Development
+**Release Date:** 2026-04-20
+**Status:** Released
 
 ---
 
 ## Overview
 
-This release introduces the **Collaboration Stack** — a multi-phase initiative to integrate Hive with AgentBus for asynchronous cross-model collaboration, while maintaining Hive as the control plane for all execution decisions.
+This release ships the **Hive 2.1.0 mainline**: the Collaboration Stack, operator-facing CLI surfaces, the local browser Web decision surface, and layered model policy controls.
+
+**Release highlights:**
+- `hive web` now serves a local browser dashboard with a conclusion-first decision surface
+- The model policy center exposes `Run > Project > Global > Default` precedence and safe-point semantics
+- Run-level and project-level policy edits are now visible from Web and persisted to their native artifacts
+- Active run registry and project selection make the Web surface usable across active repos
+- Provider resilience, authority warnings, live watch, and memory recall are all part of the released mainline
 
 ---
 

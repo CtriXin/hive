@@ -107,15 +107,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 function isTaskPlanLike(value: unknown): value is TaskPlan {
   if (!isRecord(value)) return false;
-  return typeof value.id === 'string'
-    && typeof value.goal === 'string'
-    && typeof value.cwd === 'string'
+  return isNonEmptyString(value.id)
+    && isNonEmptyString(value.goal)
+    && isNonEmptyString(value.cwd)
     && Array.isArray(value.tasks)
     && Array.isArray(value.execution_order)
     && isRecord(value.context_flow)
-    && typeof value.created_at === 'string';
+    && isNonEmptyString(value.created_at);
 }
 
 export function extractRunnableTaskPlan(payload: unknown): TaskPlan | null {
@@ -129,6 +133,9 @@ export function extractRunnableTaskPlan(payload: unknown): TaskPlan | null {
 }
 
 export function relPath(cwd: string, target: string): string {
+  if (!isNonEmptyString(cwd) || !isNonEmptyString(target)) {
+    return target;
+  }
   const rel = target.startsWith(cwd)
     ? target.slice(cwd.length).replace(/^\/+/, '')
     : target;

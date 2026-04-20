@@ -91,12 +91,12 @@ describe('buildRecoveryBrief', () => {
       1,
       2,
       makeRepairHistory(),
-      '/Users/xin/auto-skills/CtriXin-repo/hive',
+      '/Users/example/project/hive',
     );
 
     expect(brief.type).toBe('recovery-brief');
     expect(brief.cwd_hint).toBe('hive');
-    expect(brief.cwd_hint).not.toContain('/Users/xin');
+    expect(brief.cwd_hint).not.toContain('/Users/example');
     expect(brief.retry_count).toBe(1);
     expect(brief.recent_attempts).toHaveLength(1);
     expect(brief.findings[0]?.severity).toBe('red');
@@ -123,7 +123,7 @@ describe('maybeRunRecoveryAdvisory', () => {
 
   it('skips recovery advisory before the failure threshold', async () => {
     const result = await maybeRunRecoveryAdvisory({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       reviewResult: makeReviewResult(),
       retryCount: 0,
@@ -158,7 +158,7 @@ describe('maybeRunRecoveryAdvisory', () => {
 
     const snapshots: string[] = [];
     const result = await maybeRunRecoveryAdvisory({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       reviewResult: makeReviewResult(),
       retryCount: 1,
@@ -190,7 +190,7 @@ describe('maybeRunRecoveryAdvisory', () => {
     collectDiscussRepliesMock.mockResolvedValue([]);
 
     const result = await maybeRunRecoveryAdvisory({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       reviewResult: makeReviewResult(),
       retryCount: 1,
@@ -221,7 +221,7 @@ describe('maybeRunRecoveryAdvisory', () => {
     });
 
     const result = await maybeRunRecoveryAdvisory({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       reviewResult: makeReviewResult(),
       retryCount: 1,
@@ -238,7 +238,7 @@ describe('maybeRunRecoveryAdvisory', () => {
     openRecoveryRoomMock.mockRejectedValue(new Error('room quota exceeded'));
 
     const result = await maybeRunRecoveryAdvisory({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       reviewResult: makeReviewResult(),
       retryCount: 1,
@@ -255,7 +255,7 @@ describe('maybeRunRecoveryAdvisory', () => {
 
     const snapshots: string[] = [];
     const result = await maybeRunRecoveryAdvisory({
-      cwd: '/Users/xin/auto-skills/CtriXin-repo/hive',
+      cwd: '/Users/example/project/hive',
       task: makeTask(),
       reviewResult: makeReviewResult(),
       retryCount: 1,

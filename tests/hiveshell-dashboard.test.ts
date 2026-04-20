@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import type { OrchestratorResult, RunScoreHistory, RunSpec, RunState, TaskPlan, WorkerStatusSnapshot } from '../orchestrator/types.js';
 import { loadHiveShellDashboard, renderHiveShellDashboard, resolveHiveShellRunId } from '../orchestrator/hiveshell-dashboard.js';
+import { updateRunModelOverrides } from '../orchestrator/run-model-policy.js';
 import type { LoopProgress } from '../orchestrator/loop-progress-store.js';
 
 const TMP_DIR = '/tmp/hive-hiveshell-dashboard-test';
@@ -242,6 +243,14 @@ describe('hiveshell-dashboard', () => {
       },
     };
 
+    updateRunModelOverrides(TMP_DIR, RUN_ID, 'start-run', {
+      planner: { model: 'qwen3-max' },
+      reviewer: { final_review: { model: 'claude-opus-4-6' } },
+    });
+    updateRunModelOverrides(TMP_DIR, RUN_ID, 'runtime-next-stage', {
+      executor: { model: 'kimi-k2.5' },
+    });
+
     writeJson(path.join(runDir, 'spec.json'), spec);
     writeJson(path.join(runDir, 'state.json'), state);
     writeJson(path.join(runDir, 'plan.json'), plan);
@@ -349,6 +358,9 @@ describe('hiveshell-dashboard', () => {
     const rendered = renderHiveShellDashboard(dashboard!);
     expect(rendered).toContain('== HiveShell ==');
     expect(rendered).toContain('== Run Overview ==');
+    expect(rendered).toContain('== Model Policy ==');
+    expect(rendered).toContain('== Start Run ==');
+    expect(rendered).toContain('== Tune Current Run ==');
     expect(rendered).toContain('== Collab ==');
     expect(rendered).toContain('== Advisory ==');
     expect(rendered).toContain('== Authority ==');
@@ -358,6 +370,19 @@ describe('hiveshell-dashboard', () => {
     expect(rendered).toContain('== Human Bridge ==');
     expect(rendered).toContain('== Mindkeeper ==');
     expect(rendered).toContain('Ship hiveshell UI');
+    expect(rendered).toContain('override: active');
+    expect(rendered).toContain('planner: qwen3-max');
+    expect(rendered).toContain('source=start-run');
+    expect(rendered).toContain('executor: kimi-k2.5');
+    expect(rendered).toContain('source=runtime-next-stage');
+    expect(rendered).toContain('runtime-next-stage: present');
+    expect(rendered).toContain('start-run: present');
+    expect(rendered).toContain('Effective Policy');
+    expect(rendered).toContain('Apply to next round');
+    expect(rendered).toContain('This does not affect currently running workers');
+    expect(rendered).toContain('Preview Effective Model Policy');
+    expect(rendered).toContain('Start run with override');
+    expect(rendered).toContain('Reset override to default');
     expect(rendered).toContain('task-a [completed]');
     expect(rendered).toContain('room-shell [collecting]');
     expect(rendered).toContain('merge blockers: task-b');
