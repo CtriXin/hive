@@ -14,12 +14,38 @@
 
 ## Install
 
+Stable install/upgrade (default = latest tag):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
 ```
 
-> Installs to `~/.hive-orchestrator`. Custom: `HIVE_HOME=/your/path curl -fsSL ... | bash`
-> Already installed? Same command to upgrade.
+Pin an exact release:
+
+```bash
+HIVE_INSTALL_REF=v2.1.3 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+```
+
+Bleeding edge from `main`:
+
+```bash
+HIVE_CHANNEL=main curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+```
+
+Clean reinstall first (preserves `~/.hive` by default):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
+```
+
+Full clean including `~/.hive` config:
+
+```bash
+HIVE_PURGE_CONFIG=1 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
+```
+
+> Installs to `~/.hive-orchestrator`. Custom: `HIVE_HOME=/your/path ... | bash`
+> Already installed? Same install command upgrades in place.
 
 ## For AI Agents
 
@@ -30,7 +56,9 @@ Install Hive from https://github.com/CtriXin/hive using the setup below.
 Run commands, fix errors, report results when done.
 
 INSTALL:  curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
-UPGRADE:  same command
+UPGRADE:  same command (defaults to latest stable tag)
+PIN:      HIVE_INSTALL_REF=v2.1.3 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+CLEAN:    curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
 DIR:      ~/.hive-orchestrator (override: HIVE_HOME=/path)
 
 REQUIRES:
@@ -109,7 +137,7 @@ Instead of burning $5+ per session on Claude Opus for everything, Hive routes ~8
 
 ## Status
 
-✅ **Hive v2.1.0 mainline is released.** Core orchestrator, MCP server, review pipeline, Web decision surface, and layered model policy controls are in place; ongoing work continues as incremental follow-up slices.
+✅ **Hive v2.1.3 is released.** Core orchestrator, MCP server, review pipeline, Web decision surface, layered model policy controls, and stable-tag installer flow are in place; ongoing work continues as incremental follow-up slices.
 
 Want to contribute? See [Contributing](#contributing).
 
@@ -119,6 +147,18 @@ Want to contribute? See [Contributing](#contributing).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+```
+
+**Pin a specific release:**
+
+```bash
+HIVE_INSTALL_REF=v2.1.3 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+```
+
+**Clean reinstall:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
 ```
 
 Installs to `~/.hive-orchestrator`. Custom location: `HIVE_HOME=/your/path curl -fsSL ... | bash`

@@ -6,6 +6,8 @@ set -euo pipefail
 HIVE_HOME="${HIVE_HOME:-$HOME/.hive-orchestrator}"
 REPO_URL="https://github.com/CtriXin/hive.git"
 MMS_ROUTES="${MMS_ROUTES_PATH:-$HOME/.config/mms/model-routes.json}"
+HIVE_CHANNEL="${HIVE_CHANNEL:-stable}"
+HIVE_INSTALL_REF="${HIVE_INSTALL_REF:-}"
 
 # ── Colors ──────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -13,6 +15,27 @@ ok()   { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 err()  { echo -e "${RED}✗${NC} $1"; }
 info() { echo -e "${CYAN}→${NC} $1"; }
+
+resolve_target_ref() {
+  if [ -n "$HIVE_INSTALL_REF" ]; then
+    echo "$HIVE_INSTALL_REF"
+    return
+  fi
+
+  if [ "$HIVE_CHANNEL" = "main" ]; then
+    echo "origin/main"
+    return
+  fi
+
+  local latest_tag=""
+  latest_tag=$(git tag --list 'v*' --sort=-version:refname | head -1)
+  if [ -n "$latest_tag" ]; then
+    echo "$latest_tag"
+    return
+  fi
+
+  echo "origin/main"
+}
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -44,19 +67,24 @@ ok "Node.js $(node -v), git $(git --version | awk '{print $3}')"
 if [ -d "$HIVE_HOME/.git" ]; then
   info "Upgrading existing installation at $HIVE_HOME..."
   cd "$HIVE_HOME"
+  git fetch origin --tags --prune 2>&1 | tail -3 || true
+  TARGET_REF=$(resolve_target_ref)
   BEFORE=$(git rev-parse HEAD)
-  git pull --ff-only origin main 2>&1 | tail -3
+  git checkout --detach "$TARGET_REF" 2>&1 | tail -3
   AFTER=$(git rev-parse HEAD)
   if [ "$BEFORE" = "$AFTER" ]; then
-    ok "Already up to date"
+    ok "Already up to date at $TARGET_REF"
   else
     COMMITS=$(git log --oneline "$BEFORE".."$AFTER" | wc -l | tr -d ' ')
-    ok "Pulled $COMMITS new commit(s)"
+    ok "Updated to $TARGET_REF ($COMMITS commit(s) changed)"
   fi
 else
   info "Installing Hive to $HIVE_HOME..."
-  git clone --depth 1 "$REPO_URL" "$HIVE_HOME" 2>&1 | tail -3
+  git clone "$REPO_URL" "$HIVE_HOME" 2>&1 | tail -3
   cd "$HIVE_HOME"
+  git fetch origin --tags --prune 2>&1 | tail -3 || true
+  TARGET_REF=$(resolve_target_ref)
+  git checkout --detach "$TARGET_REF" 2>&1 | tail -3
   ok "Cloned"
 fi
 
@@ -120,6 +148,7 @@ echo -e " ${GREEN}Hive v${VERSION} ready!${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo " Location:    $HIVE_HOME"
+echo " Ref:         $(git describe --tags --always)"
 echo " MCP server:  node $HIVE_HOME/dist/mcp-server/index.js"
 echo ""
 echo " Add to Claude Code MCP config:"
@@ -136,5 +165,8 @@ echo "     \"env\": { \"HOME\": \"$HOME\" }"
 echo "   }"
 echo ""
 echo " Upgrade anytime:  curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash"
-echo " Or from local:    cd $HIVE_HOME && git pull && npm install && npm run build"
+echo " Stable(default):  HIVE_CHANNEL=stable  (latest tag)"
+echo " Bleeding edge:    HIVE_CHANNEL=main"
+echo " Pin exact ref:    HIVE_INSTALL_REF=v2.1.3"
+echo " Or from local:    cd $HIVE_HOME && git fetch --tags && git checkout --detach \$(git tag --list 'v*' --sort=-version:refname | head -1) && npm install && npm run build"
 echo ""
