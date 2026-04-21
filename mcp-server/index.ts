@@ -907,12 +907,13 @@ server.tool(
 
     try {
       const runId = `dispatch-${task_id}-${Date.now()}`;
+      const isGatewayModel = /^(gpt-|o[134]-)/i.test(model);
       const benchmarkRoutingPolicy = benchmark_no_fallback
         ? {
             mode: 'fixed-provider' as const,
             providerByFamily: {
-              gpt: 'openai',
-              non_gpt: 'anthropic',
+              gpt: isGatewayModel && provider ? provider : 'openai',
+              non_gpt: !isGatewayModel && provider ? provider : 'anthropic',
             },
             disable_channel_fallback: true,
             disable_model_fallback: true,
@@ -922,7 +923,7 @@ server.tool(
       // Preflight: quickPing before spawning
       let actualModel = model;
       let preflightFallback: string | null = null;
-      const ping = await quickPing(model);
+      const ping = await quickPing(model, 3000, provider);
       if (!ping.ok && !benchmark_no_fallback) {
         const registry = new ModelRegistry();
         const config = loadConfig(cwd || process.cwd());
@@ -1204,11 +1205,9 @@ server.tool(
     const pingPrompt = 'Reply with exactly: PONG';
     const startTime = Date.now();
     try {
-      const mmsRoute = resolveModelRoute(pingModel);
-      const baseUrl = mmsRoute?.anthropic_base_url
-        || process.env.ANTHROPIC_BASE_URL || '';
-      const apiKey = mmsRoute?.api_key
-        || process.env.ANTHROPIC_AUTH_TOKEN || '';
+      const resolved = resolveProviderForModel(pingModel);
+      const baseUrl = resolved.baseUrl;
+      const apiKey = resolved.apiKey;
 
       const client = new Anthropic({
         apiKey: apiKey || 'dummy',
@@ -1233,7 +1232,8 @@ server.tool(
       const debug = {
         baseUrl: baseUrl?.slice(0, 50),
         tokenPrefix: apiKey?.slice(0, 8),
-        source: mmsRoute ? 'mms-route' : 'process-env',
+        source: resolved.source || 'mms-route',
+        providerId: resolved.providerId,
       };
 
       return {

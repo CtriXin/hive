@@ -20,10 +20,25 @@ import type {
  */
 export function classifyProviderFailure(err: unknown): ProviderFailureSubtype {
   const msg = extractErrorMessage(err);
+  const wrappedStatus = extractWrappedStatusCode(msg);
 
   // Rate limiting — highest confidence patterns
   if (/429|rate.?limit|throttl|overload|too many requests/i.test(msg)) {
     return 'rate_limit';
+  }
+
+  if (wrappedStatus === 429) {
+    return 'rate_limit';
+  }
+
+  if (wrappedStatus !== null) {
+    if (wrappedStatus >= 500) return 'server_error';
+    if (wrappedStatus >= 400) return 'auth_failure';
+  }
+
+  // Some providers wrap server errors in API Error: 400 JSON payloads.
+  if (/\bE015\b|Internal server error/i.test(msg)) {
+    return 'server_error';
   }
 
   // Auth failures — should NOT be retried blindly
@@ -474,4 +489,13 @@ function extractErrorMessage(err: unknown): string {
     return String((err as any).message);
   }
   return JSON.stringify(err);
+}
+
+function extractWrappedStatusCode(message: string): number | null {
+  const explicitStatus = message.match(/"status"\s*:\s*(\d{3})|\bstatus\s*[:=]\s*(\d{3})/i);
+  if (!explicitStatus) {
+    return null;
+  }
+  const code = parseInt(explicitStatus[1] || explicitStatus[2], 10);
+  return Number.isFinite(code) ? code : null;
 }

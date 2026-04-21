@@ -56,6 +56,14 @@ describe('classifyProviderFailure', () => {
     expect(classifyProviderFailure({ message: '503 Service Unavailable' })).toBe('server_error');
   });
 
+  it('classifies wrapped 400-with-inner-500 errors as server_error', () => {
+    expect(
+      classifyProviderFailure({
+        message: 'API Error: 400 {"status":500,"code":"E015","message":"Internal server error"}',
+      }),
+    ).toBe('server_error');
+  });
+
   it('classifies provider unavailable', () => {
     expect(classifyProviderFailure({ message: 'No route found for model' })).toBe('provider_unavailable');
     expect(classifyProviderFailure({ message: 'Unknown provider' })).toBe('provider_unavailable');

@@ -71,7 +71,7 @@ export function buildSdkEnv(model: string, baseUrl?: string, apiKey?: string): R
   if (hasExplicitRoute && !needsMmsGateway && explicitNeedsProxy && needsModelProxy) {
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${getModelProxyPort()}`;
     env.ANTHROPIC_AUTH_TOKEN = 'proxy-managed';
-  } else if (hasExplicitRoute && !needsMmsGateway) {
+  } else if (hasExplicitRoute) {
     env.ANTHROPIC_BASE_URL = normalizedExplicitBaseUrl;
     env.ANTHROPIC_AUTH_TOKEN = apiKey || inheritedToken;
   } else if (needsModelProxy) {

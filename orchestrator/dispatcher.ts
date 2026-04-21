@@ -226,7 +226,7 @@ async function resolveRunnableFallback(
 
     try {
       const resolved = resolveProvider(provider, candidate);
-      const ping = await quickPing(candidate, options.pingTimeoutMs ?? 5000);
+      const ping = await quickPing(candidate, options.pingTimeoutMs ?? 5000, provider);
       if (!ping.ok) {
         healthStore?.recordDecision({
           provider,
@@ -329,7 +329,8 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     execution_contract: config.execution_contract,
   });
 
-  ensureStageModelAllowed('executor', currentModel);
+  const hiveConfig = loadConfig(config.cwd);
+  ensureStageModelAllowed('executor', currentModel, hiveConfig);
 
   let providerFailureSubtype: ProviderFailureSubtype | undefined;
   let providerFallbackUsed = false;
@@ -696,7 +697,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       currentProvider = fallback.provider;
       attemptedModels.add(fallback.model);
       providerFallbackUsed = true;
-      ensureStageModelAllowed('executor', currentModel);
+      ensureStageModelAllowed('executor', currentModel, hiveConfig);
       baseUrl = fallback.baseUrl;
       apiKey = fallback.apiKey;
       recordProviderDecision(requestedProvider, fallbackErrorType, 'fallback', `model fallback to ${currentModel}`, {

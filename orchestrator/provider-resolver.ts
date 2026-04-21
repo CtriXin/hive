@@ -13,8 +13,7 @@ import { normalizeModelId } from './model-defaults.js';
 import { resolveProjectPath } from './project-paths.js';
 import {
   isClaudeCodeDirectRoute,
-  resolveModelRoute,
-  resolveModelRouteFull,
+  resolveModelRouteFullWithBlacklist,
   invalidateCache as invalidateMmsCache,
 } from './mms-routes-loader.js';
 
@@ -95,9 +94,95 @@ function assertDirectClaudeRoute(
   route: Parameters<typeof isClaudeCodeDirectRoute>[0],
 ): void {
   if (isClaudeCodeDirectRoute(route)) return;
-  const cliMode = route.cli_modes?.claude?.trim().toLowerCase()
+  const cliMode = route.cli_modes?.claude?.trim()?.toLowerCase()
     || (Array.isArray(route.capabilities) && route.capabilities.includes('bridge_required') ? 'bridge' : 'unsupported');
   throw new UnsupportedMmsTransportError(modelId, cliMode);
+}
+
+function isGatewayFamilyModel(modelId: string): boolean {
+  return /^(gpt-|gemini-|o[134]-)/i.test(normalizeModelId(modelId));
+}
+
+function normalizeProviderId(providerId?: string): string {
+  return (providerId || '').trim().toLowerCase();
+}
+
+function assertResolvedRouteUrl(modelId: string, routeBaseUrl: string): void {
+  if (!routeBaseUrl || !/^https?:\/\//i.test(routeBaseUrl)) {
+    throw new Error(`Model "${modelId}" resolved to an invalid provider URL: ${routeBaseUrl || '(empty)'}`);
+  }
+
+  if (isGatewayFamilyModel(modelId)) {
+    return;
+  }
+
+  let routePath = '';
+  try {
+    routePath = new URL(routeBaseUrl).pathname.replace(/\/+$/, '');
+  } catch {
+    routePath = '';
+  }
+  const routeLooksClaudeCompatible = routePath === ''
+    || routePath === '/'
+    || routePath.endsWith('/anthropic');
+  if (!routeLooksClaudeCompatible) {
+    throw new Error(
+      `Model "${modelId}" resolved to non-Claude-compatible base URL "${routeBaseUrl}". `
+      + 'Expected a direct Anthropic-compatible route ending with /anthropic.'
+    );
+  }
+}
+
+function buildResolvedProviderFromMms(
+  modelId: string,
+  route: {
+    anthropic_base_url: string;
+    api_key: string;
+    provider_id: string;
+    cli_modes?: Record<string, string>;
+    capabilities?: string[];
+    bridge_clis?: string[];
+  },
+): ResolvedProvider {
+  assertDirectClaudeRoute(modelId, route);
+  assertResolvedRouteUrl(modelId, route.anthropic_base_url);
+  return {
+    baseUrl: route.anthropic_base_url,
+    apiKey: route.api_key,
+    routeMode: 'direct',
+    source: 'mms',
+    providerId: route.provider_id,
+  };
+}
+
+function selectPinnedMmsRoute(
+  resolved: NonNullable<ReturnType<typeof resolveModelRouteFullWithBlacklist>>,
+  providerId: string,
+): {
+  anthropic_base_url: string;
+  api_key: string;
+  provider_id: string;
+  cli_modes?: Record<string, string>;
+  capabilities?: string[];
+  bridge_clis?: string[];
+} | null {
+  const normalizedProviderId = normalizeProviderId(providerId);
+  if (!normalizedProviderId) {
+    return resolved.route;
+  }
+
+  if (normalizeProviderId(resolved.route.provider_id) === normalizedProviderId) {
+    return resolved.route;
+  }
+
+  const matchedFallback = (resolved.route.fallback_routes || []).find(
+    (fallback) => normalizeProviderId(fallback.provider_id) === normalizedProviderId,
+  );
+  if (!matchedFallback) {
+    return null;
+  }
+
+  return matchedFallback;
 }
 
 /**
@@ -116,37 +201,23 @@ export function resolveProvider(
   providerId: string,
   modelId?: string,
 ): ResolvedProvider {
+  // Load Hive config for channel blacklist (optional)
+  let channelBlacklist: string[] = [];
+  try {
+    const hiveConfig = loadConfig(process.cwd());
+    channelBlacklist = hiveConfig.channel_blacklist || [];
+  } catch {
+    // ignore config read failure
+  }
+
   // ── Level 1: MMS model-routes.json ──
   if (modelId) {
-    const resolved = resolveModelRouteFull(modelId);
+    const resolved = resolveModelRouteFullWithBlacklist(modelId, channelBlacklist);
     if (resolved) {
-      assertDirectClaudeRoute(resolved.modelId, resolved.route);
-      const routeBaseUrl = resolved.route.anthropic_base_url;
-      if (!routeBaseUrl || !/^https?:\/\//i.test(routeBaseUrl)) {
-        throw new Error(`Model "${resolved.modelId}" resolved to an invalid provider URL: ${routeBaseUrl || '(empty)'}`);
+      const selectedRoute = selectPinnedMmsRoute(resolved, providerId);
+      if (selectedRoute) {
+        return buildResolvedProviderFromMms(resolved.modelId, selectedRoute);
       }
-      let routePath = '';
-      try {
-        routePath = new URL(routeBaseUrl).pathname.replace(/\/+$/, '');
-      } catch {
-        routePath = '';
-      }
-      const routeLooksClaudeCompatible = routePath === ''
-        || routePath === '/'
-        || routePath.endsWith('/anthropic');
-      if (!routeLooksClaudeCompatible) {
-        throw new Error(
-          `Model "${resolved.modelId}" resolved to non-Claude-compatible base URL "${routeBaseUrl}". `
-          + 'Expected a direct Anthropic-compatible route ending with /anthropic.'
-        );
-      }
-      return {
-        baseUrl: routeBaseUrl,
-        apiKey: resolved.route.api_key,
-        routeMode: 'direct',
-        source: 'mms',
-        providerId: resolved.route.provider_id,
-      };
     }
   }
 
@@ -208,17 +279,19 @@ export function resolveProvider(
  * Convenience wrapper for callers that only have a modelId.
  */
 export function resolveProviderForModel(modelId: string): ResolvedProvider {
-  // Try MMS route first
-  const resolved = resolveModelRouteFull(modelId);
+  // Load Hive config for channel blacklist (optional)
+  let channelBlacklist: string[] = [];
+  try {
+    const hiveConfig = loadConfig(process.cwd());
+    channelBlacklist = hiveConfig.channel_blacklist || [];
+  } catch {
+    // ignore config read failure
+  }
+
+  // Try MMS route first (with blacklist support)
+  const resolved = resolveModelRouteFullWithBlacklist(modelId, channelBlacklist);
   if (resolved) {
-    assertDirectClaudeRoute(resolved.modelId, resolved.route);
-    return {
-      baseUrl: resolved.route.anthropic_base_url,
-      apiKey: resolved.route.api_key,
-      routeMode: 'direct',
-      source: 'mms',
-      providerId: resolved.route.provider_id,
-    };
+    return buildResolvedProviderFromMms(resolved.modelId, resolved.route);
   }
 
   // No MMS route — caller needs to know the providerId
@@ -284,27 +357,25 @@ export interface QuickPingResult {
 export async function quickPing(
   modelId: string,
   timeoutMs = 3000,
+  providerId?: string,
 ): Promise<QuickPingResult> {
   const start = Date.now();
   try {
     const canonicalModelId = normalizeModelId(modelId);
-    const useMmsGateway = /^(gpt-|gemini-|o[134]-)/i.test(canonicalModelId);
     let url: string;
     let apiKey: string;
-
-    if (useMmsGateway) {
+    try {
+      const resolved = resolveProvider(providerId || '', canonicalModelId);
+      url = resolved.baseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
+      apiKey = resolved.apiKey;
+    } catch (err) {
+      if (!isGatewayFamilyModel(canonicalModelId)) {
+        throw err;
+      }
       const mmsBase = process.env.ANTHROPIC_BASE_URL;
       if (!mmsBase) return { ok: true, ms: 0 }; // Can't ping, assume ok
       url = mmsBase.replace(/\/v1\/?$/, '') + '/v1/messages';
       apiKey = process.env.ANTHROPIC_AUTH_TOKEN || '';
-    } else {
-      const route = resolveModelRoute(canonicalModelId);
-      if (route && !isClaudeCodeDirectRoute(route)) {
-        return { ok: false, ms: Date.now() - start, error: 'BRIDGE_REQUIRED' };
-      }
-      const resolved = resolveProviderForModel(canonicalModelId);
-      url = resolved.baseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
-      apiKey = resolved.apiKey;
     }
 
     const resp = await fetch(url, {

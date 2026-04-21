@@ -50,11 +50,20 @@ describe('buildSdkEnv — ANTHROPIC_BASE_URL normalization', () => {
   });
 
   describe('MMS gateway path', () => {
-    it('strips /v1 from inherited ANTHROPIC_BASE_URL for GPT models', () => {
+    it('prefers explicit route for GPT models instead of inherited gateway env', () => {
       process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1';
       process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
-      const env = buildSdkEnv('gpt-5', 'https://other.com', 'key');
+      const env = buildSdkEnv('gpt-5', 'https://other.com/v1', 'key');
+      expect(env.ANTHROPIC_BASE_URL).toBe('https://other.com');
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('key');
+    });
+
+    it('falls back to inherited gateway env for GPT models without explicit route', () => {
+      process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
+      const env = buildSdkEnv('gpt-5');
       expect(env.ANTHROPIC_BASE_URL).toBe('https://gateway.example.com');
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('tok');
     });
 
     it('prefers explicit provider baseUrl for domestic models', () => {
