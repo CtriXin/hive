@@ -329,8 +329,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     execution_contract: config.execution_contract,
   });
 
-  const hiveConfig = loadConfig(config.cwd);
-  ensureStageModelAllowed('executor', currentModel, hiveConfig);
+  ensureStageModelAllowed('executor', currentModel);
 
   let providerFailureSubtype: ProviderFailureSubtype | undefined;
   let providerFallbackUsed = false;
@@ -697,7 +696,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       currentProvider = fallback.provider;
       attemptedModels.add(fallback.model);
       providerFallbackUsed = true;
-      ensureStageModelAllowed('executor', currentModel, hiveConfig);
+      ensureStageModelAllowed('executor', currentModel);
       baseUrl = fallback.baseUrl;
       apiKey = fallback.apiKey;
       recordProviderDecision(requestedProvider, fallbackErrorType, 'fallback', `model fallback to ${currentModel}`, {

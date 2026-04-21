@@ -13,7 +13,7 @@ import { normalizeModelId } from './model-defaults.js';
 import { resolveProjectPath } from './project-paths.js';
 import {
   isClaudeCodeDirectRoute,
-  resolveModelRouteFullWithBlacklist,
+  resolveModelRouteFull,
   invalidateCache as invalidateMmsCache,
 } from './mms-routes-loader.js';
 
@@ -156,7 +156,7 @@ function buildResolvedProviderFromMms(
 }
 
 function selectPinnedMmsRoute(
-  resolved: NonNullable<ReturnType<typeof resolveModelRouteFullWithBlacklist>>,
+  resolved: NonNullable<ReturnType<typeof resolveModelRouteFull>>,
   providerId: string,
 ): {
   anthropic_base_url: string;
@@ -201,18 +201,9 @@ export function resolveProvider(
   providerId: string,
   modelId?: string,
 ): ResolvedProvider {
-  // Load Hive config for channel blacklist (optional)
-  let channelBlacklist: string[] = [];
-  try {
-    const hiveConfig = loadConfig(process.cwd());
-    channelBlacklist = hiveConfig.channel_blacklist || [];
-  } catch {
-    // ignore config read failure
-  }
-
   // ── Level 1: MMS model-routes.json ──
   if (modelId) {
-    const resolved = resolveModelRouteFullWithBlacklist(modelId, channelBlacklist);
+    const resolved = resolveModelRouteFull(modelId);
     if (resolved) {
       const selectedRoute = selectPinnedMmsRoute(resolved, providerId);
       if (selectedRoute) {
@@ -279,17 +270,8 @@ export function resolveProvider(
  * Convenience wrapper for callers that only have a modelId.
  */
 export function resolveProviderForModel(modelId: string): ResolvedProvider {
-  // Load Hive config for channel blacklist (optional)
-  let channelBlacklist: string[] = [];
-  try {
-    const hiveConfig = loadConfig(process.cwd());
-    channelBlacklist = hiveConfig.channel_blacklist || [];
-  } catch {
-    // ignore config read failure
-  }
-
-  // Try MMS route first (with blacklist support)
-  const resolved = resolveModelRouteFullWithBlacklist(modelId, channelBlacklist);
+  // Try MMS route first
+  const resolved = resolveModelRouteFull(modelId);
   if (resolved) {
     return buildResolvedProviderFromMms(resolved.modelId, resolved.route);
   }
