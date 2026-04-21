@@ -46,7 +46,7 @@ vi.mock('../orchestrator/project-paths.js', () => ({
 // Mock mms-routes-loader
 let mockResolvedRoute: any = null;
 vi.mock('../orchestrator/mms-routes-loader.js', () => ({
-  resolveModelRouteFullWithBlacklist: (_modelId: string) => mockResolvedRoute,
+  resolveModelRouteFull: (_modelId: string) => mockResolvedRoute,
   isClaudeCodeDirectRoute: (route: any) => !(route?.cli_modes?.claude === 'bridge' || route?.capabilities?.includes?.('bridge_required')),
   invalidateCache: () => {},
 }));
