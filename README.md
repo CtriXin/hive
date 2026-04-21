@@ -1,16 +1,14 @@
 # Hive
 
-**Multi-model AI orchestration — Claude thinks, domestic models execute, everyone reviews.**
+**Multi-model orchestration for real coding loops — plan, dispatch, review, verify, merge.**
 
-> Claude 是蜂后，国产模型是工蜂，成本降 85%，质量不打折。
-
-<p align="center">
-  <img src="docs/images/architecture-cn.png" alt="Hive 架构图" width="700" />
-</p>
+> Hive keeps the control loop. Different models can plan, execute, review, and report through one runtime.
 
 [English](#english) | [中文](#中文)
 
----
+<p align="center">
+  <img src="docs/images/architecture-en.png" alt="Hive v2.1.0 architecture" width="900" />
+</p>
 
 ## Install
 
@@ -23,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh 
 Pin an exact release:
 
 ```bash
-HIVE_INSTALL_REF=v2.1.3 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+HIVE_INSTALL_REF=v2.1.4 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
 ```
 
 Bleeding edge from `main`:
@@ -44,192 +42,213 @@ Full clean including `~/.hive` config:
 HIVE_PURGE_CONFIG=1 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
 ```
 
-> Installs to `~/.hive-orchestrator`. Custom: `HIVE_HOME=/your/path ... | bash`
-> Already installed? Same install command upgrades in place.
+> Installs to `~/.hive-orchestrator`. Custom location: `HIVE_HOME=/your/path curl -fsSL ... | bash`
+> Run the same install command again to upgrade.
 
 ## For AI Agents
 
-> **Copy the prompt below into Claude Code, Cursor, or any AI coding assistant — it will handle the rest.**
+> Copy the prompt below into Claude Code, Cursor, or another coding agent if you want the agent to install and wire Hive for you.
 
-```
+```text
 Install Hive from https://github.com/CtriXin/hive using the setup below.
-Run commands, fix errors, report results when done.
+Run commands, fix errors, and report results when done.
 
-INSTALL:  curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
-UPGRADE:  same command (defaults to latest stable tag)
-PIN:      HIVE_INSTALL_REF=v2.1.3 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
-CLEAN:    curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
-DIR:      ~/.hive-orchestrator (override: HIVE_HOME=/path)
+INSTALL:
+  curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+
+UPGRADE:
+  same command (defaults to latest stable tag)
+
+PIN:
+  HIVE_INSTALL_REF=v2.1.4 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+
+CLEAN:
+  curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
+
+DIR:
+  ~/.hive-orchestrator
+  override with: HIVE_HOME=/path
 
 REQUIRES:
 - node >= 18
-- ~/.config/mms/model-routes.json (MMS gateway, resolves model→provider+key)
-  override: export MMS_ROUTES_PATH=/path/to/model-routes.json
+- ~/.config/mms/model-routes.json
+  override with: export MMS_ROUTES_PATH=/path/to/model-routes.json
 
-ENV KEYS (fallback when MMS routes unavailable, at least one required):
-  QWEN_API_KEY  KIMI_API_KEY  KIMI_CODING_API_KEY  GLM_CN_API_KEY
-  GLM_EN_API_KEY  MINIMAX_CN_API_KEY  MINIMAX_EN_API_KEY  BAILIAN_API_KEY
+ENV KEYS (fallback when MMS routes are unavailable; at least one required):
+  QWEN_API_KEY
+  KIMI_API_KEY
+  KIMI_CODING_API_KEY
+  GLM_CN_API_KEY
+  GLM_EN_API_KEY
+  MINIMAX_CN_API_KEY
+  MINIMAX_EN_API_KEY
+  BAILIAN_API_KEY
 
-CONFIG FILES (in config/):
-  providers.json         — 8 providers, api_key_env per entry
-  model-capabilities.json — static benchmark scores (14 models)
-  model-profiles.json    — live observed scores (auto-updated)
-  benchmark-policy.json  — scoring weights + decay + thresholds
-  review-policy.json     — 4-stage review cascade
-  User overrides: ~/.hive/config.json (global), <repo>/.hive/config.json (project)
+CONFIG LAYERS:
+- built-in defaults
+- ~/.hive/config.json
+- <repo>/.hive/config.json
+- run-scoped overrides: .ai/runs/<run-id>/model-overrides.json
+
+CLI QUICK CHECK:
+- hive run "<goal>"
+- hive status
+- hive watch --once
+- hive compact
+- hive shell
+- hive web --port 3100
 
 MCP SETUP:
   claude mcp add hive -- node ~/.hive-orchestrator/dist/mcp-server/index.js
-  Sandboxed env: add "env":{"HOME":"/Users/<real-user>"} so hive finds model-routes.json
 
-MCP TOOLS: plan_tasks, execute_plan, dispatch_single, diagnostics, report
+MCP TOOLS:
+  capture_goal
+  plan_tasks
+  execute_plan
+  dispatch_single
+  diagnostics
+  compact_run
+  report
+  run_goal
+  resume_run
+  run_status
+  submit_steering
 
 VERIFY:
-  cd ~/.hive-orchestrator && npm run test:smoke
   cd ~/.hive-orchestrator && npm run build
+  cd ~/.hive-orchestrator && npm test
 
-ERRORS:
-  "No MMS route found"      → check ~/.config/mms/model-routes.json exists
-  "API key not configured"  → export <KEY>="your-key" in ~/.zshrc
-  "Unknown provider"        → check config/providers.json
+COMMON FAILURES:
+- "No MMS route found"     -> check ~/.config/mms/model-routes.json
+- "API key not configured" -> export the required provider key
+- "Unknown provider"       -> check config/providers.json
 ```
 
 ---
 
 <a id="english"></a>
 
-## What is Hive?
+## What Hive Is Now
 
-Hive is a self-contained orchestration system that turns expensive AI coding into a cost-effective assembly line:
+Hive is a self-contained orchestration runtime for multi-model coding work. It is no longer just a planner-plus-workers sketch; the released mainline includes:
 
-```
-You → Translate → Claude plans → Domestic models execute in parallel → 4-stage review cascade → Report back
-```
+- a real run loop with planning, execution, review, verification, repair, and merge
+- CLI operator surfaces such as `status`, `watch`, `compact`, `shell`, and `runs`
+- a local browser decision surface via `hive web`
+- layered model policy controls spanning Run, Project, Global, and Default
+- persistent run artifacts under `.ai/runs/<run-id>/`
 
-Instead of burning $5+ per session on Claude Opus for everything, Hive routes ~85% of the work to domestic models at a fraction of the cost, while Claude handles only planning and final decisions.
+## v2.1.0 Reality
 
-### The 4-Tier Cascade
-
-<p align="center">
-  <img src="docs/images/architecture-en.png" alt="Hive Architecture" width="700" />
-</p>
-
-### Cost Comparison
-
-| Approach | Per session | Monthly (100 sessions) |
-|----------|-----------|----------------------|
-| Pure Claude Opus | ~$5.00 | ~$500 |
-| **Hive** | ~$0.77 | ~$77 |
-| Savings | **85%** | **$423/month** |
-
-## Features
-
-- **Self-Contained** — Zero external runtime dependencies. Protocol adapter, provider registry, discussion engine, adversarial review all built-in.
-- **Profile-Based Model Routing** — Task fingerprints, benchmark profiles, speed tiers, and observed scores are combined to pick the best worker for each sub-task.
-- **Dynamic Model Scoring** — Models earn trust through performance. Complexity-aware EMA, weighted samples, confidence factors, and exploration bonus keep routing fairer across easy vs hard tasks.
-- **Worker Uncertainty Protocol** — When a worker's confidence drops below threshold, it triggers a structured cross-model discussion instead of guessing. Mandatory pushback prevents echo chambers.
-- **4-Stage Review Cascade** — Progressively expensive review. 70%+ complete at Stage 1-2 using only domestic models (near-free).
-- **Two-Layer Config System** — Global config in `~/.hive/config.json` and per-project overrides in `<repo>/.hive/config.json`.
-- **Browser Decision Surface** — `hive web` exposes a local browser dashboard focused on verdict, blocker, next action, and compact drill-down instead of raw artifacts.
-- **Layered Model Policy Center** — Inspect `Run > Project > Global > Default` precedence, route summaries, and safe-point behavior from the Web surface.
-- **Gateway / Direct Provider Modes** — Run everything through a unified gateway, or resolve each provider directly from `config/providers.json`.
-- **MCP Server Included** — Hive exposes planning, execution, translation, health-check, and reporting tools over MCP.
-
-## Status
-
-✅ **Hive v2.1.3 is released.** Core orchestrator, MCP server, review pipeline, Web decision surface, layered model policy controls, and stable-tag installer flow are in place; ongoing work continues as incremental follow-up slices.
-
-Want to contribute? See [Contributing](#contributing).
+- **Released mainline** — `v2.1.0` is shipped and tagged.
+- **Browser Web surface** — `hive web` serves a local decision-first dashboard, not just raw artifacts.
+- **Model policy center** — inspect effective policy and edit Run / Project layers from Web.
+- **Operator loop** — steering, watch, compact/restore, and HiveShell surfaces are part of the runtime.
+- **Resilience path** — capability routing, provider fallback, bounded retries, and state tracking are wired into execution.
 
 ## Quick Start
 
-**One-line install (or upgrade):**
+**One-line install or upgrade**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
 ```
 
-**Pin a specific release:**
-
-```bash
-HIVE_INSTALL_REF=v2.1.3 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
-```
-
-**Clean reinstall:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
-```
-
-Installs to `~/.hive-orchestrator`. Custom location: `HIVE_HOME=/your/path curl -fsSL ... | bash`
-
-**Manual install:**
+**Manual install**
 
 ```bash
 git clone https://github.com/CtriXin/hive.git
 cd hive
-npm install && npm run build
-```
-
-### CLI
-
-```bash
-hive
-hive web --port 3100
-hive-config
-```
-
-### Validate
-
-```bash
-npm run test:smoke
+npm install
 npm run build
 ```
 
-### Optional: Start MCP server
+**Run a goal**
+
+```bash
+hive run "Implement the auth callback flow and keep tests green"
+```
+
+**Observe the latest run**
+
+```bash
+hive status
+hive watch --once
+hive compact
+hive shell
+```
+
+**Open the local Web surface**
+
+```bash
+hive web --port 3100
+```
+
+**Start the MCP server**
 
 ```bash
 npm run start:mcp
 ```
 
-See `docs/MCP_USAGE.md` for MCP setup and tool details.
+See `docs/MCP_USAGE.md` for MCP setup and examples.
 
-### Configuration
+## Key Commands
 
-Hive merges configuration in this order:
+```bash
+hive run "<goal>"
+hive resume --execute
+hive status
+hive steer
+hive workers
+hive score
+hive watch --once
+hive compact
+hive restore
+hive shell
+hive runs
+hive web --port 3100
+```
 
-1. Built-in defaults
+## Configuration and Policy Layers
+
+Hive merges model policy in this order:
+
+1. built-in defaults
 2. `~/.hive/config.json`
-3. `<project>/.hive/config.json`
+3. `<repo>/.hive/config.json`
+4. `.ai/runs/<run-id>/model-overrides.json`
 
-Common settings include:
+The Web policy center presents this as `Run > Project > Global > Default`, while the runtime keeps safe-point semantics for run-level changes.
 
-- `high_tier`, `review_tier`, `default_worker`, `fallback_worker`
-- `translator_model`
-- `gateway.url` / `gateway.auth_token_env`
-- `providers_path`
-- per-task `overrides`
-- run-scoped overrides in `.ai/runs/<run-id>/model-overrides.json`
+Common configuration areas:
 
-### Runtime Layout
+- tier model selection via `tiers.*`
+- provider resolution and gateway settings
+- discuss / collaboration transport under `collab`
+- run-scoped overrides for next-stage changes
 
-- `orchestrator/` — planning, dispatch, review, model registry, profiling
-- `mcp-server/` — MCP entry and tools
-- `config/` — provider registry, model capabilities, benchmark policy, review policy
-- `bin/` — `hive` and `hive-config` launchers
-- `scripts/` — smoke tests and bridge checks
+## Repository Layout
+
+- `orchestrator/` — planner, driver loop, routing, review, Web adapter/server
+- `mcp-server/` — MCP entrypoints and tools
+- `config/` — provider registry, capabilities, scoring inputs, review policy
+- `web/` — local browser UI for `hive web`
+- `docs/` — architecture notes, phase docs, changelog, current-state reference
+
+## Status
+
+`v2.1.4` is released. The current mainline includes the local Web decision surface, layered model policy controls, doctor/install improvements, and MMS route bridging fixes. Richer product features such as auth, websocket push, and broader multi-project workflow are still future work.
 
 ## Contributing
 
-We welcome PRs! Priority areas:
+We welcome PRs. Open an issue before large changes so the direction is clear.
 
-- New provider support (ByteDance Doubao, Baichuan, etc.)
-- Review lens extensions (security-focused, performance-focused)
-- Additional CLI backend adapters (Gemini CLI, Qwen CLI)
-- Cost tracking and visualization
-- Documentation and examples
+Useful areas:
 
-Please open an issue first to discuss your approach before submitting large PRs.
+- provider integrations and route quality
+- review and authority improvements
+- operator ergonomics in CLI / Web
+- documentation and reproducible examples
 
 ## License
 
@@ -239,82 +258,39 @@ MIT
 
 <a id="中文"></a>
 
-## 中文文档
+## 中文说明
 
-### Hive 是什么？
+<p align="center">
+  <img src="docs/images/architecture-cn.png" alt="Hive v2.1.0 架构图" width="900" />
+</p>
 
-Hive（蜂巢）是一个多模型 AI 编程协作系统。核心思路：
+### Hive 现在是什么
 
-**Claude 是蜂后下达指令，国产模型是工蜂并行执行。**
+Hive 现在不是一个只有“Claude 规划、别的模型执行”的概念图了，而是一套已经落地的多模型编排 runtime。当前主线已经包含：
 
-- Claude Opus 只做规划和最终决策（占 15% 的 token）
-- 国产模型（Qwen、Kimi、GLM、MiniMax、DeepSeek）做具体编码（占 85%）
-- 4 阶段级联 review 保证质量不打折
-- 成本从 ~$5/session 降到 ~$0.77/session
+- 真正的 run loop：`plan -> execute -> review -> verify -> repair -> merge`
+- CLI 观察/恢复面：`status`、`watch`、`compact`、`shell`、`runs`
+- 本地 browser Web 决策面：`hive web`
+- 分层模型策略：`Run > Project > Global > Default`
+- 持久化运行产物：`.ai/runs/<run-id>/`
 
-### 完整流程
+### 当前版本重点
 
-```
-你的需求
-  → 翻译为 clean English prompt（Tier 0）
-  → Claude 拆解任务、分配模型（Tier 1）
-  → 国产模型并行执行，各自在独立 worktree 里干活（Tier 3）
-      └→ 不确定时自动触发跨模型讨论
-  → 4 阶段 review：交叉审查 → 对抗审查 → 仲裁 → 终审（Tier 2）
-  → 生成中文报告回传给你
-```
-
-### 核心特性
-
-#### 完全自包含
-不依赖任何外部运行时。协议翻译、provider 管理、讨论引擎、对抗 review 全部内置。
-
-#### 动态模型评分
-模型通过表现赚取信任。Hive 现在会结合 task fingerprint、benchmark profile、测速结果、复杂度归一化 EMA、weighted samples 和 confidence factor 自动选模，而不是只看静态分数。
-
-#### 不确定时讨论，不瞎猜
-Worker 信心不足时自动触发跨模型讨论。讨论协议要求 **必须有反对意见**（防止互相吹捧），讨论不出结果就升级。
-
-#### 4 阶段 review 级联
-70%+ 的代码在前两个阶段就通过了（全用国产模型，几乎免费）：
-1. **交叉审查**：A 模型写的代码让 B 模型审
-2. **对抗审查**：多维度挑战（找 bug + 审设计 + 去冗余）
-3. **仲裁**：只看有争议的严重发现
-4. **终审**：极少触发
-
-#### 双层配置系统
-配置按以下优先级合并：
-1. 内置默认值
-2. `~/.hive/config.json`
-3. `<project>/.hive/config.json`
-
-支持 worker tier、gateway、provider 路径覆盖、translator、任务级 override 等配置。
-
-#### MCP 已可用
-Hive 已内置 MCP server，提供：
-- `plan_tasks`
-- `execute_plan`
-- `dispatch_single`
-- `health_check`
-- `model_scores`
-- `translate`
-- `report`
-
-### 状态
-
-🚧 **积极开发中。** 当前核心 orchestrator、MCP、review pipeline、config system 已经落地，后续重点是体验、文档和更多 provider/benchmark。
+- **`v2.1.0` 已发布**，不是预发布草稿
+- **`hive web` 已落地**，首屏是 decision surface，不再只是堆 artifact
+- **模型策略中心已落地**，可以查看 effective policy，并编辑 Run / Project 层
+- **主循环能力已收口**，包括 steering、watch、compact/restore、HiveShell
+- **执行韧性已接入主路径**，包括 capability routing、provider resilience、bounded retry、状态机
 
 ### 快速开始
 
-**一键安装/升级：**
+**安装 / 升级**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
 ```
 
-安装到 `~/.hive-orchestrator`。自定义路径：`HIVE_HOME=/your/path curl -fsSL ... | bash`
-
-**手动安装：**
+**手动安装**
 
 ```bash
 git clone https://github.com/CtriXin/hive.git
@@ -323,42 +299,90 @@ npm install
 npm run build
 ```
 
-常用命令：
+**执行一个目标**
 
 ```bash
-# 结构 smoke test
-npm run test:smoke
+hive run "实现 auth callback 流程，并保持测试通过"
+```
 
-# 启动 MCP server
+**查看当前 run**
+
+```bash
+hive status
+hive watch --once
+hive compact
+hive shell
+```
+
+**打开本地 Web 界面**
+
+```bash
+hive web --port 3100
+```
+
+**启动 MCP server**
+
+```bash
 npm run start:mcp
 ```
 
-更多 MCP 使用方式见 `docs/MCP_USAGE.md`。
+### 常用命令
 
-### 配置方式
+```bash
+hive run "<goal>"
+hive resume --execute
+hive status
+hive steer
+hive workers
+hive score
+hive watch --once
+hive compact
+hive restore
+hive shell
+hive runs
+hive web --port 3100
+```
 
-推荐两层配置：
+### 配置与策略优先级
 
-- 全局：`~/.hive/config.json`
-- 项目：`<repo>/.hive/config.json`
+Hive 的配置层级是：
 
-常用字段：
-- `high_tier` / `review_tier`
-- `default_worker` / `fallback_worker`
-- `translator_model`
-- `gateway`
-- `providers_path`
-- `overrides`
+1. 内置默认值
+2. `~/.hive/config.json`
+3. `<repo>/.hive/config.json`
+4. `.ai/runs/<run-id>/model-overrides.json`
+
+Web 里展示的是 `Run > Project > Global > Default`，运行时对 run 级改动保持 safe-point 生效语义，不会粗暴打断正在执行的 worker。
+
+常见配置点包括：
+
+- `tiers.*` 的模型选择
+- provider / gateway 路由
+- `collab` 下的讨论与协作 transport
+- run 级下一阶段 override
+
+### 仓库结构
+
+- `orchestrator/`：planner、driver loop、routing、review、Web adapter/server
+- `mcp-server/`：MCP tools 入口
+- `config/`：provider、capability、评分输入、review policy
+- `web/`：`hive web` 的本地前端
+- `docs/`：变更文档、phase 文档、当前状态说明
+
+### 当前状态
+
+`v2.1.4` 已正式发布。当前已经有本地 Web decision surface、分层模型策略控制、doctor / installer 改进，以及 MMS route bridging 修复；更完整的 auth、websocket push、广义 multi-project 产品化流程还属于后续工作。
 
 ### 参与贡献
 
-欢迎 PR。请先开 issue 讨论方案，再提交代码。
+欢迎 PR。较大的改动建议先开 issue 对齐方向。
 
-重点方向：
-- 新 provider 支持（字节豆包、百川等）
-- Review lens 扩展（安全专项、性能专项）
-- 更多 CLI 后端适配（Gemini CLI、Qwen CLI）
-- 成本追踪和可视化
+优先方向：
+
+- provider 接入与 route 质量
+- review / authority 路径增强
+- CLI / Web 操作体验
+- 文档与可复现实例
 
 ### License
 

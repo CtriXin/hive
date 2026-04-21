@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hive v2.1.0 Architecture</title>
+    <link rel="stylesheet" href="./architecture-shared.css" />
+  </head>
+  <body>
+    <main class="frame">
+      <section class="hero">
+        <div class="eyebrow">Hive v2.1.0 mainline</div>
+        <h1>Hive Architecture</h1>
+        <p class="subtitle">Current reality: CLI, MCP, and local Web all drive the same run-time control loop.</p>
+      </section>
+
+      <section class="section entry">
+        <h2 class="section-title">Entry Surfaces <span class="section-note">different entry points, one runtime</span></h2>
+        <div class="cards entry-grid">
+          <article class="card entry-card entry-cli">
+            <div class="card-title"><code>hive</code> CLI</div>
+            <div class="card-copy">Run, resume, observe, steer, compact, restore, and inspect the latest run from the terminal.</div>
+            <div class="meta">
+              <span class="chip">run / resume</span>
+              <span class="chip">status / watch</span>
+              <span class="chip">compact / shell / web</span>
+            </div>
+          </article>
+          <article class="card entry-card entry-mcp">
+            <div class="card-title">MCP tools</div>
+            <div class="card-copy">Structured host entrypoints for planning, execution, reporting, run inspection, and steering.</div>
+            <div class="meta">
+              <span class="chip violet">plan_tasks</span>
+              <span class="chip violet">run_goal / run_status</span>
+              <span class="chip violet">submit_steering</span>
+            </div>
+          </article>
+          <article class="card entry-card entry-web">
+            <div class="card-title"><code>hive web</code></div>
+            <div class="card-copy">Local browser decision surface with stop reason, next action, active runs, and model policy center.</div>
+            <div class="meta">
+              <span class="chip green">decision-first UI</span>
+              <span class="chip green">policy center</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section runtime">
+        <h2 class="section-title">Core Control Loop <span class="section-note">what actually happens inside a run</span></h2>
+        <div class="pipeline">
+          <article class="card runtime-boot">
+            <div class="card-title">Run bootstrap + state machine</div>
+            <div class="card-copy">Creates `spec.json` and `state.json`, manages phases, terminal states, retries, and loop progress.</div>
+            <div class="meta"><span class="chip">spec / state / progress</span></div>
+          </article>
+          <div class="arrow">→</div>
+          <article class="card runtime-plan">
+            <div class="card-title">Planner + driver loop</div>
+            <div class="card-copy">Plans tasks, resumes runs, decides repair vs replan, and keeps the operator loop coherent.</div>
+            <div class="meta"><span class="chip violet">plan / execute / repair / replan</span></div>
+          </article>
+          <div class="arrow">→</div>
+          <article class="card runtime-route">
+            <div class="card-title">Capability routing + provider resilience</div>
+            <div class="card-copy">Selects effective models, handles fallback paths, bounded retries, cooldowns, and route health.</div>
+            <div class="meta"><span class="chip green">routing / fallback / retry</span></div>
+          </article>
+          <div class="arrow">→</div>
+          <article class="card runtime-work">
+            <div class="card-title">Workers in isolated git worktrees</div>
+            <div class="card-copy">Each task runs in its own worktree so execution stays parallel, reviewable, and merge-safe.</div>
+            <div class="meta"><span class="chip green">parallel task execution</span></div>
+          </article>
+          <div class="arrow">→</div>
+          <article class="card runtime-review">
+            <div class="card-title">Review cascade + verification + merge</div>
+            <div class="card-copy">Cross-review, authority decisions, build/test verification, and progressive merge close the loop.</div>
+            <div class="meta"><span class="chip orange">review / verify / merge</span></div>
+          </article>
+        </div>
+
+        <div class="controls">
+          <article class="card control-wide">
+            <div class="card-title">Layered policy + steering</div>
+            <div class="card-copy">Run-time policy is not global guesswork anymore. Hive resolves effective policy across layers and applies safe-point semantics for active runs.</div>
+            <div class="meta">
+              <span class="chip">Run &gt; Project &gt; Global &gt; Default</span>
+              <span class="chip">safe-point override</span>
+            </div>
+          </article>
+          <article class="card">
+            <div class="card-title">Discuss / advisory / memory</div>
+            <div class="card-copy">Worker uncertainty, advisory signals, and recall context feed into the control loop instead of staying off to the side.</div>
+          </article>
+          <article class="card">
+            <div class="card-title">Human steering</div>
+            <div class="card-copy">Pause, resume, request replan, and other steering actions are persisted and consumed at safe points.</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section artifacts">
+        <h2 class="section-title">Artifacts and Operator Surfaces <span class="section-note">persistent run truth, then CLI/Web views on top</span></h2>
+        <div class="cards artifacts-grid">
+          <article class="card artifact-run">
+            <div class="card-title"><code>.ai/runs/&lt;run-id&gt;</code></div>
+            <div class="card-copy">Each run persists plan, result, loop progress, worker status, score history, steering state, provider health, and model overrides.</div>
+            <div class="meta">
+              <span class="chip orange">plan / result</span>
+              <span class="chip orange">worker-status / score-history</span>
+              <span class="chip orange">model-overrides / provider-health</span>
+            </div>
+          </article>
+          <article class="card artifact-cli">
+            <div class="card-title">CLI operator surfaces</div>
+            <div class="card-copy"><code>status</code>, <code>watch</code>, <code>compact</code>, <code>restore</code>, <code>shell</code>, <code>workers</code>, and <code>runs</code> all read from durable run artifacts.</div>
+          </article>
+          <article class="card artifact-web">
+            <div class="card-title">Web operator surfaces</div>
+            <div class="card-copy">The browser surface focuses on verdict, blocker, next action, active projects/runs, and the model policy center.</div>
+          </article>
+        </div>
+
+        <div class="footer-note">
+          <div class="footer-pill">Local browser Web, not a hosted SaaS dashboard</div>
+          <div class="footer-pill">Focus: operator clarity + reproducible artifacts</div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

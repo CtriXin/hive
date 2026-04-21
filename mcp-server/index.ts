@@ -1041,7 +1041,7 @@ server.tool(
           const route = table.routes[modelId];
           const urlPreview = route.anthropic_base_url.replace(/https?:\/\//, '').slice(0, 40);
           const hasKey = route.api_key ? 'key-set' : 'NO-KEY';
-          healthText += `- ${modelId}: ${urlPreview} (${hasKey}, p${route.priority})\n`;
+          healthText += `- ${modelId}: ${urlPreview} (${hasKey}, p${route.priority ?? 0})\n`;
         }
         healthText += '\n';
 

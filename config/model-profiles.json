@@ -466,9 +466,9 @@
       "scores": {
         "implementation": {
           "value": 1,
-          "samples": 166,
-          "effective_samples": 166.15,
-          "last_updated": "2026-04-20T09:04:40.202Z"
+          "samples": 226,
+          "effective_samples": 226.15,
+          "last_updated": "2026-04-21T16:08:31.118Z"
         },
         "review": {
           "value": 0.5,

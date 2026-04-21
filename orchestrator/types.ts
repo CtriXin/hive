@@ -1077,6 +1077,9 @@ export interface HiveConfig {
   providers_path?: string;
   // Per-tier model configuration
   tiers: TiersConfig;
+  model_blacklist?: string[];
+  channel_blacklist?: string[];
+  model_channel_map?: Record<string, string>;
   // Collaboration config (Phase 1: planner discuss transport)
   collab?: CollabConfig;
 }

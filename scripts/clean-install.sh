@@ -6,6 +6,11 @@ set -euo pipefail
 HIVE_HOME="${HIVE_HOME:-$HOME/.hive-orchestrator}"
 PURGE_CONFIG="${HIVE_PURGE_CONFIG:-0}"
 PURGE_RUNS="${HIVE_PURGE_RUNS:-0}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_REF="v2.1.4"
+if [ -f "$SCRIPT_DIR/../package.json" ]; then
+  DEFAULT_REF="v$(node -e "console.log(require('$SCRIPT_DIR/../package.json').version)" 2>/dev/null || echo 2.1.4)"
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -38,6 +43,6 @@ echo "Reinstall:"
 echo "  curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash"
 echo ""
 echo "Options:"
-echo "  HIVE_INSTALL_REF=v2.1.3 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash"
+echo "  HIVE_INSTALL_REF=$DEFAULT_REF curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash"
 echo "  HIVE_CHANNEL=main curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash"
 echo ""

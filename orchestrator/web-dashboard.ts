@@ -19,15 +19,36 @@ import {
   DEFAULT_CONFIG,
   deepMerge,
   getConfigSource,
+  isChannelBlacklisted,
+  isModelBlacklisted,
   loadConfig,
+  normalizeChannelBlacklist,
+  normalizeModelBlacklist,
   readJsonSafe,
   writeJsonSafe,
 } from './hive-config.js';
 import {
+  listModelChannelOptions,
+  matchModelChannelMapEntry,
+  normalizeModelChannelMap,
+  resolveConfiguredChannelProvider,
+  validateModelChannelMap,
+} from './model-channel-policy.js';
+import {
   getClaudeCliMode,
+  getMmsRoutesMeta,
   getModelFallbackRoutes,
+  listMmsChannels,
+  loadMmsRoutes,
   resolveModelRouteFull,
 } from './mms-routes-loader.js';
+import { getAllProviders } from './provider-resolver.js';
+import {
+  listConfigSnapshots,
+  createConfigSnapshot,
+  restoreConfigSnapshot,
+  deleteConfigSnapshot,
+} from './web-config-snapshots.js';
 import {
   loadRunModelOverrides,
   resetRunModelOverrides,
@@ -149,6 +170,7 @@ export interface WebModelOption {
   id: string;
   provider: string;
   route_summary: string;
+  blacklisted: boolean;
 }
 
 export interface WebModelPolicyStage {
@@ -208,6 +230,19 @@ export interface WebConfigPolicySurface {
   precedence: string;
   note: string;
   layers: WebModelPolicyLayer[];
+}
+
+export interface WebEditableConfigTarget {
+  scope: 'global' | 'project';
+  path: string | null;
+  exists: boolean;
+  writable: boolean;
+  note: string;
+}
+
+export interface WebEditableConfigSurface {
+  config: HiveConfig;
+  target: WebEditableConfigTarget;
 }
 
 interface ConfigLayerContext {
@@ -718,7 +753,7 @@ function buildTopStages(cwd: string, runId: string): WebModelPolicyStage[] {
 function buildConfigPolicySurface(cwd: string, runId: string): WebConfigPolicySurface {
   return {
     precedence: POLICY_PRECEDENCE,
-    note: 'channel / provider 仅做说明：实际 route 可能因为 MMS route、transport 能力和 runtime fallback 与 configured model 不同。',
+    note: 'channel / provider 会先应用模型-通道映射，再结合 MMS route、transport 能力和 runtime fallback 得出最终 route。',
     layers: buildConfigPolicyLayers(cwd, runId),
   };
 }
@@ -819,7 +854,7 @@ function buildPolicySummary(policy: ReturnType<typeof resolveEffectiveRunModelPo
 }
 
 function buildPolicyNote(): string {
-  return '优先级固定为 Run > Project > Global > Default。MMS route / channel 只读展示 route summary，不支持手动 pin。';
+  return '优先级固定为 Run > Project > Global > Default。model 先按 policy 决定，再可选映射到指定 channel，最终仍受 MMS route 与 runtime fallback 约束。';
 }
 
 function getContextRunId(cwd: string, runId: string): string {
@@ -1875,13 +1910,15 @@ export function submitWebSteeringAction(
   });
 }
 
-export function listWebModelOptions(): WebModelOption[] {
+export function listWebModelOptions(cwd: string = process.cwd()): WebModelOption[] {
   const registry = new ModelRegistry();
+  const config = loadConfig(cwd);
   return registry.getAll()
     .map((model) => ({
       id: model.id,
       provider: model.provider,
       route_summary: summarizeRoute(model.id),
+      blacklisted: isModelBlacklisted(config, model.id),
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -1966,4 +2003,461 @@ export function resetWebConfigPolicy(
 
 export function consumePolicySaveResult(): WebPolicySaveResult | undefined {
   return pullOneShotPolicyFeedback();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Global Config / Provider / Model / Snapshot APIs
+// ═══════════════════════════════════════════════════════════════════
+
+export interface WebProviderItem {
+  id: string;
+  display_name: string;
+  aliases: string[];
+  protocol: string;
+  api_key_env: string;
+  anthropic_base_url?: string;
+  openai_base_url?: string;
+  note?: string;
+  model_count: number;          // routed models (from model-routes.json)
+  supported_model_count: number; // models this channel can serve (from cache)
+  available_count: number;
+  blacklisted_count: number;
+  api_key_configured: boolean;
+  base_source?: string;
+  error?: string | null;
+  error_kind?: string | null;
+  route_role?: 'main' | 'fallback' | 'none';
+  hidden: boolean;
+}
+
+export interface WebMmsRouteItem {
+  model_id: string;
+  provider_id: string;
+  priority: number;
+  role: string;
+  anthropic_base_url: string;
+  openai_base_url?: string;
+  capabilities?: string[];
+}
+
+export interface WebModelRoutingItem {
+  model_id: string;
+  display_name: string;
+  provider_id: string;
+  effective_provider_id: string;
+  available_channels: Array<{
+    provider_id: string;
+    route_role: 'main' | 'fallback';
+    aliases: string[];
+    hidden: boolean;
+  }>;
+  selection: {
+    mode: 'default' | 'exact' | 'pattern';
+    pattern?: string;
+    selector?: string;
+  };
+  mms_route?: {
+    anthropic_base_url: string;
+    priority: number;
+    fallback_count: number;
+  };
+  policy?: {
+    pattern: string;
+    selector: string;
+    status: 'resolved' | 'missing' | 'ambiguous';
+    provider_id?: string;
+    candidates?: string[];
+  };
+  blacklisted: boolean;
+  blacklisted_by?: string;
+}
+
+export interface WebModelDetail {
+  id: string;
+  provider: string;
+  display_name: string;
+  overall_rank: number;
+  speed_tier: string;
+  speed_rank: number;
+  avg_time_s: number;
+  context_window: number;
+  cost_per_1k: number;
+  scores: Record<string, number>;
+  strengths: string[];
+  avoid_tags: string[];
+  benchmark?: Record<string, unknown>;
+  blacklisted: boolean;
+}
+
+export interface WebSnapshotMeta {
+  id: string;
+  created_at: string;
+  label: string;
+  size: number;
+}
+
+export function listWebProviders(cwd: string = process.cwd()): WebProviderItem[] {
+  const table = loadMmsRoutes();
+  const config = loadConfig(cwd);
+  const channels = listMmsChannels();
+  const channelOptions = new Map(
+    listModelChannelOptions().map((option) => [option.provider_id, option]),
+  );
+
+  // Aggregate routed model info from model-routes.json per provider
+  const providerMap = new Map<string, {
+    models: string[];
+    blacklisted: number;
+    baseUrls: Set<string>;
+  }>();
+
+  if (table) {
+    for (const [modelId, route] of Object.entries(table.routes)) {
+      const pid = route.provider_id;
+      const entry = providerMap.get(pid) || { models: [], blacklisted: 0, baseUrls: new Set<string>() };
+      entry.models.push(modelId);
+      if (isModelBlacklisted(config, modelId)) entry.blacklisted++;
+      if (route.anthropic_base_url) entry.baseUrls.add(route.anthropic_base_url);
+      providerMap.set(pid, entry);
+    }
+  }
+
+  // Build provider list from all MMS channels (cache scan)
+  const providerIds = new Set<string>([
+    ...channels.map((channel) => channel.id),
+    ...channelOptions.keys(),
+  ]);
+
+  return [...providerIds].sort().map((providerId) => {
+    const ch = channels.find((channel) => channel.id === providerId);
+    const option = channelOptions.get(providerId);
+    const routed = providerMap.get(providerId);
+    const routedCount = routed?.models.length ?? 0;
+    const blacklistedCount = routed?.blacklisted ?? 0;
+    return {
+      id: providerId,
+      display_name: option?.display_name || providerId,
+      aliases: option?.aliases || [providerId],
+      protocol: 'mms',
+      api_key_env: '',
+      anthropic_base_url: ch?.anthropic_base_url || option?.anthropic_base_url || (routed?.baseUrls.size ? Array.from(routed.baseUrls)[0] : undefined),
+      openai_base_url: ch?.working_url ?? option?.openai_base_url ?? undefined,
+      note: ch?.error ? `错误: ${ch.error}` : undefined,
+      model_count: routedCount,
+      supported_model_count: ch?.model_count ?? 0,
+      available_count: routedCount - blacklistedCount,
+      blacklisted_count: blacklistedCount,
+      api_key_configured: true,
+      base_source: ch?.base_source || 'model-routes',
+      error: ch?.error || null,
+      error_kind: ch?.error_kind || null,
+      route_role: ch?.route_role || option?.route_role || 'none',
+      hidden: isChannelBlacklisted(config, providerId),
+    };
+  });
+}
+
+export function listWebMmsRoutes(): WebMmsRouteItem[] {
+  const table = loadMmsRoutes();
+  if (!table) return [];
+  return Object.entries(table.routes).map(([modelId, route]) => ({
+    model_id: modelId,
+    provider_id: route.provider_id,
+    priority: route.priority ?? 0,
+    role: route.role,
+    anthropic_base_url: route.anthropic_base_url,
+    openai_base_url: route.openai_base_url,
+    capabilities: route.capabilities,
+  })).sort((a, b) => b.priority - a.priority);
+}
+
+export function listWebModelRouting(cwd: string = process.cwd()): WebModelRoutingItem[] {
+  const config = loadConfig(cwd);
+  const table = loadMmsRoutes();
+  if (!table) return [];
+
+  const registry = new ModelRegistry();
+  const channelOptions = new Map(
+    listModelChannelOptions().map((option) => [option.provider_id, option]),
+  );
+  return Object.entries(table.routes).map(([modelId, route]) => {
+    const normalizedModelId = modelId.trim().toLowerCase();
+    const blacklisted = isModelBlacklisted(config, modelId);
+    const blacklistPattern = blacklisted
+      ? (config.model_blacklist || []).find((p) => {
+        if (p.includes('*')) {
+          const regex = new RegExp('^' + p.replace(/\*/g, '.*') + '$');
+          return regex.test(modelId);
+        }
+        return p === modelId;
+      })
+      : undefined;
+    const regModel = registry.get(modelId);
+    const configuredChannel = resolveConfiguredChannelProvider(config.model_channel_map, modelId);
+    const policyMatch = matchModelChannelMapEntry(config.model_channel_map, modelId);
+    const hasExactPolicy = Boolean(
+      policyMatch
+      && !policyMatch.pattern.includes('*')
+      && policyMatch.pattern === normalizedModelId,
+    );
+    const effectiveProviderId = configuredChannel?.status === 'resolved'
+      ? configuredChannel.provider_id
+      : route.provider_id;
+    const availableChannels = [
+      { provider_id: route.provider_id, route_role: 'main' as const },
+      ...(route.fallback_routes || []).map((fallbackRoute) => ({
+        provider_id: fallbackRoute.provider_id,
+        route_role: 'fallback' as const,
+      })),
+    ].filter((entry, index, all) =>
+      all.findIndex((candidate) => candidate.provider_id === entry.provider_id) === index,
+    ).map((entry) => {
+      const option = channelOptions.get(entry.provider_id);
+      return {
+        provider_id: entry.provider_id,
+        route_role: entry.route_role,
+        aliases: (option?.aliases || [])
+          .filter((alias) => alias !== entry.provider_id)
+          .slice(0, 4),
+        hidden: isChannelBlacklisted(config, entry.provider_id),
+      };
+    });
+    return {
+      model_id: modelId,
+      display_name: regModel?.display_name || modelId,
+      provider_id: route.provider_id,
+      effective_provider_id: effectiveProviderId,
+      available_channels: availableChannels,
+      selection: policyMatch
+        ? {
+          mode: hasExactPolicy ? 'exact' : 'pattern',
+          pattern: policyMatch.pattern,
+          selector: policyMatch.selector,
+        }
+        : { mode: 'default' },
+      mms_route: {
+        anthropic_base_url: route.anthropic_base_url,
+        priority: route.priority ?? 0,
+        fallback_count: (route.fallback_routes || []).length,
+      },
+      ...(policyMatch
+        ? {
+          policy: configuredChannel
+            ? {
+              pattern: policyMatch.pattern,
+              selector: policyMatch.selector,
+              status: configuredChannel.status,
+              provider_id: configuredChannel.status === 'resolved'
+                ? configuredChannel.provider_id
+                : undefined,
+              candidates: configuredChannel.status === 'resolved'
+                ? undefined
+                : configuredChannel.candidates,
+            }
+            : undefined,
+        }
+        : {}),
+      blacklisted,
+      blacklisted_by: blacklistPattern,
+    };
+  });
+}
+
+export function listWebMmsMeta() {
+  return getMmsRoutesMeta();
+}
+
+export function listWebModelDetails(cwd: string = process.cwd()): WebModelDetail[] {
+  const registry = new ModelRegistry();
+  const config = loadConfig(cwd);
+  const all = registry.getAll();
+  const claudeTiers = ['opus', 'sonnet', 'haiku'] as const;
+  const results: WebModelDetail[] = all.map((m) => ({
+    id: m.id,
+    provider: m.provider,
+    display_name: m.display_name,
+    overall_rank: 0,
+    speed_tier: 'unknown',
+    speed_rank: 0,
+    avg_time_s: 0,
+    context_window: m.context_window,
+    cost_per_1k: m.cost_per_mtok_input / 1000,
+    scores: {
+      general: m.coding,
+      coding: m.coding,
+      reasoning: m.reasoning,
+      translation: m.chinese,
+      tool_use: m.tool_use_reliability,
+    },
+    strengths: m.sweet_spot,
+    avoid_tags: m.avoid,
+    blacklisted: isModelBlacklisted(config, m.id),
+  }));
+
+  // Enrich from raw capabilities file if available
+  const capabilitiesPath = path.join(cwd, 'config', 'model-capabilities.json');
+  if (fs.existsSync(capabilitiesPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(capabilitiesPath, 'utf-8')) as {
+        models?: Record<string, {
+          overall_rank?: number;
+          speed_tier?: string;
+          speed_rank?: number;
+          avg_time_s?: number;
+          scores?: Record<string, number>;
+          benchmark?: Record<string, unknown>;
+          strengths?: string[];
+          avoid_tags?: string[];
+        }>;
+        claude_tiers?: Record<string, {
+          id?: string;
+          context_window?: number;
+          cost_per_1k?: number;
+          strengths?: string[];
+          scores?: Record<string, number>;
+        }>;
+      };
+      for (const model of results) {
+        const cap = raw.models?.[model.id];
+        if (cap) {
+          model.overall_rank = cap.overall_rank ?? model.overall_rank;
+          model.speed_tier = cap.speed_tier ?? model.speed_tier;
+          model.speed_rank = cap.speed_rank ?? model.speed_rank;
+          model.avg_time_s = cap.avg_time_s ?? model.avg_time_s;
+          model.scores = cap.scores ?? model.scores;
+          model.strengths = cap.strengths ?? model.strengths;
+          model.avoid_tags = cap.avoid_tags ?? model.avoid_tags;
+          model.benchmark = cap.benchmark;
+        }
+      }
+      // Add claude tiers as models
+      for (const tier of claudeTiers) {
+        const ct = raw.claude_tiers?.[tier];
+        if (ct?.id) {
+          results.push({
+            id: ct.id,
+            provider: `claude-${tier}`,
+            display_name: `Claude ${tier}`,
+            overall_rank: 0,
+            speed_tier: 'strong',
+            speed_rank: 0,
+            avg_time_s: 0,
+            context_window: ct.context_window ?? 200000,
+            cost_per_1k: ct.cost_per_1k ?? 0,
+            scores: ct.scores ?? {},
+            strengths: ct.strengths ?? [],
+            avoid_tags: [],
+            blacklisted: isModelBlacklisted(config, ct.id),
+          });
+        }
+      }
+    } catch {
+      // ignore enrichment errors
+    }
+  }
+
+  return results.sort((a, b) => (a.overall_rank || 999) - (b.overall_rank || 999));
+}
+
+function editableConfigTarget(cwd: string, scope: 'global' | 'project'): WebEditableConfigTarget {
+  const sources = getConfigSource(cwd);
+  const targetPath = scope === 'global' ? sources.global : sources.local;
+  const exists = targetPath ? fs.existsSync(targetPath) : false;
+  if (scope === 'project') {
+    return {
+      scope,
+      path: targetPath,
+      exists,
+      writable: Boolean(targetPath),
+      note: targetPath
+        ? '当前编辑 Project layer；运行时还会再叠加 Run / Global / Default。'
+        : '当前 cwd 未定位到 git repo，无法写入 Project layer。',
+    };
+  }
+  return {
+    scope,
+    path: targetPath,
+    exists,
+    writable: true,
+    note: '当前编辑 Global layer；会影响后续所有 Hive run。',
+  };
+}
+
+function normalizeConfigSurface(value: HiveConfig): HiveConfig {
+  const merged = value;
+  merged.model_blacklist = normalizeModelBlacklist(merged.model_blacklist);
+  merged.channel_blacklist = normalizeChannelBlacklist(merged.channel_blacklist);
+  merged.model_channel_map = normalizeModelChannelMap(merged.model_channel_map);
+  return merged;
+}
+
+export function loadWebGlobalConfig(
+  cwd: string,
+  scope: 'global' | 'project' = 'global',
+): WebEditableConfigSurface {
+  const target = editableConfigTarget(cwd, scope);
+  const rawConfig = target.path ? readJsonSafe<HiveConfig>(target.path) : {};
+  return {
+    config: normalizeConfigSurface(deepMerge<HiveConfig>(DEFAULT_CONFIG, rawConfig)),
+    target,
+  };
+}
+
+export function updateWebGlobalConfig(
+  cwd: string,
+  patch: Partial<HiveConfig>,
+  scope: 'global' | 'project' = 'global',
+): WebEditableConfigSurface {
+  const target = editableConfigTarget(cwd, scope);
+  if (!target.path || !target.writable) {
+    throw new Error(`当前 cwd 没有可写的 ${scope} 配置文件`);
+  }
+  const current = readJsonSafe<HiveConfig>(target.path);
+  const next = deepMerge<HiveConfig>(current, patch);
+  if ('model_blacklist' in patch) {
+    next.model_blacklist = normalizeModelBlacklist(patch.model_blacklist);
+  }
+  if ('channel_blacklist' in patch) {
+    next.channel_blacklist = normalizeChannelBlacklist(patch.channel_blacklist);
+  }
+  if ('model_channel_map' in patch) {
+    next.model_channel_map = normalizeModelChannelMap(patch.model_channel_map);
+    validateModelChannelMap(next.model_channel_map);
+  }
+  writeJsonSafe(target.path, next);
+  return loadWebGlobalConfig(cwd, scope);
+}
+
+export function resetWebGlobalConfig(
+  cwd: string,
+  scope: 'global' | 'project' = 'global',
+): WebEditableConfigSurface {
+  const target = editableConfigTarget(cwd, scope);
+  if (!target.path || !target.writable) {
+    throw new Error(`当前 cwd 没有可写的 ${scope} 配置文件`);
+  }
+  if (scope === 'project') {
+    if (fs.existsSync(target.path)) {
+      fs.unlinkSync(target.path);
+    }
+    return loadWebGlobalConfig(cwd, scope);
+  }
+  writeJsonSafe(target.path, DEFAULT_CONFIG);
+  return loadWebGlobalConfig(cwd, scope);
+}
+
+export function listWebConfigSnapshots(): WebSnapshotMeta[] {
+  return listConfigSnapshots();
+}
+
+export function createWebConfigSnapshot(label?: string): WebSnapshotMeta {
+  return createConfigSnapshot(label);
+}
+
+export function restoreWebConfigSnapshot(snapshotId: string): Record<string, unknown> {
+  return restoreConfigSnapshot(snapshotId);
+}
+
+export function deleteWebConfigSnapshot(snapshotId: string): void {
+  return deleteConfigSnapshot(snapshotId);
 }

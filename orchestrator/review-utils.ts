@@ -3,7 +3,7 @@
 // Hive-specific functions (infra failure detection, auto-pass, review policy) kept here.
 import fs from 'fs';
 import type { SubTask, FindingSeverity, Complexity } from './types.js';
-import { ensureStageModelAllowed, type FailureType, type ModelStage } from './hive-config.js';
+import { ensureStageModelAllowed, loadConfig, type FailureType, type ModelStage } from './hive-config.js';
 import {
   resolveProvider as resolveConfiguredProvider,
   resolveProviderForModel,
@@ -153,7 +153,7 @@ export async function queryModelText(
   prompt: string, cwd: string, modelId: string,
   providerId?: string, maxTurns = 2, timeoutMs = 30000, stage: ModelStage = 'cross_review',
 ): Promise<QueryModelResult> {
-  ensureStageModelAllowed(stage, modelId);
+  ensureStageModelAllowed(stage, modelId, loadConfig(cwd));
   let env: Record<string, string>;
   if (providerId) {
     const resolved = resolveConfiguredProvider(providerId, modelId);

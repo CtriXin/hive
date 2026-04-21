@@ -35,15 +35,17 @@ function resolveProviderConfig(
   }
 }
 
-function ensureNoImplicitClaudeFallback(
+function ensureExplicitSdkRoute(
   modelId: string,
   baseUrl: string,
   apiKey: string,
 ): void {
-  if (modelId.startsWith('claude-')) return;
   if (!baseUrl || !apiKey) {
+    const detail = modelId.startsWith('claude-')
+      ? 'Claude OAuth is manual-only here; ambient fallback is blocked.'
+      : 'Refusing implicit Claude fallback.';
     throw new Error(
-      `Model "${modelId}" has no explicit provider route/key. Refusing implicit Claude fallback.`,
+      `Model "${modelId}" has no explicit provider route/key. ${detail}`,
     );
   }
 }
@@ -90,8 +92,9 @@ function resolveDiscussPartners(
       () => registry.selectDiscussPartner(excludeModel),
       registry,
       'review',
+      config,
     );
-    ensureStageModelAllowed('discuss', id);
+    ensureStageModelAllowed('discuss', id, config);
     if (!resolved.includes(id)) resolved.push(id);
   }
   return resolved;
@@ -166,7 +169,7 @@ async function runSingleDiscuss(
   workDir: string,
 ): Promise<DiscussionReply | null> {
   const { baseUrl, apiKey } = resolveProviderConfig(partnerId);
-  ensureNoImplicitClaudeFallback(partnerId, baseUrl, apiKey);
+  ensureExplicitSdkRoute(partnerId, baseUrl, apiKey);
   const result = await safeQuery({
     prompt,
     options: {
@@ -308,7 +311,7 @@ async function runSinglePlanDiscuss(
   cwd: string,
 ): Promise<RawPlanReview | null> {
   const { baseUrl, apiKey } = resolveProviderConfig(partnerId);
-  ensureNoImplicitClaudeFallback(partnerId, baseUrl, apiKey);
+  ensureExplicitSdkRoute(partnerId, baseUrl, apiKey);
   const result = await safeQuery({
     prompt,
     options: {
@@ -350,7 +353,7 @@ export async function discussPlan(
   const models = Array.isArray(tierModel) ? tierModel : [tierModel];
 
   const partnerIds = models.map(m =>
-    resolveTierModel(m, () => registry.selectDiscussPartner(plannerModel), registry, 'review'),
+    resolveTierModel(m, () => registry.selectDiscussPartner(plannerModel), registry, 'review', config),
   );
   const uniquePartners = dedup(partnerIds);
 
@@ -376,6 +379,7 @@ export async function discussPlan(
       uniquePartners.map(async (id) => {
         try {
           const { baseUrl, apiKey } = resolveProviderConfig(id);
+          ensureExplicitSdkRoute(id, baseUrl, apiKey);
           const r = await safeQuery({
             prompt,
             options: {
@@ -418,6 +422,7 @@ export async function discussPlan(
         console.log(`  🔄 Plan discuss: primary partners failed, trying fallback ${fallbackModel}`);
         try {
           const { baseUrl, apiKey } = resolveProviderConfig(fallbackModel);
+          ensureExplicitSdkRoute(fallbackModel, baseUrl, apiKey);
           const r = await safeQuery({
             prompt,
             options: {

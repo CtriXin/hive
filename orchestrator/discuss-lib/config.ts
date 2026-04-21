@@ -7,6 +7,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import type { DiscussConfig, ModelRoute } from './types.js';
+import { normalizeMmsRoutesPayload } from '../mms-routes-contract.js';
 
 // ── Resolve real user home ──
 // claude-gateway overrides $HOME to its session dir (e.g. ~/.config/mms/claude-gateway/s/NNN).
@@ -75,7 +76,8 @@ function loadModelRoutes(routesPath: string): Record<string, ModelRoute> {
 
   try {
     const raw = JSON.parse(fs.readFileSync(routesPath, 'utf-8'));
-    const routes: Record<string, ModelRoute> = raw.routes || {};
+    const normalized = normalizeMmsRoutesPayload(raw);
+    const routes: Record<string, ModelRoute> = normalized?.routes || {};
     routesCache = { path: routesPath, mtimeMs, value: routes };
     return routes;
   } catch {
@@ -174,7 +176,7 @@ export function listAvailableModels(config?: Partial<DiscussConfig>): string[] {
   const routesPath = config?.model_routes_path || getDefaultRoutesPath();
   const routes = loadModelRoutes(routesPath);
   return Object.entries(routes)
-    .sort((a, b) => (b[1].priority ?? 0) - (a[1].priority ?? 0))
+    .sort((a, b) => (b[1].priority ?? 0) - (a[1].priority ?? 0) || a[0].localeCompare(b[0]))
     .map(([id]) => id);
 }
 
@@ -192,7 +194,7 @@ export function listDomesticModels(config?: Partial<DiscussConfig>): string[] {
   const routes = loadModelRoutes(routesPath);
   return Object.entries(routes)
     .filter(([id]) => !isForeignModel(id))
-    .sort((a, b) => (b[1].priority ?? 0) - (a[1].priority ?? 0))
+    .sort((a, b) => (b[1].priority ?? 0) - (a[1].priority ?? 0) || a[0].localeCompare(b[0]))
     .map(([id]) => id);
 }
 
@@ -232,7 +234,7 @@ export function listModelsWithInfo(config?: Partial<DiscussConfig>): Array<{
       providerId: route.provider_id ?? 'unknown',
       domestic: !isForeignModel(id),
     }))
-    .sort((a, b) => b.priority - a.priority);
+    .sort((a, b) => b.priority - a.priority || a.modelId.localeCompare(b.modelId));
 }
 
 /**
@@ -298,7 +300,8 @@ export function fuzzyResolveModel(
   candidates.sort((a, b) =>
     b.matchScore - a.matchScore
     || b.useCount - a.useCount
-    || b.priority - a.priority,
+    || b.priority - a.priority
+    || a.id.localeCompare(b.id),
   );
 
   return candidates[0].id;

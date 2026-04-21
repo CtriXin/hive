@@ -39,6 +39,45 @@ const MOCK_ROUTES = {
   },
 };
 
+const MOCK_V1_ROUTES = {
+  version: 1,
+  generated_at: '2026-04-21T13:38:53.000Z',
+  routes: {
+    'gpt-5.4': {
+      primary: {
+        provider_id: 'xin',
+        anthropic_base_url: 'http://82.156.121.141:4001',
+        openai_base_url: 'http://82.156.121.141:4001/openai',
+        api_key: 'sk-xin',
+      },
+      fallbacks: [
+        {
+          provider_id: 'companycrsopenai',
+          anthropic_base_url: 'https://relay.example.com',
+          openai_base_url: 'https://relay.example.com/openai',
+          api_key: 'sk-crs',
+        },
+      ],
+    },
+    'kimi-for-coding': {
+      primary: {
+        provider_id: 'tokyo',
+        anthropic_base_url: 'https://kimi.example.com/anthropic',
+        openai_base_url: 'https://kimi.example.com/openai',
+        api_key: 'sk-kimi',
+      },
+    },
+    'qwen3-max': {
+      primary: {
+        provider_id: 'qwen',
+        anthropic_base_url: 'https://qwen.example.com/anthropic',
+        openai_base_url: 'https://qwen.example.com/openai',
+        api_key: 'sk-qwen',
+      },
+    },
+  },
+};
+
 // Mock file system
 let mockFileContent: string | null = null;
 
@@ -89,6 +128,18 @@ describe('mms-routes-loader', () => {
       mockFileContent = '{ invalid json }}}';
       const table = loadMmsRoutes();
       expect(table).toBeNull();
+    });
+
+    it('normalizes the new MMS v1 primary/fallback contract', () => {
+      mockFileContent = JSON.stringify(MOCK_V1_ROUTES);
+      const table = loadMmsRoutes();
+      expect(table).not.toBeNull();
+      expect(table!._meta?.generated_at).toBe('2026-04-21T13:38:53.000Z');
+      expect(table!.routes['gpt-5.4'].provider_id).toBe('xin');
+      expect(table!.routes['gpt-5.4'].openai_base_url).toBe('http://82.156.121.141:4001/openai');
+      expect(table!.routes['gpt-5.4'].fallback_routes?.[0]?.provider_id).toBe('companycrsopenai');
+      expect(table!.routes['gpt-5.4'].role).toBe('primary');
+      expect(table!.routes['gpt-5.4'].fallback_routes?.[0]?.role).toBe('fallback');
     });
   });
 
@@ -166,6 +217,14 @@ describe('mms-routes-loader', () => {
 
     it('returns null for no match', () => {
       expect(resolveModelByPrefix('nonexistent')).toBeNull();
+    });
+
+    it('fuzzy matching still works against the new MMS v1 contract', () => {
+      mockFileContent = JSON.stringify(MOCK_V1_ROUTES);
+      const result = resolveModelByPrefix('qwen');
+      expect(result).not.toBeNull();
+      expect(result!.modelId).toBe('qwen3-max');
+      expect(result!.route.provider_id).toBe('qwen');
     });
   });
 

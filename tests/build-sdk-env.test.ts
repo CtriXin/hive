@@ -47,15 +47,31 @@ describe('buildSdkEnv — ANTHROPIC_BASE_URL normalization', () => {
       const env = buildSdkEnv('claude-sonnet-4-6', 'http://host:3000/openai/v1', 'key');
       expect(env.ANTHROPIC_BASE_URL).toBe('http://host:3000/openai');
     });
+
+    it('blocks ambient OAuth fallback when Claude route is missing', () => {
+      process.env.ANTHROPIC_BASE_URL = 'https://global.example.com/v1';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'global-token';
+      expect(() => buildSdkEnv('claude-sonnet-4-6')).toThrow(/manual-only/i);
+    });
+
+    it('seeds isolated Claude config dirs instead of reusing parent HOME', () => {
+      const env = buildSdkEnv('claude-sonnet-4-6', 'https://example.com/v1', 'key');
+      expect(env.HOME).toBeTruthy();
+      expect(env.CLAUDE_CONFIG_DIR).toBeTruthy();
+      expect(env.XDG_CONFIG_HOME).toBeTruthy();
+      expect(env.CLAUDE_CONFIG_DIR.startsWith(env.HOME)).toBe(true);
+    });
   });
 
   describe('MMS gateway path', () => {
-    it('prefers explicit route for GPT models instead of inherited gateway env', () => {
+    it('marks explicit OpenAI-style GPT routes for local bridge instead of sending /v1/messages directly', () => {
       process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1';
       process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
       const env = buildSdkEnv('gpt-5', 'https://other.com/v1', 'key');
-      expect(env.ANTHROPIC_BASE_URL).toBe('https://other.com');
-      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('key');
+      expect(env.HIVE_MODEL_PROXY_MODE).toBe('openai-chat');
+      expect(env.HIVE_MODEL_PROXY_BASE_URL).toBe('https://other.com');
+      expect(env.HIVE_MODEL_PROXY_API_KEY).toBe('key');
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
     });
 
     it('falls back to inherited gateway env for GPT models without explicit route', () => {
@@ -82,12 +98,14 @@ describe('buildSdkEnv — ANTHROPIC_BASE_URL normalization', () => {
       expect(env.ANTHROPIC_AUTH_TOKEN).toBe('tok');
     });
 
-    it('prefers explicit provider baseUrl for kimi-for-coding', () => {
+    it('marks explicit non-anthropic domestic routes for local proxy handling', () => {
       process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1';
       process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
       const env = buildSdkEnv('kimi-for-coding', 'https://api.kimi.com/coding/', 'key');
-      expect(env.ANTHROPIC_BASE_URL).toBe('https://api.kimi.com/coding/');
-      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('key');
+      expect(env.HIVE_MODEL_PROXY_MODE).toBe('direct');
+      expect(env.HIVE_MODEL_PROXY_BASE_URL).toBe('https://api.kimi.com/coding/');
+      expect(env.HIVE_MODEL_PROXY_API_KEY).toBe('key');
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
     });
 
     it('does not override explicit anthropic route with inherited gateway env', () => {

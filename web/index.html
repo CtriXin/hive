@@ -5,379 +5,492 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hive 控制台</title>
 <style>
+  /* ── Design Tokens: Light, Airy, Vibrant ── */
   :root {
-    --bg: #0b0d12;
-    --panel: #12161d;
-    --panel-2: #171c25;
-    --line: #2b3442;
-    --text: #eef3f8;
-    --muted: #95a1b2;
-    --accent: #6cb6ff;
-    --accent-soft: rgba(108, 182, 255, 0.12);
-    --ok: #3ecf8e;
-    --warn: #f6b33f;
-    --danger: #ff6b6b;
-    --shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
-    --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --bg: #f8f9fb;
+    --bg-2: #f0f2f5;
+    --panel: #ffffff;
+    --panel-2: #f4f6f8;
+    --panel-3: #eef1f5;
+    --line: #e2e8f0;
+    --line-2: #cbd5e1;
+    --text: #1e293b;
+    --text-2: #334155;
+    --muted: #64748b;
+    --muted-2: #94a3b8;
+    --accent: #3b82f6;
+    --accent-soft: rgba(59,130,246,0.08);
+    --accent-hover: #2563eb;
+    --ok: #10b981;
+    --ok-soft: rgba(16,185,129,0.08);
+    --warn: #f59e0b;
+    --warn-soft: rgba(245,158,11,0.08);
+    --danger: #ef4444;
+    --danger-soft: rgba(239,68,68,0.08);
+    --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 20px rgba(0,0,0,0.05);
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+    --radius-sm: 8px;
+    --radius: 12px;
+    --radius-lg: 16px;
+    --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--font); }
   body { min-height: 100vh; }
-  button, select { font: inherit; }
-  .shell { max-width: 1120px; margin: 0 auto; padding: 20px 16px 40px; }
+  button, select, input { font: inherit; }
+
+  /* ── Animations ── */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  @keyframes skeleton {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes dotPulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.4); opacity: 0.7; }
+  }
+
+  .animate-in {
+    animation: fadeInUp 0.35s var(--transition) both;
+  }
+  .animate-in-1 { animation-delay: 0.04s; }
+  .animate-in-2 { animation-delay: 0.08s; }
+  .animate-in-3 { animation-delay: 0.12s; }
+  .animate-in-4 { animation-delay: 0.16s; }
+  .animate-in-5 { animation-delay: 0.20s; }
+
+  .skeleton {
+    background: linear-gradient(90deg, var(--panel-2) 25%, var(--panel-3) 50%, var(--panel-2) 75%);
+    background-size: 200% 100%;
+    animation: skeleton 1.5s infinite;
+    border-radius: var(--radius-sm);
+  }
+
+  .live-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--ok);
+    animation: dotPulse 2s infinite;
+  }
+
+  /* ── Layout ── */
+  .shell { max-width: 1200px; margin: 0 auto; padding: 16px 16px 48px; }
+
   .topbar {
     position: sticky;
     top: 0;
     z-index: 30;
+    background: rgba(248,249,251,0.92);
     backdrop-filter: blur(12px);
-    background: rgba(11, 13, 18, 0.92);
-    border-bottom: 1px solid rgba(255,255,255,0.04);
+    border-bottom: 1px solid var(--line);
   }
   .topbar-inner {
-    max-width: 1120px;
+    max-width: 1200px;
     margin: 0 auto;
-    padding: 12px 16px;
+    padding: 10px 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 12px;
+    flex-wrap: wrap;
   }
-  .brand { display: flex; flex-direction: column; gap: 2px; }
-  .brand strong { color: var(--accent); font-size: 18px; }
-  .brand span { color: var(--muted); font-size: 12px; }
-  .topbar-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand-logo {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, var(--accent), #60a5fa);
+    border-radius: var(--radius-sm);
+    display: grid; place-items: center;
+    color: white; font-weight: 800; font-size: 14px;
+  }
+  .brand-text { display: flex; flex-direction: column; gap: 1px; }
+  .brand-text strong { color: var(--text); font-size: 16px; }
+  .brand-text span { color: var(--muted); font-size: 11px; }
+
+  .topbar-nav { display: flex; align-items: center; gap: 4px; background: var(--panel-2); padding: 4px; border-radius: var(--radius); }
+  .nav-tab {
+    border: none; background: transparent;
+    color: var(--muted); font-size: 13px; font-weight: 600;
+    padding: 7px 14px; border-radius: var(--radius-sm);
+    cursor: pointer; transition: var(--transition);
+  }
+  .nav-tab:hover { color: var(--text-2); }
+  .nav-tab.active { background: var(--panel); color: var(--accent); box-shadow: var(--shadow-sm); }
+
+  .topbar-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .pill {
     border: 1px solid var(--line);
     background: var(--panel);
     color: var(--muted);
     border-radius: 999px;
-    padding: 6px 10px;
-    font-size: 12px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 500;
   }
+  .pill.accent { border-color: rgba(59,130,246,0.25); background: var(--accent-soft); color: var(--accent); }
+  .pill.ok { border-color: rgba(16,185,129,0.25); background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { border-color: rgba(245,158,11,0.25); background: var(--warn-soft); color: #b45309; }
+  .pill.danger { border-color: rgba(239,68,68,0.25); background: var(--danger-soft); color: var(--danger); }
+
   .toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--muted);
-    font-size: 12px;
-    cursor: pointer;
-    user-select: none;
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--muted); font-size: 11px; cursor: pointer; user-select: none;
   }
   .toggle input { display: none; }
   .toggle .track {
-    width: 36px;
-    height: 20px;
-    border-radius: 999px;
-    background: #3a4453;
-    position: relative;
-    transition: background 0.2s ease;
+    width: 32px; height: 18px; border-radius: 999px;
+    background: var(--line-2); position: relative; transition: background 0.2s ease;
   }
   .toggle .track::after {
-    content: '';
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: white;
-    transition: transform 0.2s ease;
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: white; transition: transform 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
   }
   .toggle input:checked + .track { background: var(--accent); }
-  .toggle input:checked + .track::after { transform: translateX(16px); }
+  .toggle input:checked + .track::after { transform: translateX(14px); }
+
+  /* ── Buttons ── */
   .btn, .ghost-btn, .tiny-btn {
     border: 1px solid var(--line);
-    background: var(--panel-2);
+    background: var(--panel);
     color: var(--text);
-    border-radius: 10px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: 0.15s ease;
+    transition: var(--transition);
+    font-weight: 500;
   }
-  .btn:hover, .ghost-btn:hover, .tiny-btn:hover { border-color: var(--accent); transform: translateY(-1px); }
-  .btn { padding: 10px 16px; font-weight: 600; }
-  .btn.primary { background: var(--accent); color: #0b0d12; border-color: transparent; }
-  .btn.primary:hover { opacity: 0.92; }
-  .ghost-btn { padding: 8px 12px; }
-  .tiny-btn { padding: 6px 10px; font-size: 12px; }
-  .tiny-btn.inline { padding: 5px 8px; }
-  .tiny-btn.danger { border-color: rgba(255,107,107,0.35); color: var(--danger); }
-  .tiny-btn.warn { border-color: rgba(246,179,63,0.35); color: var(--warn); }
-  .tiny-btn.ok { border-color: rgba(62,207,142,0.35); color: var(--ok); }
-  .section { margin-top: 18px; }
-  .section h2 {
-    font-size: 13px;
+  .btn:hover, .ghost-btn:hover, .tiny-btn:hover {
+    border-color: var(--line-2); transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+  }
+  .btn { padding: 8px 14px; }
+  .btn.primary {
+    background: var(--accent); color: white; border-color: transparent;
+  }
+  .btn.primary:hover { background: var(--accent-hover); }
+  .btn.ok { background: var(--ok); color: white; border-color: transparent; }
+  .btn.ok:hover { background: #059669; }
+  .btn.danger { background: var(--danger); color: white; border-color: transparent; }
+  .btn.danger:hover { background: #dc2626; }
+  .ghost-btn { padding: 6px 10px; font-size: 12px; background: transparent; }
+  .tiny-btn { padding: 5px 8px; font-size: 11px; }
+  .tiny-btn.ok { border-color: rgba(16,185,129,0.35); color: #059669; }
+  .tiny-btn.warn { border-color: rgba(245,158,11,0.35); color: #b45309; }
+  .tiny-btn.danger { border-color: rgba(239,68,68,0.35); color: var(--danger); }
+
+  /* ── Sections & Panels ── */
+  .section { margin-top: 20px; }
+  .section-header {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 12px;
+  }
+  .section-header h2 {
+    font-size: 13px; font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     color: var(--muted);
-    margin: 0 0 10px;
+    margin: 0;
   }
   .panel {
-    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 16px;
+    border-radius: var(--radius);
     box-shadow: var(--shadow);
+    overflow: hidden;
   }
-  .notice {
-    display: none;
-    margin-top: 14px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    border: 1px solid rgba(108, 182, 255, 0.28);
-    background: rgba(108, 182, 255, 0.1);
-    color: var(--text);
-    font-size: 13px;
-    white-space: pre-line;
-  }
-  .project-grid, .run-grid, .task-grid, .policy-stage-grid, .detail-grid {
-    display: grid;
-    gap: 12px;
-  }
-  .project-grid { grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
-  .history-shell {
-    padding: 16px;
-    display: grid;
-    gap: 12px;
-  }
-  .history-controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-  }
-  .text-input {
-    flex: 1 1 420px;
-    min-width: 280px;
-    border-radius: 10px;
-    border: 1px solid var(--line);
-    background: #0f131a;
-    color: var(--text);
-    padding: 11px 12px;
-    font: inherit;
-  }
-  .chip-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .chip-btn {
-    border: 1px solid var(--line);
-    background: var(--panel-2);
-    color: var(--text);
-    border-radius: 999px;
-    padding: 7px 10px;
-    cursor: pointer;
-    font-size: 12px;
-  }
-  .chip-btn:hover { border-color: var(--accent); }
-  .project-stack { display: grid; gap: 14px; }
-  .project-subsection { display: grid; gap: 10px; }
-  .subsection-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  .subsection-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .subsection-title strong { font-size: 14px; }
-  .subsection-note {
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.6;
-  }
-  .archive-panel {
-    padding: 14px;
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    background: rgba(255,255,255,0.02);
-  }
-  .archive-panel details {
-    display: grid;
-    gap: 12px;
-  }
-  .archive-panel summary {
-    list-style: none;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    cursor: pointer;
-  }
-  .archive-panel summary::-webkit-details-marker { display: none; }
-  .archive-panel summary strong { font-size: 14px; color: var(--text); }
-  .run-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-  .task-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-  .detail-grid { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-  .project-card, .run-card, .task-card, .policy-card, .detail-card {
+  .panel-inner { padding: 16px; }
+
+  /* ── Cards ── */
+  .card-grid { display: grid; gap: 12px; align-items: stretch; }
+  .card-grid-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .card-grid-3 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .card-grid-4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+
+  .card {
     background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 14px;
+    border-radius: var(--radius);
     padding: 14px;
+    transition: var(--transition);
+    display: flex; flex-direction: column;
   }
-  .project-card.active, .run-card.active { border-color: rgba(108,182,255,0.4); background: rgba(108,182,255,0.08); }
-  .project-card { cursor: pointer; }
-  .project-card.archived {
-    opacity: 0.84;
-    background: rgba(255,255,255,0.015);
-  }
-  .active-run-card {
-    cursor: pointer;
-    display: grid;
-    gap: 10px;
-  }
-  .active-run-card.needs-user {
-    border-color: rgba(246,179,63,0.3);
-    background: rgba(246,179,63,0.06);
-  }
-  .project-card:hover, .run-card:hover { transform: translateY(-1px); border-color: rgba(108,182,255,0.35); }
-  .active-run-card:hover { transform: translateY(-1px); border-color: rgba(108,182,255,0.35); }
+  .card:hover { border-color: var(--line-2); box-shadow: var(--shadow); }
+  .card.active { border-color: rgba(59,130,246,0.35); background: var(--accent-soft); }
   .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-  .card-title { font-size: 16px; font-weight: 700; color: var(--text); }
-  .card-sub { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; word-break: break-word; }
+  .card-title { font-size: 14px; font-weight: 700; color: var(--text); }
+  .card-sub { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.5; word-break: break-word; }
+  .card-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+  /* ── Badges ── */
   .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    border: 1px solid transparent;
-    white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    border: 1px solid transparent; white-space: nowrap;
   }
-  .badge.info { color: var(--accent); background: rgba(108,182,255,0.12); border-color: rgba(108,182,255,0.24); }
-  .badge.ok { color: var(--ok); background: rgba(62,207,142,0.12); border-color: rgba(62,207,142,0.24); }
-  .badge.warn { color: var(--warn); background: rgba(246,179,63,0.12); border-color: rgba(246,179,63,0.24); }
-  .badge.danger { color: var(--danger); background: rgba(255,107,107,0.12); border-color: rgba(255,107,107,0.24); }
-  .badge.muted { color: var(--muted); background: rgba(149,161,178,0.12); border-color: rgba(149,161,178,0.18); }
-  .kv { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-top: 12px; }
-  .kv div { min-width: 0; }
-  .kv-label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
-  .kv-value { font-size: 13px; color: var(--text); word-break: break-word; }
+  .badge.info { color: var(--accent); background: var(--accent-soft); border-color: rgba(59,130,246,0.18); }
+  .badge.ok { color: #059669; background: var(--ok-soft); border-color: rgba(16,185,129,0.18); }
+  .badge.warn { color: #b45309; background: var(--warn-soft); border-color: rgba(245,158,11,0.18); }
+  .badge.danger { color: var(--danger); background: var(--danger-soft); border-color: rgba(239,68,68,0.18); }
+  .badge.muted { color: var(--muted-2); background: var(--panel-2); border-color: var(--line); }
+
+  /* ── Key-Value ── */
+  .kv { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-top: 10px; }
+  .kv-label { font-size: 11px; color: var(--muted-2); margin-bottom: 2px; }
+  .kv-value { font-size: 13px; color: var(--text-2); word-break: break-word; font-weight: 500; }
+
+  /* ── Hero ── */
   .hero {
-    padding: 22px;
-    display: grid;
-    gap: 14px;
+    padding: 20px;
+    display: grid; gap: 14px;
     border: 1px solid var(--line);
-    border-radius: 18px;
+    border-radius: var(--radius-lg);
     background: var(--panel);
   }
-  .hero.info { border-color: rgba(108,182,255,0.3); }
-  .hero.warn { border-color: rgba(246,179,63,0.32); background: rgba(246,179,63,0.06); }
-  .hero.danger { border-color: rgba(255,107,107,0.32); background: rgba(255,107,107,0.06); }
-  .hero.ok { border-color: rgba(62,207,142,0.32); background: rgba(62,207,142,0.06); }
-  .hero-top { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
-  .hero-title { font-size: 28px; font-weight: 800; margin: 0; }
-  .hero-reason { font-size: 15px; color: var(--text); line-height: 1.6; }
-  .hero-meta { display: flex; flex-wrap: wrap; gap: 8px; }
-  .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-  .focus-card { padding: 18px; }
-  .focus-card strong { font-size: 16px; }
-  .focus-card p { margin: 8px 0 0; color: var(--text); line-height: 1.6; }
-  .checklist { margin: 10px 0 0; padding-left: 18px; color: var(--muted); }
-  .checklist li { margin: 6px 0; }
-  .task-card { display: grid; gap: 10px; }
-  .task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-  .task-meta { color: var(--muted); font-size: 12px; }
-  .policy-shell { padding: 18px; }
-  .policy-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  .policy-tab {
-    padding: 7px 10px;
-    border-radius: 999px;
+  .hero.info { border-color: rgba(59,130,246,0.2); background: linear-gradient(135deg, var(--panel), rgba(59,130,246,0.03)); }
+  .hero.warn { border-color: rgba(245,158,11,0.2); background: linear-gradient(135deg, var(--panel), rgba(245,158,11,0.03)); }
+  .hero.danger { border-color: rgba(239,68,68,0.2); background: linear-gradient(135deg, var(--panel), rgba(239,68,68,0.03)); }
+  .hero.ok { border-color: rgba(16,185,129,0.2); background: linear-gradient(135deg, var(--panel), rgba(16,185,129,0.03)); }
+  .hero-top { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  .hero-title { font-size: 22px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
+  .hero-reason { font-size: 14px; color: var(--text-2); line-height: 1.6; }
+  .hero-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* ── Forms ── */
+  .text-input, select, textarea {
+    border-radius: var(--radius-sm);
     border: 1px solid var(--line);
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 12px;
-  }
-  .policy-tab.active { color: var(--text); border-color: rgba(108,182,255,0.35); background: rgba(108,182,255,0.1); }
-  .policy-header { display: grid; gap: 8px; margin-bottom: 14px; }
-  .policy-header p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
-  .policy-stage-grid { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-  .policy-stage-card {
-    background: var(--panel-2);
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 14px;
-    display: grid;
-    gap: 10px;
-  }
-  .policy-stage-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
-  .policy-stage-title { font-size: 15px; font-weight: 700; }
-  .policy-stage-note { color: var(--muted); font-size: 12px; line-height: 1.5; }
-  .field { display: grid; gap: 5px; }
-  .field label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-  .field select {
-    width: 100%;
-    min-width: 0;
-    border-radius: 10px;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    background: #0f131a;
+    background: var(--panel);
     color: var(--text);
+    padding: 8px 12px;
+    font: inherit;
+    font-size: 13px;
+    transition: var(--transition);
   }
-  .field select:disabled { opacity: 0.6; cursor: not-allowed; }
-  .policy-stage-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-  .policy-summary-box {
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.03);
-    border-radius: 12px;
-    padding: 10px 12px;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.55;
+  .text-input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 32px;
+    cursor: pointer;
   }
-  .details-panel { padding: 18px; }
-  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
-  .policy-details { padding: 18px; }
-  .policy-details > summary {
+  input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px; height: 16px;
+    border: 1px solid var(--line-2);
+    border-radius: 4px;
+    background: var(--panel);
+    cursor: pointer;
+    position: relative;
+    transition: var(--transition);
+    vertical-align: -3px;
+    margin-right: 4px;
+  }
+  input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 5px; top: 2px;
+    width: 4px; height: 8px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .field { display: grid; gap: 4px; }
+  .field label { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .field select, .field input[type="number"] {
+    width: 100%; min-width: 0;
+    border-radius: var(--radius-sm); padding: 8px 10px;
+    border: 1px solid var(--line); background: var(--panel);
+    color: var(--text); font-size: 13px;
+  }
+  .field select:focus, .field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  /* ── Details / Collapsible ── */
+  .collapsible { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  .collapsible summary {
     list-style: none;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    cursor: pointer;
-    color: var(--text);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 12px 16px; cursor: pointer; font-weight: 600; font-size: 13px;
   }
-  .policy-details > summary::-webkit-details-marker { display: none; }
-  .policy-details-body { margin-top: 14px; }
-  pre {
-    margin: 10px 0 0;
-    padding: 12px;
-    border-radius: 12px;
-    border: 1px solid var(--line);
-    background: #0f131a;
-    color: var(--text);
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-size: 12px;
-    line-height: 1.55;
+  .collapsible summary::-webkit-details-marker { display: none; }
+  .collapsible summary::after {
+    content: '›'; font-size: 18px; color: var(--muted); transition: transform 0.2s;
   }
-  .empty { color: var(--muted); font-size: 13px; padding: 18px; text-align: center; border: 1px dashed var(--line); border-radius: 14px; }
+  .collapsible[open] summary::after { transform: rotate(90deg); }
+  .collapsible-body { padding: 0 16px 16px; }
+
+  /* ── Progress ── */
+  .progress-track {
+    height: 4px; background: var(--panel-2); border-radius: 999px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: linear-gradient(90deg, var(--accent), #60a5fa);
+    border-radius: 999px; transition: width 0.5s ease;
+  }
+
+  /* ── Notice ── */
+  .notice {
+    display: none; margin-top: 14px; padding: 10px 14px;
+    border-radius: var(--radius); border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text-2);
+    font-size: 13px; white-space: pre-line;
+  }
+
+  /* ── Empty State ── */
+  .empty {
+    color: var(--muted-2); font-size: 13px;
+    padding: 32px 16px; text-align: center;
+    border: 1px dashed var(--line); border-radius: var(--radius);
+    background: var(--panel-2);
+  }
+
+  /* ── Settings Tabs ── */
+  .settings-tabs {
+    display: flex; gap: 4px; padding: 4px;
+    background: var(--panel-2); border-radius: var(--radius);
+    margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .settings-tab {
+    border: none; background: transparent;
+    color: var(--muted); font-size: 12px; font-weight: 600;
+    padding: 6px 12px; border-radius: var(--radius-sm);
+    cursor: pointer; transition: var(--transition);
+  }
+  .settings-tab:hover { color: var(--text-2); }
+  .settings-tab.active { background: var(--panel); color: var(--accent); box-shadow: var(--shadow-sm); }
+
+  /* ── Table ── */
+  .data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; table-layout: fixed; min-width: 1100px; }
+  #routingTable th:nth-child(1) { width: 140px; }
+  #routingTable th:nth-child(2) { width: 130px; }
+  #routingTable th:nth-child(3) { width: 220px; }
+  #routingTable th:nth-child(4) { width: 240px; }
+  #routingTable th:nth-child(5) { width: 90px; }
+  #routingTable th:nth-child(6) { width: 280px; }
+  #modelsTable th:nth-child(1) { width: 160px; }
+  #modelsTable th:nth-child(2) { width: 100px; }
+  #modelsTable th:nth-child(3) { width: 60px; }
+  #modelsTable th:nth-child(4) { width: 80px; }
+  .data-table th { text-align: left; padding: 10px 8px; color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 10; white-space: nowrap; }
+  .data-table td { padding: 12px 8px; border-bottom: 1px solid var(--line); color: var(--text-2); vertical-align: top; }
+  .data-table tr:hover td { background: var(--panel-2); }
+  .data-table tr.row-disabled td { background: var(--danger-soft); opacity: 0.85; }
+  .data-table tr.row-disabled:hover td { background: rgba(239,68,68,0.1); }
+
+  /* ── Status Filter ── */
+  .status-filter { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .status-filter-btn {
+    border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+    border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 600;
+    cursor: pointer; transition: var(--transition);
+  }
+  .status-filter-btn:hover { border-color: var(--line-2); color: var(--text-2); }
+  .status-filter-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+  /* ── Action Bar ── */
+  .action-bar { display: flex; flex-direction: column; gap: 8px; }
+  .action-bar select { width: 100%; }
+  .action-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+  /* ── Channel Tags in Table ── */
+  .channel-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .channel-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); cursor: default; }
+  .channel-tag.active { border-color: rgba(16,185,129,0.35); background: var(--ok-soft); color: #059669; }
+  .channel-tag.hidden-channel { opacity: 0.5; text-decoration: line-through; }
+
+  /* ── Star Button ── */
+  .star-btn {
+    border: none; background: transparent; cursor: pointer;
+    font-size: 15px; line-height: 1; padding: 0 2px; color: var(--muted-2);
+    transition: var(--transition);
+  }
+  .star-btn:hover { color: var(--accent); transform: scale(1.15); }
+  .star-btn.active { color: var(--accent); }
+
+  /* ── Provider Card V2 ── */
+  .provider-card { justify-content: space-between; }
+  .provider-card .card-head { align-items: center; }
+  .provider-card .card-title { font-size: 15px; font-weight: 700; line-height: 1.3; }
+  .provider-card .provider-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .metric-cell { text-align: center; }
+  .metric-value { font-size: 20px; font-weight: 700; color: var(--text); line-height: 1.2; }
+  .metric-value.ok { color: var(--ok); }
+  .metric-value.danger { color: var(--danger); }
+  .metric-label { font-size: 11px; color: var(--muted-2); margin-top: 4px; font-weight: 500; }
+  .provider-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line); align-items: center; }
+  .provider-detail { font-size: 12px; color: var(--muted); line-height: 1.6; margin-top: 10px; }
+  .provider-detail code { background: var(--panel-2); padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+
+  /* ── Score Bars ── */
+  .score-bar { display: flex; align-items: center; gap: 8px; }
+  .score-track { flex: 1; height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; max-width: 120px; }
+  .score-fill { height: 100%; border-radius: 999px; transition: width 0.5s ease; }
+  .score-fill.good { background: var(--ok); }
+  .score-fill.mid { background: var(--warn); }
+  .score-fill.low { background: var(--danger); }
+  .score-value { font-size: 11px; font-weight: 600; color: var(--muted); min-width: 28px; text-align: right; }
+
+  /* ── Misc ── */
   .muted { color: var(--muted); }
+  .muted-2 { color: var(--muted-2); }
+  .hidden { display: none !important; }
+  .flex { display: flex; }
+  .flex-wrap { flex-wrap: wrap; }
+  .gap-2 { gap: 8px; }
+  .gap-3 { gap: 12px; }
+  .items-center { align-items: center; }
+  .justify-between { justify-content: space-between; }
+
   @media (max-width: 760px) {
-    .hero-top { flex-direction: column; }
-    .project-grid, .run-grid, .task-grid, .policy-stage-grid, .detail-grid { grid-template-columns: 1fr; }
+    .card-grid-2, .card-grid-3, .card-grid-4 { grid-template-columns: 1fr; }
     .topbar-inner { flex-direction: column; align-items: flex-start; }
+    .hero-top { flex-direction: column; }
+    .data-table { font-size: 11px; }
+    .data-table th, .data-table td { padding: 6px 4px; }
   }
 </style>
 </head>
 <body>
+
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <strong>Hive 控制台</strong>
-      <span id="topSummary">先看正在运行的项目，再决定进哪个 run。</span>
+      <div class="brand-logo">H</div>
+      <div class="brand-text">
+        <strong>Hive 控制台</strong>
+        <span id="topSummary">多模型编排可视化</span>
+      </div>
+    </div>
+    <div class="topbar-nav">
+      <button class="nav-tab active" data-view="dashboard">运行监控</button>
+      <button class="nav-tab" data-view="settings">全局设置</button>
     </div>
     <div class="topbar-meta">
       <span class="pill" id="currentProjectPill">项目：—</span>
       <span class="pill" id="currentRunPill">Run：—</span>
-      <span class="pill" id="updatedPill">更新时间：—</span>
       <label class="toggle">
         <input type="checkbox" id="autoRefresh" checked>
         <span class="track"></span>
@@ -391,87 +504,312 @@
 <div class="shell">
   <div class="notice" id="notice"></div>
 
-  <section class="section">
-    <h2>当前运行</h2>
-    <div id="activeRunGrid" class="run-grid"></div>
-  </section>
+  <!-- ═══════════════════════════════════════════════
+       DASHBOARD VIEW
+       ═══════════════════════════════════════════════ -->
+  <div id="dashboardView">
 
-  <section class="section">
-    <h2>查看项目历史</h2>
-    <div class="panel history-shell">
-      <form id="cwdForm" class="history-controls" action="/" method="GET">
-        <input id="cwdInput" name="cwd" class="text-input" list="projectSuggestions" placeholder="/Users/.../repo">
-        <datalist id="projectSuggestions"></datalist>
-        <button class="btn" id="openProjectBtn" type="submit">打开项目</button>
-        <button class="ghost-btn" id="useActiveProjectBtn" type="button">回到当前运行</button>
-      </form>
-      <div id="historyHint" class="subsection-note">输入 cwd 后查看这个项目的全部 run 历史；首页默认只显示当前活跃 run。</div>
-      <details class="archive-panel">
-        <summary>
-          <div class="subsection-title">
-            <strong>最近记录的项目</strong>
-            <span class="badge muted" id="knownProjectCount">0 个</span>
-          </div>
-          <span class="subsection-note">需要时再展开，不把旧项目铺满首页。</span>
-        </summary>
-        <div id="knownProjectList" class="chip-list"></div>
-      </details>
-    </div>
-  </section>
+    <section class="section animate-in">
+      <div class="section-header">
+        <h2>当前运行</h2>
+        <span class="badge muted" id="activeRunCount">0 个</span>
+      </div>
+      <div id="activeRunGrid" class="card-grid card-grid-2"></div>
+    </section>
 
-  <section class="section">
-    <h2>当前项目的 Run</h2>
-    <div id="runGrid" class="run-grid"></div>
-  </section>
+    <section class="section animate-in animate-in-1">
+      <div class="section-header">
+        <h2>运行概览</h2>
+      </div>
+      <div id="hero" class="hero info"></div>
+    </section>
 
-  <section class="section">
-    <div id="hero" class="hero info"></div>
-  </section>
+    <section class="section animate-in animate-in-2" id="taskSection">
+      <div class="section-header">
+        <h2>需要你处理的任务</h2>
+        <span class="badge muted" id="taskCount">0 个</span>
+      </div>
+      <div id="taskGrid" class="card-grid card-grid-2"></div>
+    </section>
 
-  <section class="section" id="modelPolicySection">
-    <details class="panel policy-details" id="policyDetails">
-      <summary>
-        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-          <h2 style="margin:0;">模型策略中心</h2>
-          <span class="badge info">优先级：Run &gt; Project &gt; Global &gt; Default</span>
-        </div>
-        <span class="muted" style="font-size:12px;">统一入口；Global 会影响后续所有 Hive run</span>
-      </summary>
-      <div class="policy-details-body">
-        <div id="policyNotice" class="policy-summary-box" style="display:none;margin-bottom:12px;"></div>
-        <div class="policy-shell">
-          <div class="policy-tabs" id="policyTabs"></div>
-          <div id="policyEditor"></div>
+    <section class="section animate-in animate-in-3" id="focusSection">
+      <div class="section-header">
+        <h2>关注点</h2>
+      </div>
+      <div id="focusCard" class="card"></div>
+    </section>
+
+    <section class="section animate-in animate-in-3">
+      <div class="section-header">
+        <h2>运行级操作</h2>
+      </div>
+      <div class="panel">
+        <div class="panel-inner" id="runActions"></div>
+      </div>
+    </section>
+
+    <section class="section animate-in animate-in-4">
+      <div class="section-header">
+        <h2>项目与 Run</h2>
+      </div>
+      <div class="panel">
+        <div class="panel-inner" style="display:grid;gap:14px;">
+          <form id="cwdForm" class="flex flex-wrap gap-2 items-center">
+            <input id="cwdInput" name="cwd" class="text-input" list="projectSuggestions" placeholder="/Users/.../repo">
+            <datalist id="projectSuggestions"></datalist>
+            <button class="btn primary" id="openProjectBtn" type="submit">打开项目</button>
+            <button class="ghost-btn" id="useActiveProjectBtn" type="button">回到当前</button>
+          </form>
+          <div id="historyHint" class="muted" style="font-size:12px;">输入 cwd 后查看这个项目的全部 run 历史</div>
+          <details class="collapsible" id="knownProjectsCollapse">
+            <summary>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <strong>最近记录的项目</strong>
+                <span class="badge muted" id="knownProjectCount">0 个</span>
+              </div>
+            </summary>
+            <div class="collapsible-body">
+              <div id="knownProjectList" class="flex flex-wrap gap-2"></div>
+            </div>
+          </details>
+          <div id="runGrid" class="card-grid card-grid-3"></div>
         </div>
       </div>
-    </details>
-  </section>
+    </section>
 
-  <section class="section">
-    <h2>运行级操作</h2>
-    <div id="runActions" class="panel" style="padding:16px;display:flex;flex-wrap:wrap;gap:10px;"></div>
-  </section>
+    <section class="section animate-in animate-in-5">
+      <details class="collapsible" id="modelPolicyCollapse">
+        <summary>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <strong>模型策略中心</strong>
+            <span class="badge info">Run > Project > Global > Default</span>
+          </div>
+          <span class="muted" style="font-size:12px;">统一入口；Global 会影响后续所有 Hive run</span>
+        </summary>
+        <div class="collapsible-body">
+          <div id="policyNotice" class="notice" style="display:none;margin-bottom:12px;"></div>
+          <div class="settings-tabs" id="policyTabs"></div>
+          <div id="policyEditor"></div>
+        </div>
+      </details>
+    </section>
 
-  <section class="section">
-    <h2>需要你处理的任务</h2>
-    <div id="taskGrid" class="task-grid"></div>
-  </section>
+    <section class="section animate-in animate-in-5">
+      <details class="collapsible" id="detailCollapse">
+        <summary>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <strong>详情与调试信息</strong>
+            <span class="badge muted">按需展开</span>
+          </div>
+          <span class="muted" style="font-size:12px;">Provider、全部任务、干预记录、Compact</span>
+        </summary>
+        <div class="collapsible-body">
+          <div id="detailGrid" class="card-grid card-grid-2"></div>
+        </div>
+      </details>
+    </section>
+  </div>
 
-  <section class="section">
-    <h2>关注点</h2>
-    <div id="focusCard" class="panel focus-card"></div>
-  </section>
-
-  <section class="section">
-    <h2>详情与调试信息</h2>
-    <div class="panel details-panel">
-      <div id="detailGrid" class="detail-grid"></div>
+  <!-- ═══════════════════════════════════════════════
+       SETTINGS VIEW
+       ═══════════════════════════════════════════════ -->
+  <div id="settingsView" class="hidden">
+    <div class="settings-tabs">
+      <button class="settings-tab active" data-settings-tab="overview">配置概览</button>
+      <button class="settings-tab" data-settings-tab="providers">Provider 通道</button>
+      <button class="settings-tab" data-settings-tab="models">模型能力</button>
+      <button class="settings-tab" data-settings-tab="snapshots">配置快照</button>
     </div>
-  </section>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="panel-inner" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <div>
+          <div class="card-title">编辑 Scope</div>
+          <div class="card-sub" id="settingsScopeHint">当前写入 Global layer</div>
+        </div>
+        <div class="status-filter" id="settingsScopeSwitch">
+          <button class="status-filter-btn" data-config-scope="project">Project</button>
+          <button class="status-filter-btn active" data-config-scope="global">Global</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settingsOverview" class="animate-in">
+      <div class="panel">
+        <div class="panel-inner" style="display:grid;gap:20px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <div>
+              <div class="card-title" id="settingsConfigTitle">全局配置</div>
+              <div class="card-sub" id="settingsConfigSubtitle">当前编辑 Hive 全局默认配置（~/.hive/config.json）</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn primary" id="saveGlobalConfigBtn">保存配置</button>
+              <button class="btn" id="resetGlobalConfigBtn">恢复默认</button>
+              <button class="btn ok" id="createSnapshotBtn">创建快照</button>
+            </div>
+          </div>
+
+          <div id="globalConfigNotice" class="notice" style="display:none;"></div>
+
+          <details class="collapsible" open>
+            <summary><strong>Doctor</strong></summary>
+            <div class="collapsible-body">
+              <div id="doctorPanel" class="card-grid card-grid-2"></div>
+            </div>
+          </details>
+
+          <details class="collapsible" open>
+            <summary><strong>Tiers 模型分配</strong></summary>
+            <div class="collapsible-body">
+              <div id="globalTiersEditor" class="card-grid card-grid-2"></div>
+            </div>
+          </details>
+
+          <details class="collapsible" open>
+            <summary><strong>预算与黑名单</strong></summary>
+            <div class="collapsible-body">
+              <div class="card-grid card-grid-2" id="globalMiscEditor"></div>
+            </div>
+          </details>
+
+          <details class="collapsible">
+            <summary><strong>原始 JSON</strong></summary>
+            <div class="collapsible-body">
+              <pre id="globalConfigRaw" style="margin:0;"></pre>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+
+    <div id="settingsProviders" class="hidden animate-in">
+      <div class="section-header">
+        <h2>通道总览</h2>
+        <span class="badge muted" id="providerCount">0 个</span>
+      </div>
+      <div class="card-sub" style="margin-bottom:12px;">数据来源分两层：badge 里的 MMS 表示 model-routes 原始角色；卡片里的 Hive 数据表示当前 Hive 路由表实际生效结果。真正影响 Hive 行为的是 Hive 路由表，不是 MMS badge 本身。</div>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--muted);">
+          <input type="checkbox" id="showHiddenProviders" ${state.showHiddenProviders ? 'checked' : ''}>
+          显示已隐藏通道
+        </label>
+        <span class="muted" style="font-size:12px;">隐藏后该通道的模型将降级到 fallback</span>
+      </div>
+      <div id="mmsMetaCard" class="card" style="background:var(--panel-2);margin-bottom:12px;font-size:12px;">
+        <div class="card-title" style="font-size:12px;">MMS 诊断</div>
+        <div id="mmsMetaContent" class="muted">加载中...</div>
+      </div>
+      <div id="providerGrid" class="card-grid card-grid-2"></div>
+      <div id="hiddenProviderGrid" class="card-grid card-grid-2" style="margin-top:16px;"></div>
+
+      <div class="section-header" style="margin-top:24px;">
+        <h2>模型路由映射</h2>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="routingProviderFilter"><option value="">全部 provider</option></select>
+          <span class="badge muted" id="routingCount">0 个</span>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:12px;">
+        <div class="card-head">
+          <div>
+            <div class="card-title">重点模型</div>
+            <div class="card-sub">把你真正关心的模型钉在最前面；这里只影响 Web 展示顺序，不改 runtime。</div>
+          </div>
+          <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--muted);">
+              <input type="checkbox" id="routingQueueOnly">
+              只看当前队列模型
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--muted);">
+              <input type="checkbox" id="routingFocusOnly">
+              只看重点模型
+            </label>
+            <span id="routingQueueHint" class="muted" style="font-size:12px;"></span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;">
+          <select id="routingFocusAdd" style="min-width:240px;max-width:360px;flex:1;">
+            <option value="">选择模型加入重点...</option>
+          </select>
+          <button class="tiny-btn" id="routingFocusAddBtn" type="button">加入重点</button>
+          <input id="routingSearchInput" type="text" placeholder="搜索 model / provider / rule" style="min-width:220px;flex:1;">
+        </div>
+        <div class="card-sub" style="margin-top:8px;">未手动设置时，也会优先显示当前 tiers 和已显式映射的模型。</div>
+        <div id="routingFocusList" style="margin-top:12px;"></div>
+      </div>
+      <div class="status-filter" id="routingStatusFilter">
+        <button class="status-filter-btn active" data-status-filter="all">全部</button>
+        <button class="status-filter-btn" data-status-filter="available">可用</button>
+        <button class="status-filter-btn" data-status-filter="disabled">已禁用</button>
+      </div>
+      <div style="border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
+        <table class="data-table" id="routingTable">
+          <thead>
+            <tr>
+              <th>模型</th>
+              <th>生效 Provider</th>
+              <th>当前规则</th>
+              <th>可选通道</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="routingTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="settingsModels" class="hidden animate-in">
+      <div class="section-header">
+        <h2>模型能力矩阵</h2>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <span class="badge muted" id="modelCount">0 个</span>
+          <button class="tiny-btn ok" id="testAllModelsBtn" type="button">一键测试连通性</button>
+          <span class="muted" style="font-size:12px;" id="modelTestHint">测试各 Provider 通道的可用性</span>
+        </div>
+      </div>
+      <div style="border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
+        <table class="data-table" id="modelsTable">
+          <thead>
+            <tr>
+              <th>模型</th>
+              <th>Provider</th>
+              <th>排名</th>
+              <th>速度</th>
+              <th>Coding</th>
+              <th>Reasoning</th>
+              <th>Translation</th>
+              <th>Context</th>
+              <th>成本/1K</th>
+            </tr>
+          </thead>
+          <tbody id="modelsTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="settingsSnapshots" class="hidden animate-in">
+      <div class="panel">
+        <div class="panel-inner" style="display:grid;gap:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <div>
+              <div class="card-title">配置快照</div>
+              <div class="card-sub">保存 ~/.hive/config.json 的快照，随时恢复</div>
+            </div>
+            <button class="btn ok" id="createSnapshotBtn2">创建新快照</button>
+          </div>
+          <div id="snapshotList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
 (() => {
+  // ═══════════════════════════════════════════════
+  // STATE
+  // ═══════════════════════════════════════════════
   const initialSearch = new URLSearchParams(window.location.search);
   const initialCwd = (initialSearch.get('cwd') || '').trim().replace(/\/+$/, '');
   const initialRunId = (initialSearch.get('runId') || '').trim();
@@ -484,22 +822,46 @@
     cwdDraft: initialCwd || '',
     snapshot: null,
     modelOptions: [],
+    providers: [],
+    mmsRoutes: [],
+    modelRouting: [],
+    mmsMeta: null,
+    models: [],
+    globalConfig: null,
+    globalConfigTarget: null,
+    doctorReport: null,
+    snapshots: [],
     autoTimer: null,
     policyTab: 'run:start-run',
+    activeView: 'dashboard',
+    settingsTab: 'overview',
+    settingsConfigScope: initialCwd ? 'project' : 'global',
     noticeTimer: null,
     lastSaveResult: null,
     loadVersion: 0,
+    showHiddenProviders: false,
+    routingSearch: '',
+    routingQueueOnly: false,
+    routingFocusOnly: false,
+    routingFocusModels: [],
+    routingStatusFilter: 'all',
+    folding: { _initialized: false, modelPolicy: false, detail: false, knownProjects: false },
   };
 
+  // ═══════════════════════════════════════════════
+  // DOM REFS
+  // ═══════════════════════════════════════════════
   const el = {
     topSummary: document.getElementById('topSummary'),
     currentProjectPill: document.getElementById('currentProjectPill'),
     currentRunPill: document.getElementById('currentRunPill'),
-    updatedPill: document.getElementById('updatedPill'),
     autoRefresh: document.getElementById('autoRefresh'),
     refreshBtn: document.getElementById('refreshBtn'),
     notice: document.getElementById('notice'),
+    dashboardView: document.getElementById('dashboardView'),
+    settingsView: document.getElementById('settingsView'),
     activeRunGrid: document.getElementById('activeRunGrid'),
+    activeRunCount: document.getElementById('activeRunCount'),
     cwdForm: document.getElementById('cwdForm'),
     cwdInput: document.getElementById('cwdInput'),
     openProjectBtn: document.getElementById('openProjectBtn'),
@@ -508,18 +870,63 @@
     historyHint: document.getElementById('historyHint'),
     knownProjectCount: document.getElementById('knownProjectCount'),
     knownProjectList: document.getElementById('knownProjectList'),
+    knownProjectsCollapse: document.getElementById('knownProjectsCollapse'),
     runGrid: document.getElementById('runGrid'),
     hero: document.getElementById('hero'),
     focusCard: document.getElementById('focusCard'),
+    focusSection: document.getElementById('focusSection'),
     taskGrid: document.getElementById('taskGrid'),
+    taskSection: document.getElementById('taskSection'),
+    taskCount: document.getElementById('taskCount'),
     runActions: document.getElementById('runActions'),
     policyTabs: document.getElementById('policyTabs'),
     policyEditor: document.getElementById('policyEditor'),
     policyNotice: document.getElementById('policyNotice'),
-    policyDetails: document.getElementById('policyDetails'),
+    modelPolicyCollapse: document.getElementById('modelPolicyCollapse'),
+    detailCollapse: document.getElementById('detailCollapse'),
     detailGrid: document.getElementById('detailGrid'),
+    // Settings
+    settingsOverview: document.getElementById('settingsOverview'),
+    settingsProviders: document.getElementById('settingsProviders'),
+    settingsModels: document.getElementById('settingsModels'),
+    settingsSnapshots: document.getElementById('settingsSnapshots'),
+    settingsScopeSwitch: document.getElementById('settingsScopeSwitch'),
+    settingsScopeHint: document.getElementById('settingsScopeHint'),
+    settingsConfigTitle: document.getElementById('settingsConfigTitle'),
+    settingsConfigSubtitle: document.getElementById('settingsConfigSubtitle'),
+    globalTiersEditor: document.getElementById('globalTiersEditor'),
+    globalMiscEditor: document.getElementById('globalMiscEditor'),
+    globalConfigRaw: document.getElementById('globalConfigRaw'),
+    globalConfigNotice: document.getElementById('globalConfigNotice'),
+    doctorPanel: document.getElementById('doctorPanel'),
+    saveGlobalConfigBtn: document.getElementById('saveGlobalConfigBtn'),
+    resetGlobalConfigBtn: document.getElementById('resetGlobalConfigBtn'),
+    createSnapshotBtn: document.getElementById('createSnapshotBtn'),
+    createSnapshotBtn2: document.getElementById('createSnapshotBtn2'),
+    providerGrid: document.getElementById('providerGrid'),
+    hiddenProviderGrid: document.getElementById('hiddenProviderGrid'),
+    providerCount: document.getElementById('providerCount'),
+    routingTableBody: document.getElementById('routingTableBody'),
+    routingCount: document.getElementById('routingCount'),
+    routingProviderFilter: document.getElementById('routingProviderFilter'),
+    routingQueueOnly: document.getElementById('routingQueueOnly'),
+    routingFocusOnly: document.getElementById('routingFocusOnly'),
+    routingQueueHint: document.getElementById('routingQueueHint'),
+    routingFocusAdd: document.getElementById('routingFocusAdd'),
+    routingFocusAddBtn: document.getElementById('routingFocusAddBtn'),
+    routingSearchInput: document.getElementById('routingSearchInput'),
+    routingFocusList: document.getElementById('routingFocusList'),
+    routingStatusFilter: document.getElementById('routingStatusFilter'),
+    modelsTableBody: document.getElementById('modelsTableBody'),
+    modelCount: document.getElementById('modelCount'),
+    modelTestHint: document.getElementById('modelTestHint'),
+    testAllModelsBtn: document.getElementById('testAllModelsBtn'),
+    snapshotList: document.getElementById('snapshotList'),
   };
 
+  // ═══════════════════════════════════════════════
+  // CONSTANTS
+  // ═══════════════════════════════════════════════
   const statusMap = {
     init: '初始化中', planning: '规划中', executing: '执行中', verifying: '验证中',
     repairing: '修复中', replanning: '重新规划中', running: '运行中', paused: '已暂停',
@@ -527,17 +934,18 @@
     success: '已完成', failed: '失败', failure: '失败', unknown: '未知', pending: '待处理',
     applied: '已应用', rejected: '已拒绝', suppressed: '已忽略', expired: '已过期',
   };
-	  const cueMap = {
-	    needs_human: '需人工', blocked: '被阻塞', needs_review: '需评审', watch: '观察中',
-	  };
-	  const ACTIVE_PROJECT_WINDOW_MS = 24 * 60 * 60 * 1000;
-	  const actionMap = {
-	    pause_run: '暂停运行', resume_run: '继续运行', request_replan: '请求重新规划',
-	    retry_task: '请求重试', mark_requires_human: '标记需人工', skip_task: '跳过任务',
-	    escalate_mode: '提升模式', downgrade_mode: '降低模式', inject_steering_note: '追加说明',
-	  };
+  const cueMap = {
+    needs_human: '需人工', blocked: '被阻塞', needs_review: '需评审', watch: '观察中',
+  };
+  const ACTIVE_PROJECT_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const ROUTING_FOCUS_STORAGE_KEY = 'hive.web.routing.focus-models.v1';
+  const actionMap = {
+    pause_run: '暂停运行', resume_run: '继续运行', request_replan: '请求重新规划',
+    retry_task: '请求重试', mark_requires_human: '标记需人工', skip_task: '跳过任务',
+    escalate_mode: '提升模式', downgrade_mode: '降低模式', inject_steering_note: '追加说明',
+  };
   const policyTabs = [
-    { id: 'run:start-run', label: 'Run · 当前 run' },
+    { id: 'run:start-run', label: 'Run · 当前' },
     { id: 'run:runtime-next-stage', label: 'Run · 下一阶段' },
     { id: 'project:', label: 'Project 默认' },
     { id: 'global:', label: 'Global 默认' },
@@ -546,32 +954,31 @@
     'translator', 'planner', 'executor', 'discuss',
     'reviewer.cross_review', 'reviewer.arbitration', 'reviewer.final_review',
   ];
+  const tierLabels = {
+    translator: '翻译', planner: '规划', executor: '执行（per-task）', discuss: '讨论',
+    'reviewer.cross_review': '交叉评审', 'reviewer.arbitration': '仲裁评审', 'reviewer.final_review': '最终评审',
+  };
 
+  // ═══════════════════════════════════════════════
+  // UTILITIES
+  // ═══════════════════════════════════════════════
   function esc(value) {
     const div = document.createElement('div');
     div.textContent = String(value == null ? '' : value);
     return div.innerHTML;
   }
-
-  function humanizeStatus(status) {
-    return statusMap[status] || status || '未知';
-  }
-
-  function humanizeAction(action) {
-    return actionMap[action] || action || '操作';
-  }
-
+  function humanizeStatus(status) { return statusMap[status] || status || '未知'; }
+  function humanizeAction(action) { return actionMap[action] || action || '操作'; }
   function badgeClass(status) {
-    if (['done', 'completed', 'success', 'healthy', 'merged', 'verified', 'applied'].includes(status)) return 'ok';
-    if (['failed', 'failure', 'blocked', 'worker_failed', 'merge_blocked', 'rejected'].includes(status)) return 'danger';
-    if (['partial', 'paused', 'review_failed', 'degraded', 'expired'].includes(status)) return 'warn';
-    if (['running', 'init', 'planning', 'executing', 'verifying', 'repairing', 'replanning', 'pending'].includes(status)) return 'info';
+    if (['done','completed','success','healthy','merged','verified','applied'].includes(status)) return 'ok';
+    if (['failed','failure','blocked','worker_failed','merge_blocked','rejected'].includes(status)) return 'danger';
+    if (['partial','paused','review_failed','degraded','expired'].includes(status)) return 'warn';
+    if (['running','init','planning','executing','verifying','repairing','replanning','pending'].includes(status)) return 'info';
     return 'muted';
   }
-
-	  function relativeTime(iso) {
-	    if (!iso) return '—';
-	    const time = new Date(iso).getTime();
+  function relativeTime(iso) {
+    if (!iso) return '—';
+    const time = new Date(iso).getTime();
     if (!time) return '—';
     const sec = Math.max(0, Math.floor((Date.now() - time) / 1000));
     if (sec < 10) return '刚刚';
@@ -580,145 +987,192 @@
     if (min < 60) return min + ' 分钟前';
     const hr = Math.floor(min / 60);
     if (hr < 24) return hr + ' 小时前';
-	    return Math.floor(hr / 24) + ' 天前';
-	  }
-
-	  function projectNameFromCwd(cwd) {
-	    if (!cwd) return '—';
-	    const parts = String(cwd).split('/').filter(Boolean);
-	    return parts[parts.length - 1] || cwd;
-	  }
-
-	  function preferredActiveRun() {
-	    return state.activeRuns[0] || null;
-	  }
-
-	  function normalizeCwdInput(value) {
-	    return String(value || '').trim().replace(/\/+$/, '') || null;
-	  }
-
-	  function setCwdInputValue(value, options = {}) {
-	    if (!el.cwdInput) return;
-	    const nextValue = String(value || '');
-	    if (options.force !== true && document.activeElement === el.cwdInput && el.cwdInput.value !== nextValue) {
-	      return;
-	    }
-	    if (el.cwdInput.value !== nextValue) {
-	      el.cwdInput.value = nextValue;
-	    }
-	  }
-
-	  function syncUrlSelection(cwd, runId = null, options = {}) {
-	    const replace = options.replace !== false;
-	    const url = new URL(window.location.href);
-	    const nextCwd = normalizeCwdInput(cwd);
-	    const nextRunId = String(runId || '').trim();
-	    if (nextCwd) url.searchParams.set('cwd', nextCwd);
-	    else url.searchParams.delete('cwd');
-	    if (nextCwd && nextRunId) url.searchParams.set('runId', nextRunId);
-	    else url.searchParams.delete('runId');
-	    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
-	    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-	    if (nextUrl === currentUrl) return;
-	    const method = replace ? 'replaceState' : 'pushState';
-	    window.history[method]({}, '', nextUrl);
-	  }
-
-	  function ensureSelectedRun() {
-	    if (!state.currentProjectCwd) {
-	      state.currentRunId = null;
-	      return;
-	    }
-	    const preferred = state.activeRuns.find(run => run.project.cwd === state.currentProjectCwd);
-	    if (!state.currentRunId || !state.runs.some(run => run.id === state.currentRunId)) {
-	      state.currentRunId = (preferred && state.runs.some(run => run.id === preferred.run_id))
-	        ? preferred.run_id
-	        : (state.runs[0]?.id || null);
-	    }
-	  }
-
-	  function isFreshUiRun(run) {
-	    if (!run || !run.is_active) return false;
-	    const time = new Date(run.updated_at || '').getTime();
-	    if (!Number.isFinite(time) || time <= 0) return false;
-	    return Date.now() - time <= ACTIVE_PROJECT_WINDOW_MS;
-	  }
-
-	  function nextLoadVersion() {
-	    state.loadVersion += 1;
-	    return state.loadVersion;
-	  }
-
-	  function isLatestLoad(version) {
-	    return version === state.loadVersion;
-	  }
-
-	  function isFreshActiveProject(project) {
-	    if (!project || Number(project.active_count || 0) <= 0) return false;
-	    const time = new Date(project.updated_at || '').getTime();
-	    if (!Number.isFinite(time) || time <= 0) return true;
-	    return Date.now() - time <= ACTIVE_PROJECT_WINDOW_MS;
-	  }
-
-	  function splitProjects(projects) {
-	    const active = [];
-	    const archived = [];
-	    for (const project of projects || []) {
-	      if (isFreshActiveProject(project)) active.push(project);
-	      else archived.push(project);
-	    }
-	    return { active, archived };
-	  }
-
-	  function preferredProjectCwd(projects) {
-	    const { active } = splitProjects(projects);
-	    return active[0]?.cwd || projects[0]?.cwd || null;
-	  }
-
-	  function renderProjectCard(project, options = {}) {
-	    const archived = options.archived === true;
-	    const selected = project.cwd === state.currentProjectCwd;
-	    const live = !archived && isFreshActiveProject(project);
-	    const status = live ? (project.active_status || 'running') : (project.recent_status || project.active_status || 'unknown');
-	    const runId = live ? (project.active_run_id || project.recent_run_id || '—') : (project.recent_run_id || project.active_run_id || '—');
-	    const goal = live ? (project.active_goal || project.recent_goal || '-') : (project.recent_goal || project.active_goal || '-');
-	    return `
-	      <button class="project-card ${selected ? 'active' : ''} ${archived ? 'archived' : ''}" data-project-cwd="${esc(project.cwd)}">
-	        <div class="card-head">
-	          <div>
-	            <div class="card-title">${esc(project.name)}</div>
-	            <div class="card-sub">${esc(project.cwd)}</div>
-	          </div>
-	          <span class="badge ${badgeClass(status)}">${archived ? '归档' : '运行中'} · ${esc(humanizeStatus(status))}</span>
-	        </div>
-	        <div class="kv">
-	          <div><div class="kv-label">${archived ? '最近 run' : '当前关注的 run'}</div><div class="kv-value">${esc(runId)}</div></div>
-	          <div><div class="kv-label">${archived ? '归档原因' : '活跃数量'}</div><div class="kv-value">${archived ? '近期无更新 / 已结束' : project.active_count}</div></div>
-	          <div><div class="kv-label">最近更新</div><div class="kv-value">${esc(relativeTime(project.updated_at))}</div></div>
-	        </div>
-	        <div class="card-sub" style="margin-top:12px">${esc(goal)}</div>
-	      </button>
-	    `;
-	  }
-
-	  function showNotice(message, tone = 'info') {
-	    el.notice.style.display = 'block';
-    el.notice.style.borderColor = tone === 'danger' ? 'rgba(255,107,107,0.3)' : tone === 'warn' ? 'rgba(246,179,63,0.3)' : 'rgba(108,182,255,0.3)';
-    el.notice.style.background = tone === 'danger' ? 'rgba(255,107,107,0.1)' : tone === 'warn' ? 'rgba(246,179,63,0.1)' : 'rgba(108,182,255,0.1)';
-    el.notice.textContent = message;
-    clearTimeout(state.noticeTimer);
-    state.noticeTimer = setTimeout(() => {
-      el.notice.style.display = 'none';
-    }, 6000);
+    return Math.floor(hr / 24) + ' 天前';
+  }
+  function projectNameFromCwd(cwd) {
+    if (!cwd) return '—';
+    const parts = String(cwd).split('/').filter(Boolean);
+    return parts[parts.length - 1] || cwd;
+  }
+  function normalizeCwdInput(value) { return String(value || '').trim().replace(/\/+$/, '') || null; }
+  function nextLoadVersion() { state.loadVersion += 1; return state.loadVersion; }
+  function isLatestLoad(version) { return version === state.loadVersion; }
+  function isFreshUiRun(run) {
+    if (!run || !run.is_active) return false;
+    const time = new Date(run.updated_at || '').getTime();
+    if (!Number.isFinite(time) || time <= 0) return false;
+    return Date.now() - time <= ACTIVE_PROJECT_WINDOW_MS;
+  }
+  function preferredActiveRun() { return state.activeRuns[0] || null; }
+  function currentProject() {
+    const found = state.projects.find(p => p.cwd === state.currentProjectCwd);
+    if (found) return found;
+    if (!state.currentProjectCwd) return null;
+    return { cwd: state.currentProjectCwd, name: projectNameFromCwd(state.currentProjectCwd) };
+  }
+  function currentRun() { return state.runs.find(r => r.id === state.currentRunId) || null; }
+  function parseBlacklistInput(value) {
+    const seen = new Set();
+    return String(value || '')
+      .split(/[\n,]+/)
+      .map(item => item.trim().toLowerCase())
+      .filter(Boolean)
+      .filter(item => {
+        if (seen.has(item)) return false;
+        seen.add(item);
+        return true;
+      });
+  }
+  function parseModelChannelMapInput(value) {
+    const result = {};
+    String(value || '')
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#'))
+      .forEach(line => {
+        const normalized = line.replace(/\s*=>\s*/g, '=').replace(/\s*:\s*/g, '=');
+        const idx = normalized.indexOf('=');
+        if (idx <= 0) return;
+        const pattern = normalized.slice(0, idx).trim().toLowerCase();
+        const selector = normalized.slice(idx + 1).trim().toLowerCase();
+        if (!pattern || !selector) return;
+        result[pattern] = selector;
+      });
+    return result;
+  }
+  function formatModelChannelMap(map) {
+    return Object.entries(map || {})
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([pattern, selector]) => `${pattern} = ${selector}`)
+      .join('\n');
+  }
+  function currentBlacklistPatterns() {
+    return Array.isArray(state.globalConfig?.model_blacklist) ? state.globalConfig.model_blacklist : [];
+  }
+  function currentModelChannelMap() {
+    return state.globalConfig?.model_channel_map && typeof state.globalConfig.model_channel_map === 'object'
+      ? state.globalConfig.model_channel_map
+      : {};
+  }
+  function normalizeModelKey(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+  function loadRoutingFocusModelsFromStorage() {
+    try {
+      const raw = localStorage.getItem(ROUTING_FOCUS_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return [...new Set(parsed.map(normalizeModelKey).filter(Boolean))];
+    } catch {
+      return [];
+    }
+  }
+  function persistRoutingFocusModels() {
+    try {
+      localStorage.setItem(ROUTING_FOCUS_STORAGE_KEY, JSON.stringify(state.routingFocusModels));
+    } catch {
+      // ignore storage failure
+    }
+  }
+  function setRoutingFocusModels(models) {
+    state.routingFocusModels = [...new Set((models || []).map(normalizeModelKey).filter(Boolean))];
+    persistRoutingFocusModels();
+  }
+  function addRoutingFocusModel(modelId) {
+    if (!modelId) return;
+    setRoutingFocusModels([...state.routingFocusModels, modelId]);
+  }
+  function removeRoutingFocusModel(modelId) {
+    const target = normalizeModelKey(modelId);
+    setRoutingFocusModels(state.routingFocusModels.filter((item) => item !== target));
+  }
+  function autoPriorityModelIds() {
+    const ids = [];
+    const tiers = state.globalConfig?.tiers || {};
+    const pushIfModel = (value) => {
+      const normalized = normalizeModelKey(value);
+      if (!normalized || normalized === 'auto') return;
+      ids.push(normalized);
+    };
+    pushIfModel(tiers.translator?.model);
+    pushIfModel(tiers.planner?.model);
+    pushIfModel(tiers.executor?.model);
+    pushIfModel(tiers.discuss?.model);
+    pushIfModel(tiers.reviewer?.cross_review?.model);
+    pushIfModel(tiers.reviewer?.arbitration?.model);
+    pushIfModel(tiers.reviewer?.final_review?.model);
+    pushIfModel(tiers.reporter?.model);
+    Object.keys(currentModelChannelMap()).forEach((pattern) => {
+      if (pattern && !pattern.includes('*')) ids.push(pattern);
+    });
+    return [...new Set(ids)];
+  }
+  function splitModelDisplayValue(value) {
+    return String(value || '')
+      .split('->')
+      .map((item) => normalizeModelKey(item))
+      .filter(Boolean);
+  }
+  function isQueueTaskStatus(status) {
+    return ['queued', 'starting', 'running', 'discussing'].includes(String(status || '').trim().toLowerCase());
+  }
+  function currentQueueModelIds() {
+    if (!state.snapshot) return [];
+    const ids = [];
+    (state.snapshot.tasks || []).forEach((task) => {
+      if (!isQueueTaskStatus(task.status)) return;
+      splitModelDisplayValue(task.model).forEach((modelId) => ids.push(modelId));
+    });
+    return [...new Set(ids)];
+  }
+  function routingPriorityModelSet() {
+    return new Set([...autoPriorityModelIds(), ...currentQueueModelIds(), ...state.routingFocusModels]);
+  }
+  function isRoutingPriorityModel(modelId) {
+    return routingPriorityModelSet().has(normalizeModelKey(modelId));
+  }
+  function availableChannelSummary(limit = 12) {
+    return (state.providers || [])
+      .slice()
+      .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')))
+      .slice(0, limit)
+      .map((provider) => {
+        const aliases = Array.isArray(provider.aliases) ? provider.aliases.filter((alias) => alias !== provider.id) : [];
+        return {
+          id: provider.id,
+          aliases: aliases.slice(0, 4),
+        };
+      });
+  }
+  function isBlacklistedModelId(modelId) {
+    return state.modelOptions.some(option => option.id === modelId && option.blacklisted);
+  }
+  function renderModelSelectOptions(selectedValue, options = {}) {
+    const {
+      includeAuto = false,
+      autoLabel = 'auto',
+      includeEmpty = false,
+      emptyLabel = '不指定',
+      showProvider = true,
+    } = options;
+    const rows = [];
+    if (includeEmpty) rows.push(`<option value="" ${!selectedValue ? 'selected' : ''}>${esc(emptyLabel)}</option>`);
+    if (includeAuto) rows.push(`<option value="auto" ${selectedValue === 'auto' ? 'selected' : ''}>${esc(autoLabel)}</option>`);
+    rows.push(...state.modelOptions.map((option) => {
+      const disabled = option.blacklisted ? 'disabled' : '';
+      const selected = option.id === selectedValue ? 'selected' : '';
+      const suffix = option.blacklisted
+        ? ' · 已禁用'
+        : showProvider ? ` · ${option.provider}` : '';
+      return `<option value="${esc(option.id)}" ${selected} ${disabled}>${esc(option.id + suffix)}</option>`;
+    }));
+    return rows.join('');
   }
 
-	  function showPolicyNotice(saveResult) {
-	    if (!el.policyNotice) return;
-	    if (el.policyDetails) el.policyDetails.open = true;
-	    el.policyNotice.style.display = 'block';
-	    el.policyNotice.innerHTML = `${esc(saveResult.message)}<br><span style="color:var(--muted)">文件：${esc(saveResult.path)}</span><br><span style="color:var(--muted)">影响范围：${esc(saveResult.impact)}</span>`;
-	  }
-
+  // ═══════════════════════════════════════════════
+  // API
+  // ═══════════════════════════════════════════════
   async function api(path, options) {
     const response = await fetch(path, options);
     if (!response.ok) {
@@ -727,39 +1181,387 @@
     }
     return response.json();
   }
+  function withCwd(pathname) {
+    if (!state.currentProjectCwd) return pathname;
+    const sep = pathname.includes('?') ? '&' : '?';
+    return `${pathname}${sep}cwd=${encodeURIComponent(state.currentProjectCwd)}`;
+  }
+  function withSettingsScope(pathname) {
+    const sep = pathname.includes('?') ? '&' : '?';
+    return `${pathname}${sep}scope=${encodeURIComponent(state.settingsConfigScope || 'global')}`;
+  }
+  function settingsScopeLabel() {
+    return state.settingsConfigScope === 'project' ? 'Project' : 'Global';
+  }
 
-	  function withCwd(pathname) {
-	    if (!state.currentProjectCwd) return pathname;
-	    const sep = pathname.includes('?') ? '&' : '?';
-	    return `${pathname}${sep}cwd=${encodeURIComponent(state.currentProjectCwd)}`;
-	  }
+  // ═══════════════════════════════════════════════
+  // NOTICE
+  // ═══════════════════════════════════════════════
+  function showNotice(message, tone = 'info') {
+    el.notice.style.display = 'block';
+    const colors = {
+      danger: { border: 'rgba(239,68,68,0.2)', bg: 'rgba(239,68,68,0.06)' },
+      warn: { border: 'rgba(245,158,11,0.2)', bg: 'rgba(245,158,11,0.06)' },
+      ok: { border: 'rgba(16,185,129,0.2)', bg: 'rgba(16,185,129,0.06)' },
+      info: { border: 'rgba(59,130,246,0.2)', bg: 'rgba(59,130,246,0.06)' },
+    };
+    const c = colors[tone] || colors.info;
+    el.notice.style.borderColor = c.border;
+    el.notice.style.background = c.bg;
+    el.notice.textContent = message;
+    clearTimeout(state.noticeTimer);
+    state.noticeTimer = setTimeout(() => { el.notice.style.display = 'none'; }, 6000);
+  }
 
-	  function currentProject() {
-	    const found = state.projects.find(project => project.cwd === state.currentProjectCwd);
-	    if (found) return found;
-	    if (!state.currentProjectCwd) return null;
-	    return {
-	      cwd: state.currentProjectCwd,
-	      name: projectNameFromCwd(state.currentProjectCwd),
-	    };
-	  }
+  // ═══════════════════════════════════════════════
+  // LOADERS
+  // ═══════════════════════════════════════════════
+  async function loadModelOptions() {
+    const data = await api(withCwd('/api/model-options'));
+    state.modelOptions = data.models || [];
+  }
+  async function loadActiveRuns() {
+    const data = await api('/api/active-runs');
+    state.activeRuns = data.runs || [];
+  }
+  async function loadProjects() {
+    const data = await api('/api/projects');
+    state.projects = data.projects || [];
+  }
+  async function loadRuns() {
+    if (!state.currentProjectCwd) { state.runs = []; state.currentRunId = null; return; }
+    const data = await api(withCwd('/api/runs'));
+    state.runs = data.runs || [];
+    ensureSelectedRun();
+  }
+  async function loadSnapshot() {
+    if (!state.currentProjectCwd || !state.currentRunId) { state.snapshot = null; return; }
+    state.snapshot = await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}`));
+  }
 
-  function currentRun() {
-    return state.runs.find(run => run.id === state.currentRunId) || null;
+  function ensureSelectedRun() {
+    if (!state.currentProjectCwd) { state.currentRunId = null; return; }
+    const preferred = state.activeRuns.find(r => r.project.cwd === state.currentProjectCwd);
+    if (!state.currentRunId || !state.runs.some(r => r.id === state.currentRunId)) {
+      state.currentRunId = (preferred && state.runs.some(r => r.id === preferred.run_id))
+        ? preferred.run_id : (state.runs[0]?.id || null);
+    }
+  }
+
+  async function refreshAll() {
+    const loadVersion = nextLoadVersion();
+    try {
+      await loadModelOptions();
+      if (!isLatestLoad(loadVersion)) return;
+      await loadProjects();
+      if (!isLatestLoad(loadVersion)) return;
+      await loadActiveRuns();
+      if (!isLatestLoad(loadVersion)) return;
+      await loadRuns();
+      if (!isLatestLoad(loadVersion)) return;
+      await loadSnapshot();
+      if (!isLatestLoad(loadVersion)) return;
+      renderAll();
+    } catch (error) {
+      if (!isLatestLoad(loadVersion)) return;
+      showNotice(error.message || String(error), 'danger');
+    }
+  }
+
+  async function openProjectHistory(cwd, runId = null) {
+    const nextCwd = normalizeCwdInput(cwd);
+    if (!nextCwd) { showNotice('先输入一个项目 cwd。', 'warn'); return; }
+    const loadVersion = nextLoadVersion();
+    state.currentProjectCwd = nextCwd;
+    state.currentRunId = String(runId || '').trim() || null;
+    state.cwdDraft = nextCwd;
+    if (el.cwdInput) el.cwdInput.value = nextCwd;
+    try {
+      await loadRuns();
+      if (!isLatestLoad(loadVersion)) return;
+      await loadSnapshot();
+      if (!isLatestLoad(loadVersion)) return;
+    } catch (error) {
+      if (!isLatestLoad(loadVersion)) return;
+      showNotice(error.message || String(error), 'danger');
+    }
+    if (!isLatestLoad(loadVersion)) return;
+    renderAll();
+  }
+
+  // ═══════════════════════════════════════════════
+  // RENDER: Dashboard
+  // ═══════════════════════════════════════════════
+  function renderHeaderMeta() {
+    const project = currentProject();
+    const run = currentRun();
+    el.currentProjectPill.textContent = `项目：${project ? project.name : '—'}`;
+    el.currentRunPill.textContent = `Run：${run ? run.id.slice(0, 16) + '...' : '—'}`;
+    if (!state.snapshot) {
+      el.topSummary.textContent = state.activeRuns.length > 0
+        ? `当前有 ${state.activeRuns.length} 条活跃 run` : '当前没有活跃 run';
+      return;
+    }
+    const attentionCount = state.snapshot.attention_tasks ? state.snapshot.attention_tasks.length : 0;
+    el.topSummary.textContent = attentionCount > 0
+      ? `需关注 ${attentionCount} 个任务`
+      : state.snapshot.verdict.headline;
+  }
+
+  function renderActiveRuns() {
+    el.activeRunCount.textContent = `${state.activeRuns.length} 个`;
+    if (!state.activeRuns.length) {
+      el.activeRunGrid.innerHTML = '<div class="empty">当前没有正在执行的 run</div>';
+      return;
+    }
+    el.activeRunGrid.innerHTML = state.activeRuns.map((run, i) => {
+      const needsUser = run.needs_user;
+      const progress = run.round && run.max_rounds ? Math.round((run.round / run.max_rounds) * 100) : 0;
+      return `
+        <button class="card active-run-card ${needsUser ? 'needs-user' : ''} ${run.project.cwd === state.currentProjectCwd && run.run_id === state.currentRunId ? 'active' : ''}"
+                data-active-project="${esc(run.project.cwd)}" data-active-run="${esc(run.run_id)}"
+                style="animation-delay:${i * 0.05}s">
+          <div class="card-head">
+            <div>
+              <div class="card-title">${esc(run.project.name)}</div>
+              <div class="card-sub">${esc(run.project.cwd)}</div>
+            </div>
+            <div style="display:grid;gap:4px;justify-items:end">
+              <span class="badge ${badgeClass(run.status)}">${esc(humanizeStatus(run.status))}</span>
+              ${run.is_active ? '<span class="live-dot"></span>' : ''}
+            </div>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" style="width:${progress}%"></div>
+          </div>
+          <div class="kv">
+            <div><div class="kv-label">Run ID</div><div class="kv-value">${esc(run.run_id.slice(0, 20))}...</div></div>
+            <div><div class="kv-label">更新</div><div class="kv-value">${esc(relativeTime(run.updated_at))}</div></div>
+            <div><div class="kv-label">关注</div><div class="kv-value">${run.attention_count} 个</div></div>
+          </div>
+          <div class="card-sub">${esc(run.headline)}</div>
+        </button>
+      `;
+    }).join('');
+    el.activeRunGrid.querySelectorAll('[data-active-run]').forEach(node => {
+      node.addEventListener('click', async () => {
+        await openProjectHistory(node.getAttribute('data-active-project'), node.getAttribute('data-active-run'));
+      });
+    });
+  }
+
+  function renderRuns() {
+    if (!state.currentProjectCwd) {
+      el.runGrid.innerHTML = '<div class="empty" style="grid-column:1/-1;">先选择一个项目</div>';
+      return;
+    }
+    if (!state.runs.length) {
+      el.runGrid.innerHTML = '<div class="empty" style="grid-column:1/-1;">这个项目还没有 run</div>';
+      return;
+    }
+    const liveRuns = state.runs.filter(r => isFreshUiRun(r));
+    const archivedRuns = state.runs.filter(r => !isFreshUiRun(r));
+    const renderCard = (run) => `
+      <button class="card ${run.id === state.currentRunId ? 'active' : ''}" data-run-id="${esc(run.id)}" style="cursor:pointer">
+        <div class="card-head">
+          <div>
+            <div class="card-title">${esc(run.id.slice(0, 18))}${run.id.length > 18 ? '...' : ''}</div>
+            <div class="card-sub">${esc(run.goal || '-')}</div>
+          </div>
+          <span class="badge ${badgeClass(run.status)}">${esc(humanizeStatus(run.status))}</span>
+        </div>
+        <div class="card-meta">
+          <span class="badge muted">${run.is_active ? '活跃' : '已结束'}</span>
+          <span class="badge muted">${esc(relativeTime(run.updated_at))}</span>
+        </div>
+      </button>
+    `;
+    let html = '';
+    if (liveRuns.length) {
+      html += `<div style="grid-column:1/-1;font-size:12px;color:var(--muted);font-weight:600;margin-bottom:4px;">活跃 / 进行中</div>`;
+      html += liveRuns.map(renderCard).join('');
+    }
+    if (archivedRuns.length) {
+      html += `<div style="grid-column:1/-1;font-size:12px;color:var(--muted);font-weight:600;margin-top:8px;margin-bottom:4px;">历史归档</div>`;
+      html += archivedRuns.map(renderCard).join('');
+    }
+    el.runGrid.innerHTML = html;
+    el.runGrid.querySelectorAll('[data-run-id]').forEach(node => {
+      node.addEventListener('click', async () => {
+        state.currentRunId = node.getAttribute('data-run-id');
+        await loadSnapshot();
+        renderAll();
+      });
+    });
+  }
+
+  function renderHero() {
+    if (!state.snapshot) {
+      el.hero.className = 'hero info';
+      el.hero.innerHTML = '<div class="hero-title">当前没有选中 run</div><div class="hero-reason">从上方选择一个运行中的项目，或输入 cwd 打开历史。</div>';
+      return;
+    }
+    const snapshot = state.snapshot;
+    const verdict = snapshot.verdict;
+    const severity = verdict.severity === 'critical' ? 'danger' : verdict.severity === 'warning' ? 'warn' : verdict.severity === 'ok' ? 'ok' : 'info';
+    const statusBadge = `<span class="badge ${badgeClass(snapshot.truth.status)}">${esc(humanizeStatus(snapshot.truth.status))}</span>`;
+    const updated = relativeTime(snapshot.updated_at);
+    const nextAction = snapshot.truth.next_action && snapshot.truth.next_action !== '-' ? snapshot.truth.next_action : '无';
+    const actionBtn = verdict.suggested_action && verdict.suggested_action.action_type
+      ? `<button class="btn primary" data-hero-action="${esc(verdict.suggested_action.action_type)}">${esc(verdict.suggested_action.label)}</button>`
+      : '<span class="badge muted">无需操作</span>';
+    el.hero.className = `hero ${severity}`;
+    el.hero.innerHTML = `
+      <div class="hero-top">
+        <div style="display:grid;gap:10px;min-width:0">
+          <div class="hero-meta">
+            ${statusBadge}
+            <span class="badge muted">${esc(snapshot.project.name)}</span>
+            <span class="badge muted">${esc(updated)}</span>
+          </div>
+          <div class="hero-title">${esc(verdict.headline)}</div>
+          <div class="hero-reason">${esc(verdict.why_stopped)}</div>
+        </div>
+        <div class="hero-actions">${actionBtn}</div>
+      </div>
+      <div class="kv">
+        <div><div class="kv-label">目标</div><div class="kv-value">${esc(snapshot.truth.goal)}</div></div>
+        <div><div class="kv-label">下一步</div><div class="kv-value">${esc(nextAction)}</div></div>
+        <div><div class="kv-label">轮次</div><div class="kv-value">${snapshot.truth.round}${snapshot.truth.max_rounds ? ' / ' + snapshot.truth.max_rounds : ''}</div></div>
+        <div><div class="kv-label">最优分数</div><div class="kv-value">${snapshot.truth.score_best == null ? '—' : snapshot.truth.score_best}</div></div>
+      </div>
+    `;
+    const btn = el.hero.querySelector('[data-hero-action]');
+    if (btn) {
+      btn.addEventListener('click', async () => {
+        await doAction(btn.getAttribute('data-hero-action'), { reason: verdict.why_stopped });
+      });
+    }
+  }
+
+  function renderFocus() {
+    if (!state.snapshot) {
+      el.focusSection.classList.add('hidden');
+      return;
+    }
+    el.focusSection.classList.remove('hidden');
+    const focus = state.snapshot.focus;
+    const checks = (focus.checks || []).map(item => `<li style="margin:6px 0;color:var(--muted);">${esc(item)}</li>`).join('');
+    el.focusCard.innerHTML = `
+      <div class="card-title">${esc(focus.title)}</div>
+      <div class="card-sub">${esc(focus.message)}</div>
+      ${checks ? `<ul style="margin:10px 0 0;padding-left:18px;font-size:13px;">${checks}</ul>` : ''}
+    `;
+  }
+
+  function renderTasks() {
+    if (!state.snapshot) {
+      el.taskSection.classList.add('hidden');
+      return;
+    }
+    const tasks = state.snapshot.attention_tasks || [];
+    el.taskCount.textContent = `${tasks.length} 个`;
+    if (!tasks.length) {
+      el.taskSection.classList.add('hidden');
+      return;
+    }
+    el.taskSection.classList.remove('hidden');
+    el.taskGrid.innerHTML = tasks.map((task, i) => `
+      <div class="card" style="animation-delay:${i * 0.05}s">
+        <div class="card-head">
+          <div>
+            <div class="card-title">${esc(task.task_id)}</div>
+            <div class="card-sub">${esc(task.cue_reason)}</div>
+          </div>
+          <span class="badge ${badgeClass(task.status)}">${esc(cueMap[task.cue] || task.cue)} · ${esc(humanizeStatus(task.status))}</span>
+        </div>
+        <div class="kv">
+          <div><div class="kv-label">模型</div><div class="kv-value">${esc(task.model || '-')}</div></div>
+          <div><div class="kv-label">重试</div><div class="kv-value">${task.retry_count}</div></div>
+        </div>
+        <div class="card-sub">${esc(task.summary || '-')}</div>
+        <div class="card-meta">
+          ${(task.suggested_actions || []).map((action, idx) => `
+            <button class="tiny-btn ${idx === 0 ? 'ok' : ''}" data-task-action="${esc(action.action_type)}" data-task-id="${esc(task.task_id)}" data-task-reason="${esc(action.reason)}">${esc(action.label)}</button>
+          `).join('')}
+        </div>
+      </div>
+    `).join('');
+    el.taskGrid.querySelectorAll('[data-task-action]').forEach(node => {
+      node.addEventListener('click', async () => {
+        await doAction(node.getAttribute('data-task-action'), {
+          taskId: node.getAttribute('data-task-id'),
+          reason: node.getAttribute('data-task-reason'),
+        });
+      });
+    });
+  }
+
+  function renderRunActions() {
+    if (!state.snapshot) {
+      el.runActions.innerHTML = '<span class="muted">无可用操作</span>';
+      return;
+    }
+    const verdict = state.snapshot.verdict;
+    const buttons = [];
+    if (state.snapshot.attention.paused) {
+      buttons.push({ label: '继续运行', action: 'resume_run', cls: 'ok' });
+    } else {
+      buttons.push({ label: '暂停运行', action: 'pause_run', cls: '' });
+    }
+    buttons.push({ label: '请求重新规划', action: 'request_replan', cls: '' });
+    if (verdict.needs_user) {
+      buttons.push({ label: '标记需人工', action: 'mark_requires_human', cls: 'danger' });
+    }
+    el.runActions.innerHTML = buttons.map(b => `
+      <button class="btn ${b.cls === 'ok' ? 'ok' : b.cls === 'danger' ? 'danger' : ''}" data-run-action="${esc(b.action)}">${esc(b.label)}</button>
+    `).join('');
+    el.runActions.querySelectorAll('[data-run-action]').forEach(node => {
+      node.addEventListener('click', async () => {
+        await doAction(node.getAttribute('data-run-action'), { reason: state.snapshot.verdict.why_stopped });
+      });
+    });
+  }
+
+  function renderHistoryBrowser() {
+    const projects = state.projects || [];
+    if (el.cwdInput) el.cwdInput.value = state.cwdDraft || '';
+    if (el.projectSuggestions) {
+      el.projectSuggestions.innerHTML = projects.slice(0, 32).map(p => `<option value="${esc(p.cwd)}">${esc(p.name)}</option>`).join('');
+    }
+    el.knownProjectCount.textContent = `${projects.length} 个`;
+    el.historyHint.textContent = state.currentProjectCwd
+      ? `当前：${state.currentProjectCwd}`
+      : '输入 cwd 后查看项目历史';
+    el.knownProjectList.innerHTML = projects.length
+      ? projects.slice(0, 24).map(p => `
+        <button class="btn" style="font-size:11px;padding:5px 10px;" data-known-project="${esc(p.cwd)}">${esc(p.name)}</button>
+      `).join('')
+      : '<span class="muted">无项目记录</span>';
+    el.knownProjectList.querySelectorAll('[data-known-project]').forEach(node => {
+      node.addEventListener('click', async () => { await openProjectHistory(node.getAttribute('data-known-project')); });
+    });
+  }
+
+  function renderPolicyTabs() {
+    el.policyTabs.innerHTML = policyTabs.map(tab => `
+      <button class="settings-tab ${tab.id === state.policyTab ? 'active' : ''}" data-policy-tab="${tab.id}">${esc(tab.label)}</button>
+    `).join('');
+    el.policyTabs.querySelectorAll('[data-policy-tab]').forEach(node => {
+      node.addEventListener('click', () => { state.policyTab = node.getAttribute('data-policy-tab'); renderPolicyEditor(); });
+    });
   }
 
   function parsePolicyTab(tab) {
     const [scope, mode] = tab.split(':');
     return { scope, mode: mode || undefined };
   }
-
   function findPolicyLayer(snapshot, tabId) {
     const policy = snapshot && snapshot.model_policy;
     if (!policy) return null;
     const { scope, mode } = parsePolicyTab(tabId);
     return (policy.layers || []).find(layer => layer.scope === scope && String(layer.mode || '') === String(mode || '')) || null;
   }
-
   function stagePatch(stage, model, fallback) {
     const payload = { model, fallback };
     if (stage === 'translator') return { translator: payload };
@@ -770,468 +1572,70 @@
     if (stage === 'reviewer.arbitration') return { reviewer: { arbitration: payload } };
     return { reviewer: { final_review: payload } };
   }
-
   function normalizeStageMode(stage) {
     if (stage.source === '继承') return 'inherit';
     if (stage.configured_model === 'auto') return 'auto';
     return 'fixed';
   }
-
   function normalizeStageModel(stage) {
     if (stage.configured_model === '-' || stage.source === '继承') return 'auto';
     if (Array.isArray(stage.configured_model)) return stage.configured_model[0] || 'auto';
     return stage.configured_model;
   }
-
   function normalizeStageFallback(stage) {
     if (stage.configured_fallback === '-' || stage.source === '继承') return '';
     return stage.configured_fallback || '';
   }
 
-	  async function loadModelOptions() {
-	    const data = await api('/api/model-options');
-	    state.modelOptions = data.models || [];
-	  }
-
-	  async function loadActiveRuns() {
-	    const data = await api('/api/active-runs');
-	    state.activeRuns = data.runs || [];
-	  }
-
-	  async function loadProjects() {
-	    const data = await api('/api/projects');
-	    state.projects = data.projects || [];
-	  }
-
-  async function loadRuns() {
-    if (!state.currentProjectCwd) {
-      state.runs = [];
-      state.currentRunId = null;
-      return;
-    }
-	    const data = await api(withCwd('/api/runs'));
-	    state.runs = data.runs || [];
-	    ensureSelectedRun();
-	  }
-
-  async function loadSnapshot() {
-    if (!state.currentProjectCwd || !state.currentRunId) {
-      state.snapshot = null;
-      return;
-    }
-    state.snapshot = await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}`));
-  }
-
-	  async function refreshAll() {
-	    const loadVersion = nextLoadVersion();
-	    try {
-	      if (!state.modelOptions.length) await loadModelOptions();
-	      if (!isLatestLoad(loadVersion)) return;
-	      await loadProjects();
-	      if (!isLatestLoad(loadVersion)) return;
-	      await loadActiveRuns();
-	      if (!isLatestLoad(loadVersion)) return;
-	      await loadRuns();
-	      if (!isLatestLoad(loadVersion)) return;
-	      syncUrlSelection(state.currentProjectCwd, state.currentRunId);
-	      await loadSnapshot();
-	      if (!isLatestLoad(loadVersion)) return;
-	      renderAll();
-	    } catch (error) {
-	      if (!isLatestLoad(loadVersion)) return;
-	      showNotice(error.message || String(error), 'danger');
-	    }
-	  }
-
-	  async function openProjectHistory(cwd, runId = null) {
-	    const nextCwd = normalizeCwdInput(cwd);
-	    if (!nextCwd) {
-	      showNotice('先输入一个项目 cwd。', 'warn');
-	      return;
-	    }
-	    const loadVersion = nextLoadVersion();
-	    state.currentProjectCwd = nextCwd;
-	    state.currentRunId = String(runId || '').trim() || null;
-	    state.cwdDraft = nextCwd;
-	    setCwdInputValue(nextCwd, { force: true });
-	    syncUrlSelection(state.currentProjectCwd, state.currentRunId);
-	    try {
-	      await loadRuns();
-	      if (!isLatestLoad(loadVersion)) return;
-	      syncUrlSelection(state.currentProjectCwd, state.currentRunId);
-	      await loadSnapshot();
-	      if (!isLatestLoad(loadVersion)) return;
-	    } catch (error) {
-	      if (!isLatestLoad(loadVersion)) return;
-	      showNotice(error.message || String(error), 'danger');
-	    }
-	    if (!isLatestLoad(loadVersion)) return;
-	    renderAll();
-	  }
-
-	  function renderActiveRuns() {
-	    if (!state.activeRuns.length) {
-	      el.activeRunGrid.innerHTML = '<div class="empty">当前没有正在执行或待处理的 run。旧项目历史不会默认堆在这里。</div>';
-	      return;
-	    }
-	    el.activeRunGrid.innerHTML = state.activeRuns.map((run) => `
-	      <button class="run-card active-run-card ${run.needs_user ? 'needs-user' : ''}" data-active-project="${esc(run.project.cwd)}" data-active-run="${esc(run.run_id)}">
-	        <div class="card-head">
-	          <div>
-	            <div class="card-title">${esc(run.project.name)}</div>
-	            <div class="card-sub">${esc(run.project.cwd)}</div>
-	          </div>
-	          <div style="display:grid;gap:6px;justify-items:end">
-	            <span class="badge ${badgeClass(run.status)}">${esc(humanizeStatus(run.status))}</span>
-	            <span class="badge ${run.needs_user ? 'warn' : 'info'}">${run.needs_user ? '需要你处理' : '自动推进中'}</span>
-	          </div>
-	        </div>
-	        <div class="card-sub">${esc(run.run_id)}</div>
-	        <div class="kv">
-	          <div><div class="kv-label">当前结论</div><div class="kv-value">${esc(run.headline)}</div></div>
-	          <div><div class="kv-label">最近更新</div><div class="kv-value">${esc(relativeTime(run.updated_at))}</div></div>
-	          <div><div class="kv-label">关注任务</div><div class="kv-value">${run.attention_count}</div></div>
-	        </div>
-	        <div class="card-sub">${esc(run.why_stopped)}</div>
-	      </button>
-	    `).join('');
-	    el.activeRunGrid.querySelectorAll('[data-active-run]').forEach(node => {
-	      node.addEventListener('click', async () => {
-	        await openProjectHistory(
-	          node.getAttribute('data-active-project'),
-	          node.getAttribute('data-active-run'),
-	        );
-	      });
-	    });
-	  }
-
-	  function renderHistoryBrowser() {
-	    const projects = state.projects || [];
-	    setCwdInputValue(state.cwdDraft || '');
-	    if (el.projectSuggestions) {
-	      el.projectSuggestions.innerHTML = projects
-	        .slice(0, 32)
-	        .map(project => `<option value="${esc(project.cwd)}">${esc(project.name)}</option>`)
-	        .join('');
-	    }
-	    if (el.knownProjectCount) {
-	      el.knownProjectCount.textContent = `${projects.length} 个`;
-	    }
-	    if (el.historyHint) {
-	      el.historyHint.textContent = state.currentProjectCwd
-	        ? `当前查看：${state.currentProjectCwd}。这里会展示这个项目的全部 run；首页上方仍只保留当前活跃 run。`
-	        : '输入 cwd 后查看这个项目的全部 run 历史；首页默认只显示当前活跃 run。';
-	    }
-	    if (el.knownProjectList) {
-	      el.knownProjectList.innerHTML = projects.length
-	        ? projects.slice(0, 24).map(project => `
-	          <button class="chip-btn" data-known-project="${esc(project.cwd)}">${esc(project.name)}</button>
-	        `).join('')
-	        : '<div class="empty" style="width:100%;">当前还没有可用的项目记录。</div>';
-	      el.knownProjectList.querySelectorAll('[data-known-project]').forEach(node => {
-	        node.addEventListener('click', async () => {
-	          await openProjectHistory(node.getAttribute('data-known-project'));
-	        });
-	      });
-	    }
-	  }
-
-	  function renderRuns() {
-	    if (!state.currentProjectCwd) {
-	      el.runGrid.innerHTML = '<div class="empty">先从上面的当前运行进入，或者输入 cwd 打开某个项目历史。</div>';
-	      return;
-	    }
-	    if (!state.runs.length) {
-	      el.runGrid.innerHTML = '<div class="empty">这个项目还没有可展示的 run。</div>';
-	      return;
-	    }
-	    const liveRuns = state.runs.filter(run => isFreshUiRun(run));
-	    const archivedRuns = state.runs.filter(run => !isFreshUiRun(run));
-	    const renderRunCard = (run) => `
-	      <button class="run-card ${run.id === state.currentRunId ? 'active' : ''}" data-run-id="${esc(run.id)}">
-	        <div class="card-head">
-	          <div>
-	            <div class="card-title">${esc(run.id)}</div>
-	            <div class="card-sub">${esc(run.goal || '-')}</div>
-	          </div>
-	          <div style="display:grid;gap:6px;justify-items:end">
-	            <span class="badge ${badgeClass(run.status)}">${esc(humanizeStatus(run.status))}</span>
-	            <span class="badge ${run.source === 'worker' ? 'warn' : 'muted'}">${run.source === 'worker' ? 'worker-only' : 'run'}</span>
-	          </div>
-	        </div>
-	        <div class="kv">
-	          <div><div class="kv-label">是否活跃</div><div class="kv-value">${run.is_active ? '是' : '否'}</div></div>
-	          <div><div class="kv-label">最近更新</div><div class="kv-value">${esc(relativeTime(run.updated_at))}</div></div>
-	        </div>
-	      </button>
-	    `;
-	    const liveHtml = liveRuns.length
-	      ? `<div class="project-subsection">
-	          <div class="subsection-head">
-	            <div class="subsection-title">
-	              <strong>当前 / 待处理</strong>
-	              <span class="badge info">${liveRuns.length} 个</span>
-	            </div>
-	            <div class="subsection-note">这些 run 还在推进或仍需你判断。</div>
-	          </div>
-	          <div class="run-grid">${liveRuns.map(renderRunCard).join('')}</div>
-	        </div>`
-	      : '';
-	    const archiveHtml = archivedRuns.length
-	      ? `<div class="archive-panel" style="grid-column:1 / -1;">
-	          <details>
-	            <summary>
-	              <div class="subsection-title">
-	                <strong>历史归档</strong>
-	                <span class="badge muted">${archivedRuns.length} 个</span>
-	              </div>
-	              <span class="subsection-note">完成 / 失败 / 旧 run 在这里，按需再看。</span>
-	            </summary>
-	            <div class="run-grid">${archivedRuns.map(renderRunCard).join('')}</div>
-	          </details>
-	        </div>`
-	      : '';
-	    el.runGrid.innerHTML = liveHtml || archiveHtml
-	      ? `${liveHtml}${archiveHtml}`
-	      : '<div class="empty">这个项目还没有可展示的 run。</div>';
-	    el.runGrid.querySelectorAll('[data-run-id]').forEach(node => {
-	      node.addEventListener('click', async () => {
-	        state.currentRunId = node.getAttribute('data-run-id');
-	        syncUrlSelection(state.currentProjectCwd, state.currentRunId);
-	        await loadSnapshot();
-        renderAll();
-      });
-    });
-  }
-
-	  function renderHero() {
-	    if (!state.snapshot) {
-	      el.hero.className = 'hero info';
-	      el.hero.innerHTML = '<div class="hero-title">当前没有选中 run</div><div class="hero-reason">先从上面的当前运行进入，或者输入 cwd 打开某个项目历史。</div>';
-	      return;
-	    }
-    const snapshot = state.snapshot;
-    const verdict = snapshot.verdict;
-    const severity = verdict.severity === 'critical' ? 'danger' : verdict.severity === 'warning' ? 'warn' : verdict.severity === 'ok' ? 'ok' : 'info';
-    const statusBadge = `<span class="badge ${badgeClass(snapshot.truth.status)}">${esc(humanizeStatus(snapshot.truth.status))}</span>`;
-    const updated = relativeTime(snapshot.updated_at);
-    const nextAction = snapshot.truth.next_action && snapshot.truth.next_action !== '-' ? snapshot.truth.next_action : '无';
-    const actionBtn = verdict.suggested_action && verdict.suggested_action.action_type
-      ? `<button class="btn primary" data-hero-action="${esc(verdict.suggested_action.action_type)}">${esc(verdict.suggested_action.label)}</button>`
-      : '<span class="badge muted">当前没有直接按钮，先看下面任务卡片</span>';
-    el.hero.className = `hero ${severity}`;
-    el.hero.innerHTML = `
-      <div class="hero-top">
-        <div style="display:grid;gap:10px;min-width:0">
-          <div class="hero-meta">
-            ${statusBadge}
-            <span class="badge muted">${esc(snapshot.project.name)}</span>
-            <span class="badge muted">${esc(snapshot.runId)}</span>
-            <span class="badge muted">${esc(updated)}</span>
-          </div>
-          <div class="hero-title">${esc(verdict.headline)}</div>
-          <div class="hero-reason">${esc(verdict.why_stopped)}</div>
-        </div>
-        <div class="hero-actions">${actionBtn}</div>
-      </div>
-      <div class="kv">
-        <div><div class="kv-label">目标</div><div class="kv-value">${esc(snapshot.truth.goal)}</div></div>
-        <div><div class="kv-label">下一步动作</div><div class="kv-value">${esc(nextAction)}</div></div>
-        <div><div class="kv-label">当前轮次</div><div class="kv-value">${snapshot.truth.round}${snapshot.truth.max_rounds ? ' / ' + snapshot.truth.max_rounds : ''}</div></div>
-        <div><div class="kv-label">最优分数</div><div class="kv-value">${snapshot.truth.score_best == null ? '—' : snapshot.truth.score_best}</div></div>
-      </div>
-    `;
-    const button = el.hero.querySelector('[data-hero-action]');
-    if (button) {
-      button.addEventListener('click', async () => {
-        await doAction(button.getAttribute('data-hero-action'), { reason: verdict.why_stopped });
-      });
-    }
-  }
-
-	  function renderFocus() {
-	    if (!state.snapshot) {
-	      el.focusCard.innerHTML = '<strong>先决定你现在要看哪条线</strong><p>如果只是盯当前执行，先看上面的当前运行；如果要回看历史，再输入 cwd 打开项目。</p>';
-	      return;
-	    }
-    const focus = state.snapshot.focus;
-    const checks = (focus.checks || []).map(item => `<li>${esc(item)}</li>`).join('');
-    el.focusCard.innerHTML = `
-      <strong>${esc(focus.title)}</strong>
-      <p>${esc(focus.message)}</p>
-      <ul class="checklist">${checks}</ul>
-    `;
-  }
-
-  function renderTasks() {
-    if (!state.snapshot) {
-      el.taskGrid.innerHTML = '<div class="empty">先选一个 run。</div>';
-      return;
-    }
-    const tasks = state.snapshot.attention_tasks || [];
-    if (!tasks.length) {
-      const verdict = state.snapshot.verdict;
-      const message = verdict.needs_user
-        ? '当前没有 task 级按钮；这是 run 级问题，先用上面的主按钮或运行级操作。'
-        : '当前没有需要你点的 task；先不要钻 Provider、Compact 或完整状态。';
-      el.taskGrid.innerHTML = `<div class="empty">${esc(message)}</div>`;
-      return;
-    }
-    el.taskGrid.innerHTML = tasks.map(task => `
-      <div class="task-card">
-        <div class="card-head">
-          <div>
-            <div class="card-title">${esc(task.task_id)}</div>
-            <div class="card-sub">${esc(task.cue_reason)}</div>
-          </div>
-          <span class="badge ${badgeClass(task.status)}">${esc(cueMap[task.cue] || task.cue)} · ${esc(humanizeStatus(task.status))}</span>
-        </div>
-        <div class="task-meta">模型：${esc(task.model || '-')} · 重试次数：${task.retry_count}</div>
-        <div class="task-meta">摘要：${esc(task.summary || '-')}</div>
-        <div class="task-actions">
-          ${(task.suggested_actions || []).map((action, index) => `
-            <button class="tiny-btn ${index === 0 ? 'ok' : ''}" data-task-action="${esc(action.action_type)}" data-task-id="${esc(task.task_id)}" data-task-reason="${esc(action.reason)}">
-              ${esc(action.label)}
-            </button>
-          `).join('')}
-          <button class="tiny-btn inline" data-open-details="${esc(task.task_id)}">展开详情</button>
-        </div>
-      </div>
-    `).join('');
-
-    el.taskGrid.querySelectorAll('[data-task-action]').forEach(node => {
-      node.addEventListener('click', async () => {
-        await doAction(node.getAttribute('data-task-action'), {
-          taskId: node.getAttribute('data-task-id'),
-          reason: node.getAttribute('data-task-reason'),
-        });
-      });
-    });
-    el.taskGrid.querySelectorAll('[data-open-details]').forEach(node => {
-      node.addEventListener('click', () => {
-        document.querySelector('details')?.setAttribute('open', 'open');
-        document.getElementById('allTasksAnchor')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      });
-    });
-  }
-
-  function renderRunActions() {
-    if (!state.snapshot) {
-      el.runActions.innerHTML = '<span class="muted">当前没有可执行的运行级操作。</span>';
-      return;
-    }
-    const verdict = state.snapshot.verdict;
-    const buttons = [];
-    if (state.snapshot.attention.paused) {
-      buttons.push({ label: '继续运行', action: 'resume_run', tone: 'ok' });
-    } else {
-      buttons.push({ label: '暂停运行', action: 'pause_run', tone: '' });
-    }
-    buttons.push({ label: '请求重新规划', action: 'request_replan', tone: 'warn' });
-    if (verdict.needs_user) {
-      buttons.push({ label: '标记需人工判断', action: 'mark_requires_human', tone: 'danger' });
-    }
-    el.runActions.innerHTML = buttons.map(button => `
-      <button class="btn ${button.tone === 'ok' ? 'primary' : ''}" data-run-action="${esc(button.action)}">${esc(button.label)}</button>
-    `).join('');
-    el.runActions.querySelectorAll('[data-run-action]').forEach(node => {
-      node.addEventListener('click', async () => {
-        await doAction(node.getAttribute('data-run-action'), { reason: state.snapshot.verdict.why_stopped });
-      });
-    });
-  }
-
-  function renderPolicyTabs() {
-    el.policyTabs.innerHTML = policyTabs.map(tab => `
-      <button class="policy-tab ${tab.id === state.policyTab ? 'active' : ''}" data-policy-tab="${tab.id}">${esc(tab.label)}</button>
-    `).join('');
-    el.policyTabs.querySelectorAll('[data-policy-tab]').forEach(node => {
-      node.addEventListener('click', () => {
-        state.policyTab = node.getAttribute('data-policy-tab');
-        renderPolicyEditor();
-      });
-    });
-  }
-
   async function savePolicyStage(layer, stageId) {
     const mode = document.querySelector(`[data-stage-mode="${CSS.escape(stageId)}"]`)?.value || 'inherit';
-    if (mode === 'inherit') {
-      await resetPolicyStage(layer, stageId);
-      return;
-    }
+    if (mode === 'inherit') { await resetPolicyStage(layer, stageId); return; }
     const selectedModel = document.querySelector(`[data-stage-model="${CSS.escape(stageId)}"]`)?.value || 'auto';
     const fallbackValue = document.querySelector(`[data-stage-fallback="${CSS.escape(stageId)}"]`)?.value || '';
     const patch = stagePatch(stageId, mode === 'auto' ? 'auto' : selectedModel, fallbackValue);
     let saveResult = null;
     if (layer.scope === 'run') {
       const data = await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}/model-policy`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: layer.mode || 'start-run', patch }),
       });
       saveResult = data.save_result;
     } else {
       const data = await api(withCwd(`/api/config-policy/${encodeURIComponent(layer.scope)}?runId=${encodeURIComponent(state.currentRunId)}`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ patch }),
       });
       saveResult = data.save_result;
     }
-    if (saveResult) {
-      state.lastSaveResult = saveResult;
-      showPolicyNotice(saveResult);
-      showNotice(`${esc(saveResult.message)}`, 'ok');
-    } else {
-      showNotice(`已保存 ${stageId} 到 ${layer.title}`);
-    }
-    await loadSnapshot();
-    renderAll();
+    if (saveResult) showNotice(saveResult.message, 'ok');
+    else showNotice(`已保存 ${stageId}`);
+    await loadSnapshot(); renderAll();
   }
 
   async function resetPolicyStage(layer, stageId) {
     if (!layer.writable) return;
     let saveResult = null;
     if (layer.scope === 'run') {
-      const data = await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}/model-policy/stages/${encodeURIComponent(stageId)}?source=${encodeURIComponent(layer.mode || 'start-run')}`), {
-        method: 'DELETE',
-      });
+      const data = await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}/model-policy/stages/${encodeURIComponent(stageId)}?source=${encodeURIComponent(layer.mode || 'start-run')}`), { method: 'DELETE' });
       saveResult = data.save_result;
     } else {
-      const data = await api(withCwd(`/api/config-policy/${encodeURIComponent(layer.scope)}/stages/${encodeURIComponent(stageId)}?runId=${encodeURIComponent(state.currentRunId)}`), {
-        method: 'DELETE',
-      });
+      const data = await api(withCwd(`/api/config-policy/${encodeURIComponent(layer.scope)}/stages/${encodeURIComponent(stageId)}?runId=${encodeURIComponent(state.currentRunId)}`), { method: 'DELETE' });
       saveResult = data.save_result;
     }
-    if (saveResult) {
-      state.lastSaveResult = saveResult;
-      showPolicyNotice(saveResult);
-      showNotice(`${esc(saveResult.message)}`, 'ok');
-    } else {
-      showNotice(`已让 ${stageId} 恢复继承`);
-    }
-    await loadSnapshot();
-    renderAll();
+    if (saveResult) showNotice(saveResult.message, 'ok');
+    else showNotice(`已恢复继承 ${stageId}`);
+    await loadSnapshot(); renderAll();
   }
 
   function renderPolicyEditor() {
     if (el.policyNotice) el.policyNotice.style.display = 'none';
-    if (!state.snapshot) {
-      el.policyEditor.innerHTML = '<div class="empty">先选一个 run 才能看策略。</div>';
-      return;
-    }
+    if (!state.snapshot) { el.policyEditor.innerHTML = '<div class="empty">先选一个 run</div>'; return; }
     const layer = findPolicyLayer(state.snapshot, state.policyTab);
-    if (!layer) {
-      el.policyEditor.innerHTML = '<div class="empty">当前层没有可展示的策略数据。</div>';
-      return;
-    }
+    if (!layer) { el.policyEditor.innerHTML = '<div class="empty">当前层无数据</div>'; return; }
     const readonly = !layer.writable;
-    const blocked = layer.blocked_reason ? `<div class="policy-summary-box">${esc(layer.blocked_reason)}</div>` : '';
-    const saveResult = state.snapshot.model_policy.save_result;
-    const saveNote = saveResult
-      ? `<div class=\"policy-summary-box\" style=\"border-color:rgba(62,207,142,0.3);background:rgba(62,207,142,0.06);\">${esc(saveResult.message)}<br><span style=\"color:var(--muted)\">文件：${esc(saveResult.path)}</span><br><span style=\"color:var(--muted)\">影响范围：${esc(saveResult.impact)}</span></div>` : '';
+    const blocked = layer.blocked_reason ? `<div class="notice" style="display:block;margin-bottom:10px;background:var(--warn-soft);border-color:rgba(245,158,11,0.2);">${esc(layer.blocked_reason)}</div>` : '';
     el.policyEditor.innerHTML = `
-      <div class="policy-header">
+      <div style="display:grid;gap:8px;margin-bottom:12px;">
         <div class="card-head">
           <div>
             <div class="card-title">${esc(layer.title)}</div>
@@ -1239,54 +1643,55 @@
           </div>
           <span class="badge ${readonly ? 'muted' : 'info'}">${readonly ? '只读' : '可编辑'}</span>
         </div>
-        <p>${esc(layer.summary)}</p>
-        <p>${esc(layer.impact)}</p>
-        ${saveNote}
+        <div class="muted" style="font-size:12px;line-height:1.5;">${esc(layer.summary)}</div>
+        <div class="muted" style="font-size:12px;line-height:1.5;">${esc(layer.impact)}</div>
         ${blocked}
       </div>
-      <div class="policy-stage-grid">
+      <div class="card-grid card-grid-2">
         ${(layer.stages || []).map(stage => {
           const stageMode = normalizeStageMode(stage);
           const currentModel = normalizeStageModel(stage);
           const currentFallback = normalizeStageFallback(stage);
+          const isExecutor = stage.stage === 'executor';
           return `
-            <div class="policy-stage-card">
-              <div class="policy-stage-head">
+            <div class="card" style="display:grid;gap:10px;">
+              <div class="card-head">
                 <div>
-                  <div class="policy-stage-title">${esc(stage.label)}</div>
-                  <div class="policy-stage-note">当前来源：${esc(stage.effective_source)}</div>
+                  <div class="card-title">${esc(isExecutor ? '执行（per-task 动态分配）' : stage.label)}</div>
+                  <div class="card-sub">来源：${esc(stage.effective_source)}</div>
                 </div>
                 <span class="badge ${badgeClass(stage.source === '继承' ? 'paused' : 'running')}">${esc(stage.source)}</span>
               </div>
               <div class="field">
-                <label>编辑模式</label>
+                <label>模式</label>
                 <select data-stage-mode="${esc(stage.stage)}" ${readonly ? 'disabled' : ''}>
                   <option value="inherit" ${stageMode === 'inherit' ? 'selected' : ''}>恢复继承</option>
-                  <option value="auto" ${stageMode === 'auto' ? 'selected' : ''}>使用 auto</option>
-                  <option value="fixed" ${stageMode === 'fixed' ? 'selected' : ''}>固定到具体模型</option>
+                  <option value="auto" ${stageMode === 'auto' ? 'selected' : ''}>auto</option>
+                  <option value="fixed" ${stageMode === 'fixed' ? 'selected' : ''}>固定模型</option>
                 </select>
               </div>
               <div class="field">
-                <label>Primary model</label>
+                <label>${isExecutor ? '兜底模型（fallback chain）' : 'Primary'}</label>
                 <select data-stage-model="${esc(stage.stage)}" ${readonly ? 'disabled' : ''}>
-                  <option value="auto" ${currentModel === 'auto' ? 'selected' : ''}>auto</option>
-                  ${state.modelOptions.map(option => `<option value="${esc(option.id)}" ${option.id === currentModel ? 'selected' : ''}>${esc(option.id)} · ${esc(option.provider)}</option>`).join('')}
+                  ${renderModelSelectOptions(currentModel, { includeAuto: true })}
                 </select>
               </div>
               <div class="field">
-                <label>Fallback</label>
+                <label>${isExecutor ? 'Fallback chain 第2位' : 'Fallback'}</label>
                 <select data-stage-fallback="${esc(stage.stage)}" ${readonly ? 'disabled' : ''}>
-                  <option value="" ${!currentFallback ? 'selected' : ''}>不显式指定</option>
-                  ${state.modelOptions.map(option => `<option value="${esc(option.id)}" ${option.id === currentFallback ? 'selected' : ''}>${esc(option.id)} · ${esc(option.provider)}</option>`).join('')}
+                  ${renderModelSelectOptions(currentFallback, { includeEmpty: true })}
                 </select>
               </div>
-              <div class="policy-summary-box">
-                当前生效：${esc(stage.effective_model)}${stage.effective_fallback !== '-' ? ` · fallback ${esc(stage.effective_fallback)}` : ''}<br>
-                route：${esc(stage.route_summary)}
+              <div class="muted" style="font-size:11px;line-height:1.5;background:var(--panel-2);padding:8px;border-radius:var(--radius-sm);">
+                ${isExecutor
+                  ? `生效：${esc(stage.effective_model)}${stage.effective_fallback !== '-' ? ' · fallback ' + esc(stage.effective_fallback) : ''}<br>
+                     <span style="color:var(--warn)">注意：实际执行按任务动态分配模型。此处配置仅在所有模型被黑名单阻断时进入 fallback chain。</span>`
+                  : `生效：${esc(stage.effective_model)}${stage.effective_fallback !== '-' ? ' · fallback ' + esc(stage.effective_fallback) : ''}<br>
+                     route：${esc(stage.route_summary)}`}
               </div>
-              <div class="policy-stage-actions">
-                ${readonly ? '<span class="muted">Global 当前只读，先用它做参考。</span>' : `
-                  <button class="tiny-btn ok" data-policy-save-stage="${esc(stage.stage)}">保存这一项</button>
+              <div class="flex flex-wrap gap-2">
+                ${readonly ? '<span class="muted">Global 只读，仅做参考</span>' : `
+                  <button class="tiny-btn ok" data-policy-save-stage="${esc(stage.stage)}">保存</button>
                   <button class="tiny-btn" data-policy-reset-stage="${esc(stage.stage)}">恢复继承</button>
                 `}
               </div>
@@ -1296,145 +1701,1221 @@
       </div>
     `;
     el.policyEditor.querySelectorAll('[data-policy-save-stage]').forEach(node => {
-      node.addEventListener('click', async () => {
-        await savePolicyStage(layer, node.getAttribute('data-policy-save-stage'));
-      });
+      node.addEventListener('click', async () => { await savePolicyStage(layer, node.getAttribute('data-policy-save-stage')); });
     });
     el.policyEditor.querySelectorAll('[data-policy-reset-stage]').forEach(node => {
-      node.addEventListener('click', async () => {
-        await resetPolicyStage(layer, node.getAttribute('data-policy-reset-stage'));
-      });
+      node.addEventListener('click', async () => { await resetPolicyStage(layer, node.getAttribute('data-policy-reset-stage')); });
     });
   }
 
   function renderDetails() {
     if (!state.snapshot) {
-      el.detailGrid.innerHTML = '<div class="empty">先选一个 run。</div>';
+      el.detailGrid.innerHTML = '<div class="empty">先选一个 run</div>';
       return;
     }
     const snapshot = state.snapshot;
-    const allTasks = (snapshot.tasks || []).map(task => `<div class="detail-card"><div class="card-title">${esc(task.task_id)}</div><div class="card-sub">${esc(humanizeStatus(task.status))} · ${esc(task.model || '-')}</div><div class="card-sub">${esc(task.summary || '-')}</div></div>`).join('') || '<div class="empty">暂无任务明细</div>';
+    const allTasks = (snapshot.tasks || []).map(task => `
+      <div class="card">
+        <div class="card-title">${esc(task.task_id)}</div>
+        <div class="card-sub">${esc(humanizeStatus(task.status))}</div>
+        <div style="margin-top:6px;font-size:12px;">
+          <span class="badge info">模型：${esc(task.model || '未分配')}</span>
+          ${task.assignment_reason ? `<span class="muted" style="margin-left:6px;">${esc(task.assignment_reason)}</span>` : ''}
+        </div>
+        <div class="card-sub" style="margin-top:4px;">${esc(task.summary || '-')}</div>
+      </div>
+    `).join('') || '<div class="empty">暂无任务</div>';
     const provider = snapshot.provider
-      ? `<div class="detail-card"><div class="card-title">Provider</div><div class="card-sub">正常 ${snapshot.provider.healthy} · 降级 ${snapshot.provider.degraded} · 断开 ${snapshot.provider.open} · 探测 ${snapshot.provider.probing}</div><div class="card-sub">${esc(snapshot.provider.summary)}</div></div>`
-      : '<div class="detail-card"><div class="card-title">Provider</div><div class="card-sub">当前没有 Provider 异常数据。</div></div>';
-    const steering = (snapshot.steering || []).map(item => `${humanizeAction(item.action_type)} · ${humanizeStatus(item.status)}${item.outcome ? ' · ' + item.outcome : ''}`).join('\n') || '当前没有干预记录';
+      ? `<div class="card"><div class="card-title">Provider 健康</div><div class="card-sub">正常 ${snapshot.provider.healthy} · 降级 ${snapshot.provider.degraded} · 断开 ${snapshot.provider.open} · 探测 ${snapshot.provider.probing}</div><div class="card-sub">${esc(snapshot.provider.summary)}</div></div>`
+      : '<div class="card"><div class="card-title">Provider</div><div class="card-sub">无异常数据</div></div>';
+    const steering = (snapshot.steering || []).map(item => `${humanizeAction(item.action_type)} · ${humanizeStatus(item.status)}${item.outcome ? ' · ' + item.outcome : ''}`).join('\n') || '无干预记录';
     const truth = `目标：${snapshot.truth.goal}\n状态：${snapshot.truth.status}\n轮次：${snapshot.truth.round}${snapshot.truth.max_rounds ? '/' + snapshot.truth.max_rounds : ''}\n下一步：${snapshot.truth.next_action}\n原因：${snapshot.truth.next_reason}\n摘要：${snapshot.truth.summary}`;
-    const compact = snapshot.compact ? snapshot.compact.markdown : '当前没有 compact 数据';
+    const compact = snapshot.compact ? snapshot.compact.markdown : '无 compact 数据';
     el.detailGrid.innerHTML = `
-      <div class="detail-card" id="allTasksAnchor">
-        <div class="card-title">全部任务</div>
-        <div class="card-sub">这里只是补充，不是你第一屏该盯的地方。</div>
-        <div class="run-grid" style="margin-top:12px">${allTasks}</div>
-      </div>
+      <div class="card"><div class="card-title">全部任务</div><div class="card-grid card-grid-2" style="margin-top:10px">${allTasks}</div></div>
       ${provider}
-      <div class="detail-card">
-        <div class="card-title">当前状态</div>
-        <pre>${esc(truth)}</pre>
-      </div>
-      <div class="detail-card">
-        <div class="card-title">干预记录</div>
-        <pre>${esc(steering)}</pre>
-      </div>
-      <div class="detail-card" style="grid-column:1 / -1;">
-        <details>
-          <summary>展开 Compact Markdown</summary>
-          <pre>${esc(compact)}</pre>
-        </details>
+      <div class="card"><div class="card-title">当前状态</div><pre style="margin:8px 0 0;background:var(--panel-2);padding:10px;border-radius:var(--radius-sm);font-size:11px;line-height:1.5;">${esc(truth)}</pre></div>
+      <div class="card"><div class="card-title">干预记录</div><pre style="margin:8px 0 0;background:var(--panel-2);padding:10px;border-radius:var(--radius-sm);font-size:11px;line-height:1.5;">${esc(steering)}</pre></div>
+      <div class="card" style="grid-column:1/-1;">
+        <details><summary style="font-size:13px;color:var(--muted);cursor:pointer;">Compact Markdown</summary>
+        <pre style="margin:10px 0 0;background:var(--panel-2);padding:10px;border-radius:var(--radius-sm);font-size:11px;line-height:1.5;">${esc(compact)}</pre></details>
       </div>
     `;
   }
 
-	  function renderHeaderMeta() {
-	    const project = currentProject();
-	    const run = currentRun();
-	    el.currentProjectPill.textContent = `项目：${project ? project.name : '—'}`;
-	    el.currentRunPill.textContent = `Run：${run ? run.id : '—'}`;
-	    el.updatedPill.textContent = `更新时间：${state.snapshot ? relativeTime(state.snapshot.updated_at) : '—'}`;
-	    if (!state.snapshot) {
-	      el.topSummary.textContent = state.activeRuns.length > 0
-	        ? `当前有 ${state.activeRuns.length} 条活跃 run，先从上面进入最需要关注的一条。`
-	        : '当前没有活跃 run；如果要回看历史，请输入 cwd 打开某个项目。';
-	      return;
-	    }
-    const attentionCount = state.snapshot.attention_tasks ? state.snapshot.attention_tasks.length : 0;
-    el.topSummary.textContent = attentionCount > 0
-      ? `当前最该看 ${attentionCount} 个任务，不要先钻 Provider / Compact。`
-      : `当前先看 ${state.snapshot.verdict.headline}，必要时再展开细节。`;
+  // ═══════════════════════════════════════════════
+  // RENDER: Settings
+  // ═══════════════════════════════════════════════
+  function switchView(view) {
+    state.activeView = view;
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+    el.dashboardView.classList.toggle('hidden', view !== 'dashboard');
+    el.settingsView.classList.toggle('hidden', view !== 'settings');
+    if (view === 'settings') loadSettingsData();
   }
 
-	  function renderAll() {
-	    renderHeaderMeta();
-	    renderActiveRuns();
-	    renderHistoryBrowser();
-	    renderRuns();
-	    renderHero();
-	    renderFocus();
+  function switchSettingsTab(tab) {
+    state.settingsTab = tab;
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t.dataset.settingsTab === tab));
+    el.settingsOverview.classList.toggle('hidden', tab !== 'overview');
+    el.settingsProviders.classList.toggle('hidden', tab !== 'providers');
+    el.settingsModels.classList.toggle('hidden', tab !== 'models');
+    el.settingsSnapshots.classList.toggle('hidden', tab !== 'snapshots');
+  }
+
+  async function loadSettingsData() {
+    try {
+      await loadModelOptions();
+      const [configData, providersData, routesData, routingData, modelsData, snapshotsData, mmsMetaData, doctorData] = await Promise.all([
+        api(withSettingsScope(withCwd('/api/global-config'))),
+        api(withCwd('/api/providers')),
+        api('/api/mms-routes'),
+        api(withCwd('/api/model-routing')),
+        api(withCwd('/api/models')),
+        api('/api/snapshots'),
+        api('/api/mms-meta'),
+        api(withCwd('/api/doctor')),
+      ]);
+      state.globalConfig = configData.config;
+      state.globalConfigTarget = configData.target || null;
+      state.providers = providersData.providers || [];
+      state.mmsRoutes = routesData.routes || [];
+      state.modelRouting = routingData.routing || [];
+      state.models = modelsData.models || [];
+      state.snapshots = snapshotsData.snapshots || [];
+      state.mmsMeta = mmsMetaData.meta || null;
+      state.doctorReport = doctorData.report || null;
+      renderSettings();
+    } catch (error) {
+      showNotice('加载设置数据失败: ' + (error.message || String(error)), 'danger');
+    }
+  }
+
+  function renderSettings() {
+    renderSettingsScope();
+    renderGlobalConfig();
+    renderDoctor();
+    renderProviders();
+    renderModelRouting();
+    renderModels();
+    renderSnapshots();
+  }
+
+  function renderSettingsScope() {
+    const target = state.globalConfigTarget;
+    if (el.settingsConfigTitle) {
+      el.settingsConfigTitle.textContent = `${settingsScopeLabel()} 配置`;
+    }
+    if (el.settingsConfigSubtitle) {
+      if (!target) {
+        el.settingsConfigSubtitle.textContent = `当前编辑 ${settingsScopeLabel()} layer`;
+      } else {
+        const pathText = target.path || '未定位到配置文件';
+        el.settingsConfigSubtitle.textContent = `${target.note} 文件：${pathText}`;
+      }
+    }
+    if (el.settingsScopeHint) {
+      const pathText = target?.path ? ` · ${target.path}` : '';
+      const stateText = target?.exists ? '已存在' : '尚未创建';
+      el.settingsScopeHint.textContent = target
+        ? `${target.note} (${stateText}${pathText})`
+        : `当前写入 ${settingsScopeLabel()} layer`;
+    }
+    if (el.settingsScopeSwitch) {
+      el.settingsScopeSwitch.querySelectorAll('[data-config-scope]').forEach((node) => {
+        const scope = node.getAttribute('data-config-scope');
+        const disabled = scope === 'project' && !state.currentProjectCwd;
+        node.classList.toggle('active', scope === state.settingsConfigScope);
+        node.disabled = disabled;
+        node.title = disabled ? '先打开一个项目，再编辑 Project layer' : '';
+        node.onclick = async () => {
+          if (disabled || scope === state.settingsConfigScope) return;
+          state.settingsConfigScope = scope;
+          await loadSettingsData();
+        };
+      });
+    }
+  }
+
+  function renderDoctor() {
+    if (!el.doctorPanel) return;
+    const report = state.doctorReport;
+    if (!report) {
+      el.doctorPanel.innerHTML = '<div class="empty" style="grid-column:1/-1;">暂无诊断数据</div>';
+      return;
+    }
+    const findings = (report.warnings || []).slice(0, 6);
+    const suggestions = (report.suggestions || []).slice(0, 4);
+    const models = (report.models || []).slice(0, 6);
+    const findingsHtml = findings.length ? esc(findings.join('\n')).replace(/\n/g, '<br>') : '没有阻塞项';
+    const suggestionsHtml = suggestions.length ? esc(suggestions.join('\n')).replace(/\n/g, '<br>') : '当前配置看起来一致';
+    const modelsHtml = models.map((item) => {
+      const status = item.status === 'ok' ? '✅' : item.status === 'warn' ? '⚠️' : '❌';
+      const policy = item.configured_pattern && item.configured_selector
+        ? ` · ${item.configured_pattern} -> ${item.configured_selector}`
+        : '';
+      const ping = item.ping_ok === true ? ' · ping ok' : item.ping_ok === false ? ` · ${item.ping_error || 'ping failed'}` : '';
+      return `${status} ${item.model_id}${item.resolved_provider_id ? ` · ${item.resolved_provider_id}` : ''}${policy}${ping}`;
+    }).join('<br>') || '暂无';
+    el.doctorPanel.innerHTML = `
+      <div class="card">
+        <div class="card-title">MMS</div>
+        <div class="card-sub">routes: ${report.mms.exists ? '已加载' : '未找到'} · ${report.mms.route_count} 个</div>
+        <div class="card-sub">${esc(report.mms.file_path || '-')}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">当前配置</div>
+        <div class="card-sub">effective rules ${report.config.effective.model_channel_rule_count} · blacklist ${report.config.effective.model_blacklist_count} · hidden ${report.config.effective.channel_blacklist_count}</div>
+        <div class="card-sub">Project ${report.config.project.exists ? '已存在' : '未创建'} · Global ${report.config.global.exists ? '已存在' : '未创建'}</div>
+      </div>
+      <div class="card" style="grid-column:1/-1;">
+        <div class="card-title">关键模型</div>
+        <div class="card-sub" style="margin-top:8px;">${modelsHtml}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">发现的问题</div>
+        <div class="card-sub">${findingsHtml}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">建议动作</div>
+        <div class="card-sub">${suggestionsHtml}</div>
+      </div>
+    `;
+  }
+
+  function renderGlobalConfig() {
+    if (!state.globalConfig) return;
+    const cfg = state.globalConfig;
+    if (el.globalConfigNotice) {
+      const target = state.globalConfigTarget;
+      el.globalConfigNotice.style.display = 'block';
+      el.globalConfigNotice.style.borderColor = 'rgba(59,130,246,0.2)';
+      el.globalConfigNotice.style.background = 'rgba(59,130,246,0.06)';
+      el.globalConfigNotice.textContent = target
+        ? `${target.note}${target.path ? ` 当前文件：${target.path}` : ''}`
+        : `当前编辑 ${settingsScopeLabel()} layer`;
+    }
+
+    // Tiers editor
+    const tiers = cfg.tiers || {};
+    const reviewer = tiers.reviewer || {};
+    const stageCfgs = [
+      { key: 'translator', label: '翻译', config: tiers.translator },
+      { key: 'planner', label: '规划', config: tiers.planner },
+      { key: 'executor', label: '执行（per-task 动态分配）', config: tiers.executor, isExecutor: true },
+      { key: 'discuss', label: '讨论', config: tiers.discuss },
+      { key: 'reviewer.cross_review', label: '交叉评审', config: reviewer.cross_review },
+      { key: 'reviewer.arbitration', label: '仲裁评审', config: reviewer.arbitration },
+      { key: 'reviewer.final_review', label: '最终评审', config: reviewer.final_review },
+    ];
+    el.globalTiersEditor.innerHTML = stageCfgs.map(s => `
+      <div class="card">
+        <div class="card-title">${esc(s.label)}</div>
+        ${s.isExecutor ? `<div class="card-sub" style="color:var(--warn);margin-top:6px;">执行阶段按任务指纹动态分配模型。下方配置仅影响 fallback chain（所有模型被黑名单阻断时的兜底）。</div>` : ''}
+        ${(!s.isExecutor && s.config?.model && s.config.model !== 'auto' && isBlacklistedModelId(s.config.model))
+          ? `<div class="card-sub" style="color:var(--danger);margin-top:6px;">当前固定模型已落入黑名单，保存后会自动改走其他可用模型。</div>`
+          : ''}
+        <div class="field" style="margin-top:8px;">
+          <label>${s.isExecutor ? '兜底模型（fallback chain）' : 'Model'}</label>
+          <select data-tier-key="${esc(s.key)}" data-tier-field="model">
+            ${renderModelSelectOptions(s.config?.model || 'auto', { includeAuto: true, showProvider: false })}
+          </select>
+        </div>
+        <div class="field">
+          <label>${s.isExecutor ? 'Fallback chain 第2位' : 'Fallback'}</label>
+          <select data-tier-key="${esc(s.key)}" data-tier-field="fallback">
+            ${renderModelSelectOptions(s.config?.fallback || '', { includeEmpty: true, showProvider: false })}
+          </select>
+        </div>
+      </div>
+    `).join('');
+
+    // Misc editor
+    el.globalMiscEditor.innerHTML = `
+      <div class="card">
+        <div class="card-title">模型黑名单</div>
+        <div class="card-sub" style="margin-top:6px;">支持精确 ID 或通配符；例如 <code>claude-*</code> 表示整条 Claude family 禁用。保存后写入当前 ${esc(settingsScopeLabel())} layer。</div>
+        <div class="field">
+          <label>Patterns</label>
+          <textarea id="cfgModelBlacklist" rows="5" style="width:100%;resize:vertical;">${esc(currentBlacklistPatterns().join('\n'))}</textarea>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button class="tiny-btn danger" type="button" id="applyClaudeBlacklistBtn">禁用全部 Claude</button>
+          <button class="tiny-btn" type="button" id="clearBlacklistBtn">清空黑名单</button>
+        </div>
+        <div class="card-sub" style="margin-top:8px;">当前共 ${currentBlacklistPatterns().length} 条规则。</div>
+      </div>
+      <div class="card">
+        <div class="card-title">预算</div>
+        <div class="field">
+          <label>月预算上限 (USD)</label>
+          <input type="number" id="cfgBudgetLimit" value="${cfg.budget?.monthly_limit_usd || 100}" step="1">
+        </div>
+        <div class="field">
+          <label>警告阈值 (0-1)</label>
+          <input type="number" id="cfgBudgetWarn" value="${cfg.budget?.warn_at || 0.2}" step="0.05" min="0" max="1">
+        </div>
+        <div class="field">
+          <label>预算阻塞</label>
+          <select id="cfgBudgetBlock">
+            <option value="false" ${!cfg.budget?.block ? 'selected' : ''}>否</option>
+            <option value="true" ${cfg.budget?.block ? 'selected' : ''}>是</option>
+          </select>
+        </div>
+        <div class="card-sub" style="margin-top:8px;">Host 不是这里的主控制开关，Web 端暂不提供编辑，避免和实际 runtime 语义不一致。</div>
+      </div>
+      <div class="card">
+        <div class="card-title">模型-通道映射</div>
+        <div class="card-sub" style="margin-top:6px;">按 model pattern 指定 MMS 通道。优先级：精确 model &gt; 通配符 &gt; MMS 默认主路由。value 可填写 provider_id，或下方唯一 alias。当前写入 ${esc(settingsScopeLabel())} layer。</div>
+        <div class="field">
+          <label>Mappings</label>
+          <textarea id="cfgModelChannelMap" rows="7" style="width:100%;resize:vertical;" placeholder="gpt-5.4 = companycrsopenai&#10;gpt-5.3 = cpa&#10;gpt-* = newapi">${esc(formatModelChannelMap(currentModelChannelMap()))}</textarea>
+        </div>
+        <div class="card-sub" style="margin-top:8px;">示例：<code>gpt-5.4 = companycrsopenai</code>、<code>gpt-5.3 = cpa</code>、<code>gpt-* = newapi</code></div>
+        <div class="card-sub" style="margin-top:8px;">
+          可用通道速查：
+          ${availableChannelSummary().map((item) => `
+            <span class="badge muted" style="margin-right:6px;margin-bottom:6px;display:inline-flex;gap:4px;align-items:center;">
+              ${esc(item.id)}
+              ${item.aliases.length ? `<span style="opacity:.72">(${esc(item.aliases.join(' / '))})</span>` : ''}
+            </span>
+          `).join('')}
+        </div>
+      </div>
+    `;
+
+    document.getElementById('applyClaudeBlacklistBtn')?.addEventListener('click', () => {
+      const input = document.getElementById('cfgModelBlacklist');
+      if (!input) return;
+      const merged = parseBlacklistInput(`${input.value || ''}\nclaude-*`);
+      input.value = merged.join('\n');
+    });
+    document.getElementById('clearBlacklistBtn')?.addEventListener('click', () => {
+      const input = document.getElementById('cfgModelBlacklist');
+      if (!input) return;
+      input.value = '';
+    });
+
+    // Raw JSON
+    el.globalConfigRaw.textContent = JSON.stringify(cfg, null, 2);
+  }
+
+  async function saveGlobalConfig() {
+    try {
+      const tiersPatch = {};
+      el.globalTiersEditor.querySelectorAll('[data-tier-key]').forEach(sel => {
+        const key = sel.dataset.tierKey;
+        const field = sel.dataset.tierField;
+        const value = sel.value;
+        if (key.startsWith('reviewer.')) {
+          const sub = key.split('.')[1];
+          if (!tiersPatch.reviewer) tiersPatch.reviewer = {};
+          if (!tiersPatch.reviewer[sub]) tiersPatch.reviewer[sub] = {};
+          tiersPatch.reviewer[sub][field] = value;
+        } else {
+          if (!tiersPatch[key]) tiersPatch[key] = {};
+          tiersPatch[key][field] = value;
+        }
+      });
+      const patch = {
+        tiers: tiersPatch,
+        model_blacklist: parseBlacklistInput(document.getElementById('cfgModelBlacklist')?.value || ''),
+        model_channel_map: parseModelChannelMapInput(document.getElementById('cfgModelChannelMap')?.value || ''),
+        budget: {
+          monthly_limit_usd: Number(document.getElementById('cfgBudgetLimit')?.value || 100),
+          warn_at: Number(document.getElementById('cfgBudgetWarn')?.value || 0.2),
+          block: document.getElementById('cfgBudgetBlock')?.value === 'true',
+        },
+      };
+      const data = await api(withSettingsScope(withCwd('/api/global-config')), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patch }),
+      });
+      state.globalConfig = data.config;
+      state.globalConfigTarget = data.target || null;
+      await loadSettingsData();
+      showNotice(`${settingsScopeLabel()} 配置已保存`, 'ok');
+    } catch (error) {
+      showNotice('保存失败: ' + (error.message || String(error)), 'danger');
+    }
+  }
+
+  async function resetGlobalConfig() {
+    if (!confirm('确定恢复默认配置？当前配置将被覆盖。')) return;
+    try {
+      const data = await api(withSettingsScope(withCwd('/api/global-config/reset')), { method: 'POST' });
+      state.globalConfig = data.config;
+      state.globalConfigTarget = data.target || null;
+      await loadSettingsData();
+      showNotice(`已重置 ${settingsScopeLabel()} 配置`, 'ok');
+    } catch (error) {
+      showNotice('恢复失败: ' + (error.message || String(error)), 'danger');
+    }
+  }
+
+  function renderProviders() {
+    const visibleProviders = state.providers.filter((p) => !p.hidden);
+    const hiddenProviders = state.providers.filter((p) => p.hidden);
+    el.providerCount.textContent = `${visibleProviders.length} 个${hiddenProviders.length > 0 ? '（已隐藏 ' + hiddenProviders.length + ' 个）' : ''}`;
+
+    const meta = state.mmsMeta;
+    if (meta && document.getElementById('mmsMetaContent')) {
+      document.getElementById('mmsMetaContent').innerHTML = `
+        文件：${esc(meta.file_path)}<br>
+        存在：${meta.exists ? '是' : '否'} · 路由数：${meta.route_count}<br>
+        ${meta.mtime_iso ? '更新时间：' + new Date(meta.mtime_iso).toLocaleString('zh-CN') : 'mtime 未知'}<br>
+        ${meta.size_bytes ? '大小：' + (meta.size_bytes / 1024).toFixed(1) + ' KB' : ''}
+      `;
+    }
+
+    const showHiddenCheckbox = document.getElementById('showHiddenProviders');
+    if (showHiddenCheckbox) {
+      showHiddenCheckbox.checked = state.showHiddenProviders;
+      showHiddenCheckbox.onchange = () => {
+        state.showHiddenProviders = showHiddenCheckbox.checked;
+        renderProviders();
+        renderModelRouting();
+      };
+    }
+
+    const providerRoutingStats = (providerId) => {
+      const rows = state.modelRouting || [];
+      const effective = rows.filter((row) => row.effective_provider_id === providerId);
+      const pinned = rows.filter((row) => row.policy?.status === 'resolved' && row.policy?.provider_id === providerId);
+      const queueSet = new Set(currentQueueModelIds());
+      const queueEffective = effective.filter((row) => queueSet.has(normalizeModelKey(row.model_id)));
+      return {
+        effectiveCount: effective.length,
+        pinnedCount: pinned.length,
+        queueEffectiveCount: queueEffective.length,
+      };
+    };
+
+    // Badge helper — simplified for clarity
+    const roleBadges = (provider) => {
+      const stats = providerRoutingStats(provider.id);
+      const badges = [];
+      if (provider.hidden) badges.push('<span class="badge danger">已隐藏</span>');
+      if (provider.error) badges.push('<span class="badge danger">故障</span>');
+      if (provider.route_role === 'main') badges.push('<span class="badge ok">主路由</span>');
+      else if (provider.route_role === 'fallback') badges.push('<span class="badge warn">仅 fallback</span>');
+      else badges.push('<span class="badge muted">未绑定</span>');
+
+      if (stats.pinnedCount > 0) {
+        badges.push(`<span class="badge info">已覆盖 ${stats.pinnedCount} 个</span>`);
+      } else if (stats.effectiveCount > 0) {
+        badges.push(`<span class="badge muted">生效 ${stats.effectiveCount} 个</span>`);
+      }
+      if (stats.queueEffectiveCount > 0) {
+        badges.push(`<span class="badge ok">队列中 ${stats.queueEffectiveCount}</span>`);
+      }
+      return badges.join(' ');
+    };
+
+    const renderProviderCard = (p, i) => {
+      const stats = providerRoutingStats(p.id);
+      const allModels = modelsRoutableToProvider(p.id);
+      const queueModels = modelsRoutableToProvider(p.id, { onlyQueue: true });
+      const priorityModels = modelsRoutableToProvider(p.id, { onlyPriority: true }).filter((modelId) => !queueModels.includes(modelId));
+      const hasAction = !p.hidden && !p.error && (queueModels.length > 0 || allModels.length > 0 || priorityModels.length > 0);
+      return `
+      <div class="card provider-card animate-in" style="animation-delay:${i * 0.02}s;${p.hidden ? 'opacity:0.6;filter:grayscale(0.5);' : p.route_role === 'none' ? 'opacity:0.85;' : ''}">
+        <div class="card-head">
+          <div style="min-width:0;">
+            <div class="card-title" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(p.display_name || p.id)}">${esc(p.display_name || p.id)}</div>
+            <div class="provider-meta">${esc(p.id)} · ${esc(p.base_source || '未知')}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0;">${roleBadges(p)}</div>
+        </div>
+        <div class="metric-grid">
+          <div class="metric-cell">
+            <div class="metric-value">${p.model_count}</div>
+            <div class="metric-label">路由模型</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-value">${p.supported_model_count}</div>
+            <div class="metric-label">支持模型</div>
+          </div>
+          <div class="metric-cell">
+            <div class="metric-value ${p.available_count > 0 ? 'ok' : 'danger'}">${p.available_count}</div>
+            <div class="metric-label">可用</div>
+          </div>
+        </div>
+        ${p.error ? `<div class="provider-detail" style="color:var(--danger);">错误: ${esc(p.error)}</div>` : ''}
+        ${Array.isArray(p.aliases) && p.aliases.length > 1
+          ? `<div class="provider-detail">别名: <code>${esc(p.aliases.slice(0, 6).join('</code> <code>'))}</code></div>`
+          : ''}
+        ${p.anthropic_base_url || p.openai_base_url
+          ? `<div class="provider-detail">${p.anthropic_base_url ? `Anthropic: <code>${esc(p.anthropic_base_url)}</code>` : ''}${p.anthropic_base_url && p.openai_base_url ? ' · ' : ''}${p.openai_base_url ? `OpenAI: <code>${esc(p.openai_base_url)}</code>` : ''}</div>`
+          : ''}
+        <div class="provider-actions">
+          ${hasAction ? (() => {
+            if (queueModels.length > 0) {
+              return `<button class="tiny-btn ok" data-provider-prefer-queue="${esc(p.id)}">设为队列默认</button>`;
+            }
+            if (allModels.length > 0) {
+              return `<button class="tiny-btn ok" data-provider-prefer-all="${esc(p.id)}">批量切换至此</button>`;
+            }
+            if (priorityModels.length > 0) {
+              return `<button class="tiny-btn" data-provider-prefer-priority="${esc(p.id)}">重点模型切换</button>`;
+            }
+            return '';
+          })() : '<span class="muted" style="font-size:12px;">无可用操作</span>'}
+          ${p.route_role !== 'none' ? (p.available_count > 0
+            ? `<button class="tiny-btn danger" data-provider-ban="${esc(p.id)}">禁用全部模型</button>`
+            : `<button class="tiny-btn" data-provider-unban="${esc(p.id)}">解禁全部模型</button>`) : ''}
+          <button class="tiny-btn ${p.hidden ? '' : 'danger'}" data-provider-hide="${esc(p.id)}">${p.hidden ? '显示通道' : '隐藏通道'}</button>
+        </div>
+      </div>
+    `};
+
+    el.providerGrid.innerHTML = visibleProviders.map((p, i) => renderProviderCard(p, i)).join('');
+
+    if (hiddenProviders.length > 0 && state.showHiddenProviders) {
+      el.hiddenProviderGrid.innerHTML = `
+        <div style="font-size:13px;color:var(--muted);margin-bottom:8px;padding-left:4px;">已隐藏通道（模型将降级到 fallback）</div>
+        ${hiddenProviders.map((p, i) => renderProviderCard(p, i)).join('')}
+      `;
+    } else {
+      el.hiddenProviderGrid.innerHTML = '';
+    }
+
+    [el.providerGrid, el.hiddenProviderGrid].forEach((grid) => {
+      grid.querySelectorAll('[data-provider-prefer-all]').forEach((node) => {
+        node.addEventListener('click', async () => {
+          const providerId = node.getAttribute('data-provider-prefer-all');
+          const modelIds = modelsRoutableToProvider(providerId);
+          if (!modelIds.length) {
+            showNotice('当前没有可切到这个通道的模型', 'warn');
+            return;
+          }
+          try {
+            await saveRoutingChannelBatch(modelIds, providerId);
+            showNotice(`已将 ${modelIds.length} 个支持模型切到 ${providerId}`, 'ok');
+            await loadSettingsData();
+          } catch (error) {
+            showNotice('保存失败: ' + (error.message || String(error)), 'danger');
+          }
+        });
+      });
+      grid.querySelectorAll('[data-provider-prefer-queue]').forEach((node) => {
+        node.addEventListener('click', async () => {
+          const providerId = node.getAttribute('data-provider-prefer-queue');
+          const modelIds = modelsRoutableToProvider(providerId, { onlyQueue: true });
+          if (!modelIds.length) {
+            showNotice('当前队列没有可切到这个通道的模型', 'warn');
+            return;
+          }
+          try {
+            await saveRoutingChannelBatch(modelIds, providerId);
+            showNotice(`已将 ${modelIds.length} 个队列模型切到 ${providerId}`, 'ok');
+            await loadSettingsData();
+          } catch (error) {
+            showNotice('保存失败: ' + (error.message || String(error)), 'danger');
+          }
+        });
+      });
+      grid.querySelectorAll('[data-provider-prefer-priority]').forEach((node) => {
+        node.addEventListener('click', async () => {
+          const providerId = node.getAttribute('data-provider-prefer-priority');
+          const modelIds = modelsRoutableToProvider(providerId, { onlyPriority: true });
+          if (!modelIds.length) {
+            showNotice('当前没有可切到这个通道的重点模型', 'warn');
+            return;
+          }
+          try {
+            await saveRoutingChannelBatch(modelIds, providerId);
+            showNotice(`已将 ${modelIds.length} 个重点模型切到 ${providerId}`, 'ok');
+            await loadSettingsData();
+          } catch (error) {
+            showNotice('保存失败: ' + (error.message || String(error)), 'danger');
+          }
+        });
+      });
+      grid.querySelectorAll('[data-provider-ban]').forEach((node) => {
+        node.addEventListener('click', async () => { await banProviderModels(node.getAttribute('data-provider-ban')); });
+      });
+      grid.querySelectorAll('[data-provider-unban]').forEach((node) => {
+        node.addEventListener('click', async () => { await unbanProviderModels(node.getAttribute('data-provider-unban')); });
+      });
+      grid.querySelectorAll('[data-provider-hide]').forEach((node) => {
+        node.addEventListener('click', async () => { await toggleChannelHidden(node.getAttribute('data-provider-hide')); });
+      });
+    });
+  }
+
+  async function banProviderModels(providerId) {
+    const patterns = new Set(currentBlacklistPatterns());
+    const toBan = state.modelRouting.filter((r) => r.provider_id === providerId && !r.blacklisted).map((r) => r.model_id);
+    toBan.forEach((m) => patterns.add(m));
+    await saveBlacklistFromPatterns(Array.from(patterns));
+    showNotice(`已将 ${toBan.length} 个模型加入黑名单`, 'ok');
+    await loadSettingsData();
+  }
+
+  async function unbanProviderModels(providerId) {
+    const patterns = new Set(currentBlacklistPatterns());
+    const toUnban = state.modelRouting.filter((r) => r.provider_id === providerId && r.blacklisted);
+    toUnban.forEach((r) => {
+      if (patterns.has(r.model_id)) patterns.delete(r.model_id);
+      if (r.blacklisted_by && patterns.has(r.blacklisted_by)) patterns.delete(r.blacklisted_by);
+    });
+    await saveBlacklistFromPatterns(Array.from(patterns));
+    showNotice(`已解禁 ${toUnban.length} 个模型`, 'ok');
+    await loadSettingsData();
+  }
+
+  async function saveBlacklistFromPatterns(patterns) {
+    const payload = { patch: { model_blacklist: patterns.filter((p) => p.trim()) } };
+    await api(withSettingsScope(withCwd('/api/global-config')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async function toggleChannelHidden(channelId) {
+    const current = Array.isArray(state.globalConfig?.channel_blacklist)
+      ? state.globalConfig.channel_blacklist
+      : [];
+    const isHidden = current.some((c) => c.toLowerCase() === channelId.toLowerCase());
+    let next;
+    if (isHidden) {
+      next = current.filter((c) => c.toLowerCase() !== channelId.toLowerCase());
+      showNotice(`已显示通道 ${channelId}`, 'ok');
+    } else {
+      next = [...current, channelId];
+      showNotice(`已隐藏通道 ${channelId}，该通道的模型将降级到 fallback`, 'warn');
+    }
+    await api(withSettingsScope(withCwd('/api/global-config')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patch: { channel_blacklist: next } }),
+    });
+    await loadSettingsData();
+  }
+
+  function renderRoutingFocusList(prioritySet) {
+    if (!el.routingFocusList) return;
+    const rowsById = new Map(state.modelRouting.map((row) => [normalizeModelKey(row.model_id), row]));
+    const queueIds = currentQueueModelIds();
+    const queueSet = new Set(queueIds);
+    const manual = state.routingFocusModels
+      .map((id) => rowsById.get(id) || { model_id: id, display_name: id })
+      .filter(Boolean);
+    const queued = queueIds
+      .filter((id) => !state.routingFocusModels.includes(id))
+      .map((id) => rowsById.get(id))
+      .filter(Boolean);
+    const auto = autoPriorityModelIds()
+      .filter((id) => !state.routingFocusModels.includes(id) && !queueSet.has(id))
+      .map((id) => rowsById.get(id))
+      .filter(Boolean);
+
+    if (!manual.length && !queued.length && !auto.length) {
+      el.routingFocusList.innerHTML = '<div class="empty" style="padding:12px;">还没有重点模型，先从上面选择一个。</div>';
+      return;
+    }
+
+    const chip = (row, source) => `
+      <span class="badge ${source === 'manual' ? 'info' : 'muted'}" style="display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px 0;padding-right:${source === 'manual' ? '6px' : '10px'};">
+        ${esc(row.display_name || row.model_id)}
+        <span style="opacity:.72">${esc(row.model_id)}</span>
+        ${source === 'manual'
+          ? `<button type="button" class="tiny-btn" data-routing-unfocus="${esc(row.model_id)}" style="padding:2px 6px;">移出</button>`
+          : `<span style="opacity:.72">${source === 'queue' ? '队列' : '自动'}</span>`}
+      </span>
+    `;
+
+    el.routingFocusList.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;align-items:center;">
+        ${manual.map((row) => chip(row, 'manual')).join('')}
+        ${queued.map((row) => chip(row, 'queue')).join('')}
+        ${auto.map((row) => chip(row, 'auto')).join('')}
+      </div>
+      <div class="card-sub" style="margin-top:4px;">当前优先展示 ${prioritySet.size} 个模型，其中队列中 ${queueIds.length} 个。</div>
+    `;
+    el.routingFocusList.querySelectorAll('[data-routing-unfocus]').forEach((node) => {
+      node.addEventListener('click', () => {
+        removeRoutingFocusModel(node.getAttribute('data-routing-unfocus'));
+        renderModelRouting();
+      });
+    });
+  }
+
+  function renderRoutingRuleSummary(row) {
+    if (!row.policy) {
+      return '<span class="badge muted">跟随 MMS 默认</span>';
+    }
+    const modeBadge = row.selection?.mode === 'exact'
+      ? '<span class="badge info">精确映射</span>'
+      : '<span class="badge muted">继承规则</span>';
+    const statusBadge = row.policy.status === 'resolved'
+      ? `<span class="badge ok">命中 ${esc(row.policy.provider_id || '—')}</span>`
+      : row.policy.status === 'ambiguous'
+        ? `<span class="badge danger">歧义：${esc((row.policy.candidates || []).join(' / '))}</span>`
+        : '<span class="badge danger">无匹配通道</span>';
+    return `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+        ${modeBadge}
+        ${statusBadge}
+      </div>
+      <div><strong>${esc(row.policy.pattern)}</strong> → <span class="muted-2">${esc(row.policy.selector)}</span></div>
+    `;
+  }
+
+  function renderRoutingInheritLabel(row) {
+    if (row.selection?.mode === 'pattern' && row.selection.pattern && row.selection.selector) {
+      return `跟随规则 ${row.selection.pattern} -> ${row.selection.selector}`;
+    }
+    return '跟随 MMS 默认';
+  }
+
+  async function saveRoutingChannel(modelId, providerId) {
+    const nextMap = { ...currentModelChannelMap() };
+    const normalizedModelId = normalizeModelKey(modelId);
+    if (!providerId) delete nextMap[normalizedModelId];
+    else nextMap[normalizedModelId] = providerId;
+    await api(withSettingsScope(withCwd('/api/global-config')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patch: { model_channel_map: nextMap } }),
+    });
+  }
+
+  async function saveRoutingChannelBatch(modelIds, providerId) {
+    const nextMap = { ...currentModelChannelMap() };
+    modelIds.forEach((modelId) => {
+      const normalizedModelId = normalizeModelKey(modelId);
+      if (!normalizedModelId) return;
+      if (!providerId) delete nextMap[normalizedModelId];
+      else nextMap[normalizedModelId] = providerId;
+    });
+    await api(withSettingsScope(withCwd('/api/global-config')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patch: { model_channel_map: nextMap } }),
+    });
+  }
+
+  function modelsRoutableToProvider(providerId, options = {}) {
+    const {
+      onlyQueue = false,
+      onlyPriority = false,
+    } = options;
+    const queueSet = new Set(currentQueueModelIds());
+    const prioritySet = routingPriorityModelSet();
+    return state.modelRouting
+      .filter((row) => {
+        const normalizedModelId = normalizeModelKey(row.model_id);
+        if (onlyQueue && !queueSet.has(normalizedModelId)) return false;
+        if (onlyPriority && !prioritySet.has(normalizedModelId)) return false;
+        return (row.available_channels || []).some((channel) => channel.provider_id === providerId);
+      })
+      .map((row) => row.model_id);
+  }
+
+  function renderModelRouting() {
+    const providerFilter = state.routingProviderFilter || '';
+    const search = normalizeModelKey(state.routingSearch);
+    const queueSet = new Set(currentQueueModelIds());
+    const prioritySet = routingPriorityModelSet();
+    const statusFilter = state.routingStatusFilter || 'all';
+
+    let filtered = state.modelRouting
+      .filter((row) => !providerFilter || row.provider_id === providerFilter || row.effective_provider_id === providerFilter)
+      .filter((row) => {
+        if (!search) return true;
+        const haystack = [
+          row.display_name,
+          row.model_id,
+          row.provider_id,
+          row.effective_provider_id,
+          row.selection?.pattern,
+          row.selection?.selector,
+          ...(row.available_channels || []).map((channel) => channel.provider_id),
+        ].join(' ').toLowerCase();
+        return haystack.includes(search);
+      })
+      .filter((row) => !state.routingQueueOnly || queueSet.has(normalizeModelKey(row.model_id)))
+      .filter((row) => !state.routingFocusOnly || prioritySet.has(normalizeModelKey(row.model_id)))
+      .filter((row) => {
+        if (statusFilter === 'all') return true;
+        if (statusFilter === 'available') return !row.blacklisted;
+        if (statusFilter === 'disabled') return row.blacklisted;
+        return true;
+      })
+      .sort((a, b) => {
+        // 禁用模型默认排到队尾
+        const aBlacklisted = a.blacklisted ? 1 : 0;
+        const bBlacklisted = b.blacklisted ? 1 : 0;
+        if (aBlacklisted !== bBlacklisted) return aBlacklisted - bBlacklisted;
+        const aQueued = queueSet.has(normalizeModelKey(a.model_id)) ? 1 : 0;
+        const bQueued = queueSet.has(normalizeModelKey(b.model_id)) ? 1 : 0;
+        if (aQueued !== bQueued) return bQueued - aQueued;
+        const aFocused = prioritySet.has(normalizeModelKey(a.model_id)) ? 1 : 0;
+        const bFocused = prioritySet.has(normalizeModelKey(b.model_id)) ? 1 : 0;
+        if (aFocused !== bFocused) return bFocused - aFocused;
+        const aExact = a.selection?.mode === 'exact' ? 1 : 0;
+        const bExact = b.selection?.mode === 'exact' ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
+        return String(a.display_name || a.model_id).localeCompare(String(b.display_name || b.model_id));
+      });
+    el.routingCount.textContent = `${filtered.length} 个`;
+
+    const providers = [...new Set(state.modelRouting.flatMap((row) => [row.provider_id, row.effective_provider_id]).filter(Boolean))].sort();
+    if (el.routingProviderFilter) {
+      const current = state.routingProviderFilter || '';
+      el.routingProviderFilter.innerHTML = `
+        <option value="">全部 provider</option>
+        ${providers.map((providerId) => `<option value="${esc(providerId)}" ${providerId === current ? 'selected' : ''}>${esc(providerId)}</option>`).join('')}
+      `;
+      el.routingProviderFilter.onchange = () => {
+        state.routingProviderFilter = el.routingProviderFilter.value;
+        renderModelRouting();
+      };
+    }
+
+    if (el.routingQueueOnly) {
+      if (queueSet.size === 0) {
+        state.routingQueueOnly = false;
+      }
+      el.routingQueueOnly.checked = state.routingQueueOnly;
+      el.routingQueueOnly.disabled = queueSet.size === 0;
+      el.routingQueueOnly.title = queueSet.size === 0 ? '当前没有正在排队或执行的模型' : '';
+      el.routingQueueOnly.onchange = () => {
+        state.routingQueueOnly = el.routingQueueOnly.checked;
+        renderModelRouting();
+      };
+    }
+    if (el.routingQueueHint) {
+      el.routingQueueHint.textContent = queueSet.size === 0
+        ? '当前没有队列模型，所以这个筛选暂不可用'
+        : `当前队列中有 ${queueSet.size} 个模型`;
+    }
+
+    if (el.routingFocusOnly) {
+      el.routingFocusOnly.checked = state.routingFocusOnly;
+      el.routingFocusOnly.onchange = () => {
+        state.routingFocusOnly = el.routingFocusOnly.checked;
+        renderModelRouting();
+      };
+    }
+
+    if (el.routingSearchInput) {
+      el.routingSearchInput.value = state.routingSearch || '';
+      el.routingSearchInput.oninput = () => {
+        state.routingSearch = el.routingSearchInput.value;
+        renderModelRouting();
+      };
+    }
+
+    if (el.routingFocusAdd) {
+      const manualSet = new Set(state.routingFocusModels);
+      const focusCandidates = state.modelRouting
+        .filter((row) => !manualSet.has(normalizeModelKey(row.model_id)))
+        .sort((a, b) => {
+          const aPriority = prioritySet.has(normalizeModelKey(a.model_id)) ? 1 : 0;
+          const bPriority = prioritySet.has(normalizeModelKey(b.model_id)) ? 1 : 0;
+          if (aPriority !== bPriority) return bPriority - aPriority;
+          return String(a.display_name || a.model_id).localeCompare(String(b.display_name || b.model_id));
+        });
+      const currentValue = el.routingFocusAdd.value;
+      el.routingFocusAdd.innerHTML = `
+        <option value="">选择模型加入重点...</option>
+        ${focusCandidates.map((row) => `<option value="${esc(row.model_id)}">${esc((row.display_name || row.model_id) + ' · ' + row.model_id)}</option>`).join('')}
+      `;
+      if (focusCandidates.some((row) => row.model_id === currentValue)) {
+        el.routingFocusAdd.value = currentValue;
+      }
+    }
+
+    if (el.routingFocusAddBtn) {
+      el.routingFocusAddBtn.onclick = () => {
+        const modelId = el.routingFocusAdd?.value;
+        if (!modelId) return;
+        addRoutingFocusModel(modelId);
+        if (el.routingFocusAdd) el.routingFocusAdd.value = '';
+        renderModelRouting();
+      };
+    }
+
+    // Status filter buttons
+    if (el.routingStatusFilter) {
+      el.routingStatusFilter.querySelectorAll('.status-filter-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.statusFilter === statusFilter);
+        btn.onclick = () => {
+          state.routingStatusFilter = btn.dataset.statusFilter;
+          renderModelRouting();
+        };
+      });
+    }
+
+    renderRoutingFocusList(prioritySet);
+
+    el.routingTableBody.innerHTML = filtered.map((row) => {
+      const normalizedModelId = normalizeModelKey(row.model_id);
+      const selectedChannel = row.selection?.mode === 'exact' && row.policy?.status === 'resolved'
+        ? (row.policy.provider_id || '')
+        : '';
+      const isFocused = prioritySet.has(normalizedModelId);
+      const manualFocused = state.routingFocusModels.includes(normalizedModelId);
+      const queued = queueSet.has(normalizedModelId);
+      const showHidden = state.showHiddenProviders;
+      const availableChannels = (Array.isArray(row.available_channels) ? row.available_channels : [])
+        .filter((channel) => showHidden || !channel.hidden);
+      const disabledClass = row.blacklisted ? 'row-disabled' : '';
+      const focusStar = manualFocused
+        ? `<button class="star-btn active" data-routing-unfocus-inline="${esc(row.model_id)}" title="移出重点">★</button>`
+        : `<button class="star-btn" data-routing-focus="${esc(row.model_id)}" title="加入重点">☆</button>`;
+      return `
+        <tr data-model-row="${esc(row.model_id)}" class="${disabledClass}">
+          <td>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <strong>${esc(row.display_name || row.model_id)}</strong>
+              ${focusStar}
+              ${queued ? '<span class="badge ok">队列中</span>' : ''}
+              ${isFocused && !manualFocused ? '<span class="badge muted">重点</span>' : ''}
+            </div>
+            <div class="muted-2" style="margin-top:2px;">${esc(row.model_id)}</div>
+          </td>
+          <td>
+            <span class="badge ${row.blacklisted ? 'danger' : (row.effective_provider_id !== row.provider_id ? 'info' : 'muted')}">${esc(row.effective_provider_id || row.provider_id)}</span>
+            ${row.effective_provider_id !== row.provider_id ? `<div class="muted-2" style="margin-top:4px;font-size:11px;">MMS 默认: ${esc(row.provider_id)}</div>` : ''}
+          </td>
+          <td>${renderRoutingRuleSummary(row)}</td>
+          <td>
+            <div class="channel-list">
+              ${availableChannels.length
+                ? availableChannels.map((channel) => `
+                  <span class="channel-tag ${channel.provider_id === row.effective_provider_id ? 'active' : ''} ${channel.hidden ? 'hidden-channel' : ''}">
+                    ${esc(channel.provider_id)}
+                    <span style="opacity:.72">${channel.route_role === 'main' ? '主路由' : 'fallback'}</span>
+                    ${channel.hidden ? '<span style="opacity:.72">· 已隐藏</span>' : ''}
+                  </span>
+                `).join('')
+                : '<span class="muted">无可切换通道</span>'}
+            </div>
+          </td>
+          <td>
+            ${row.blacklisted
+              ? `<span class="badge danger">已禁用${row.blacklisted_by ? ' (' + esc(row.blacklisted_by) + ')' : ''}</span>`
+              : '<span class="badge ok">可用</span>'}
+          </td>
+          <td>
+            <div class="action-bar">
+              <select data-model-channel-select="${esc(row.model_id)}">
+                <option value="" ${!selectedChannel ? 'selected' : ''}>${esc(renderRoutingInheritLabel(row))}</option>
+                ${availableChannels.map((channel) => {
+                  const aliasText = Array.isArray(channel.aliases) && channel.aliases.length
+                    ? ` · ${channel.aliases.slice(0, 2).join(' / ')}`
+                    : '';
+                  const suffix = `${channel.route_role === 'main' ? '主路由' : 'fallback'}${channel.hidden ? ' · 已隐藏' : ''}${aliasText}`;
+                  return `<option value="${esc(channel.provider_id)}" ${selectedChannel === channel.provider_id ? 'selected' : ''}>${esc(channel.provider_id + ' · ' + suffix)}</option>`;
+                }).join('')}
+              </select>
+              <div class="action-row">
+                <button class="tiny-btn" data-routing-save="${esc(row.model_id)}">保存</button>
+                ${row.selection?.mode === 'exact'
+                  ? `<button class="tiny-btn" data-routing-clear="${esc(row.model_id)}">恢复继承</button>`
+                  : ''}
+                ${row.blacklisted
+                  ? `<button class="tiny-btn" data-routing-unban="${esc(row.model_id)}">解禁</button>`
+                  : `<button class="tiny-btn danger" data-routing-ban="${esc(row.model_id)}">禁用</button>`}
+              </div>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    el.routingTableBody.querySelectorAll('[data-routing-save]').forEach((node) => {
+      node.addEventListener('click', async () => {
+        const modelId = node.getAttribute('data-routing-save');
+        const row = node.closest('tr');
+        const select = row?.querySelector('[data-model-channel-select]');
+        const providerId = select?.value || '';
+        try {
+          await saveRoutingChannel(modelId, providerId);
+          showNotice(providerId
+            ? `已为 ${modelId} 指定通道 ${providerId}`
+            : `已将 ${modelId} 恢复为默认路由`, 'ok');
+          await loadSettingsData();
+        } catch (error) {
+          showNotice('保存失败: ' + (error.message || String(error)), 'danger');
+        }
+      });
+    });
+    el.routingTableBody.querySelectorAll('[data-routing-clear]').forEach((node) => {
+      node.addEventListener('click', async () => {
+        const modelId = node.getAttribute('data-routing-clear');
+        try {
+          await saveRoutingChannel(modelId, '');
+          showNotice(`已清除 ${modelId} 的精确映射`, 'ok');
+          await loadSettingsData();
+        } catch (error) {
+          showNotice('清除失败: ' + (error.message || String(error)), 'danger');
+        }
+      });
+    });
+    el.routingTableBody.querySelectorAll('[data-routing-focus]').forEach((node) => {
+      node.addEventListener('click', () => {
+        addRoutingFocusModel(node.getAttribute('data-routing-focus'));
+        renderModelRouting();
+      });
+    });
+    el.routingTableBody.querySelectorAll('[data-routing-unfocus-inline]').forEach((node) => {
+      node.addEventListener('click', () => {
+        removeRoutingFocusModel(node.getAttribute('data-routing-unfocus-inline'));
+        renderModelRouting();
+      });
+    });
+    el.routingTableBody.querySelectorAll('[data-routing-ban]').forEach((node) => {
+      node.addEventListener('click', async () => {
+        const modelId = node.getAttribute('data-routing-ban');
+        const patterns = new Set(currentBlacklistPatterns());
+        patterns.add(modelId);
+        await saveBlacklistFromPatterns(Array.from(patterns));
+        showNotice(`已将 ${modelId} 加入黑名单`, 'ok');
+        await loadSettingsData();
+      });
+    });
+    el.routingTableBody.querySelectorAll('[data-routing-unban]').forEach((node) => {
+      node.addEventListener('click', async () => {
+        const modelId = node.getAttribute('data-routing-unban');
+        const patterns = new Set(currentBlacklistPatterns());
+        patterns.delete(modelId);
+        await saveBlacklistFromPatterns(Array.from(patterns));
+        showNotice(`已将 ${modelId} 移出黑名单`, 'ok');
+        await loadSettingsData();
+      });
+    });
+  }
+
+  function renderModels() {
+    el.modelCount.textContent = `${state.models.length} 个`;
+    el.modelsTableBody.innerHTML = state.models.map(m => {
+      const coding = m.scores?.coding ?? 0;
+      const reasoning = m.scores?.reasoning ?? 0;
+      const translation = m.scores?.translation ?? 0;
+      return `
+        <tr class="${m.blacklisted ? 'row-disabled' : ''}">
+          <td>
+            <strong>${esc(m.display_name || m.id)}</strong>
+            ${m.blacklisted ? '<span class="badge danger" style="margin-left:6px;">已禁用</span>' : ''}
+            <br><span class="muted-2">${esc(m.id)}</span>
+          </td>
+          <td><span class="badge ${m.blacklisted ? 'danger' : 'muted'}">${esc(m.provider)}</span></td>
+          <td>${m.overall_rank ? '#' + m.overall_rank : '—'}</td>
+          <td><span class="badge ${m.speed_tier === 'fast' ? 'ok' : m.speed_tier === 'slow' ? 'warn' : 'info'}">${esc(m.speed_tier)}</span></td>
+          <td>${renderScoreBar(coding)}</td>
+          <td>${renderScoreBar(reasoning)}</td>
+          <td>${renderScoreBar(translation)}</td>
+          <td>${m.context_window ? (m.context_window / 1024).toFixed(0) + 'K' : '—'}</td>
+          <td>${m.cost_per_1k != null ? '$' + m.cost_per_1k.toFixed(3) : '—'}</td>
+        </tr>
+      `;
+    }).join('');
+
+    if (el.testAllModelsBtn) {
+      el.testAllModelsBtn.onclick = async () => {
+        el.testAllModelsBtn.disabled = true;
+        el.testAllModelsBtn.textContent = '测试中...';
+        try {
+          // 尝试调用后端 health 接口（如果未来支持）
+          const result = await api('/api/provider-health');
+          showNotice(`连通性测试完成：${JSON.stringify(result)}`, 'ok');
+        } catch (error) {
+          // 后端暂不支持，降级为前端模拟提示
+          showNotice('后端暂不支持一键连通性测试。你可以通过观察「生效 Provider」列和「可用」状态判断通道健康。', 'warn');
+        } finally {
+          el.testAllModelsBtn.disabled = false;
+          el.testAllModelsBtn.textContent = '一键测试连通性';
+        }
+      };
+    }
+  }
+
+  function renderScoreBar(value) {
+    const pct = Math.round((value || 0) * 100);
+    const cls = pct >= 80 ? 'good' : pct >= 60 ? 'mid' : 'low';
+    return `<div class="score-bar"><div class="score-track"><div class="score-fill ${cls}" style="width:${pct}%"></div></div><span class="score-value">${pct}</span></div>`;
+  }
+
+  function renderSnapshots() {
+    if (!state.snapshots.length) {
+      el.snapshotList.innerHTML = '<div class="empty">还没有快照，点击上方按钮创建一个</div>';
+      return;
+    }
+    el.snapshotList.innerHTML = state.snapshots.map(s => `
+      <div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div class="card-title">${esc(s.label)}</div>
+          <div class="card-sub">${esc(new Date(s.created_at).toLocaleString('zh-CN'))} · ${(s.size / 1024).toFixed(1)} KB</div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="tiny-btn ok" data-restore-snapshot="${esc(s.id)}">恢复</button>
+          <button class="tiny-btn danger" data-delete-snapshot="${esc(s.id)}">删除</button>
+        </div>
+      </div>
+    `).join('');
+    el.snapshotList.querySelectorAll('[data-restore-snapshot]').forEach(node => {
+      node.addEventListener('click', async () => {
+        if (!confirm('确定恢复此快照？当前配置将被覆盖。')) return;
+        try {
+          await api(`/api/snapshots/${encodeURIComponent(node.dataset.restoreSnapshot)}/restore`, { method: 'POST' });
+          showNotice('快照已恢复', 'ok');
+          await loadSettingsData();
+        } catch (error) { showNotice(error.message || '恢复失败', 'danger'); }
+      });
+    });
+    el.snapshotList.querySelectorAll('[data-delete-snapshot]').forEach(node => {
+      node.addEventListener('click', async () => {
+        if (!confirm('确定删除此快照？')) return;
+        try {
+          await api(`/api/snapshots/${encodeURIComponent(node.dataset.deleteSnapshot)}`, { method: 'DELETE' });
+          showNotice('快照已删除', 'ok');
+          await loadSettingsData();
+        } catch (error) { showNotice(error.message || '删除失败', 'danger'); }
+      });
+    });
+  }
+
+  async function createSnapshot() {
+    const label = prompt('快照名称（可选）：');
+    try {
+      await api('/api/snapshots', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: label || undefined }),
+      });
+      showNotice('快照已创建', 'ok');
+      await loadSettingsData();
+    } catch (error) { showNotice(error.message || '创建失败', 'danger'); }
+  }
+
+  // ═══════════════════════════════════════════════
+  // ACTIONS
+  // ═══════════════════════════════════════════════
+  async function doAction(actionType, options = {}) {
+    if (!state.currentRunId) return;
+    await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}/actions/${encodeURIComponent(actionType)}`), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: options.reason || 'web dashboard', taskId: options.taskId || undefined }),
+    });
+    showNotice(`${humanizeAction(actionType)} 已提交`, 'ok');
+    await loadSnapshot(); renderAll();
+  }
+
+  // ═══════════════════════════════════════════════
+  // SMART FOLDING
+  // ═══════════════════════════════════════════════
+  function applySmartFolding() {
+    const hasSnapshot = !!state.snapshot;
+
+    // Dashboard sections visibility (not fold state)
+    if (!hasSnapshot) {
+      el.focusSection.classList.add('hidden');
+      el.taskSection.classList.add('hidden');
+    }
+
+    // Detect run/project change -> reset fold defaults
+    const currentKey = `${state.currentProjectCwd || ''}::${state.currentRunId || ''}`;
+    if (state.folding._lastKey !== currentKey) {
+      state.folding._initialized = false;
+      state.folding._lastKey = currentKey;
+    }
+
+    if (!state.folding._initialized) {
+      // First render for this run: apply smart defaults
+      state.folding.modelPolicy = false;
+      state.folding.detail = false;
+      state.folding.knownProjects = false;
+      state.folding._initialized = true;
+    }
+
+    // Restore fold state from user preference
+    if (el.modelPolicyCollapse) el.modelPolicyCollapse.open = state.folding.modelPolicy;
+    if (el.detailCollapse) el.detailCollapse.open = state.folding.detail;
+    if (el.knownProjectsCollapse) el.knownProjectsCollapse.open = state.folding.knownProjects;
+  }
+
+  function setupFoldListeners() {
+    [el.modelPolicyCollapse, el.detailCollapse, el.knownProjectsCollapse].forEach((details) => {
+      if (!details) return;
+      const key = details === el.modelPolicyCollapse ? 'modelPolicy'
+        : details === el.detailCollapse ? 'detail'
+        : 'knownProjects';
+      details.addEventListener('toggle', () => {
+        state.folding[key] = details.open;
+      });
+    });
+  }
+
+  // ═══════════════════════════════════════════════
+  // RENDER ALL
+  // ═══════════════════════════════════════════════
+  function renderAll() {
+    renderHeaderMeta();
+    renderActiveRuns();
+    renderHistoryBrowser();
+    renderRuns();
+    renderHero();
+    renderFocus();
     renderTasks();
     renderRunActions();
     renderPolicyTabs();
     renderPolicyEditor();
     renderDetails();
+    applySmartFolding();
   }
 
-  async function doAction(actionType, options = {}) {
-    if (!state.currentRunId) return;
-    await api(withCwd(`/api/runs/${encodeURIComponent(state.currentRunId)}/actions/${encodeURIComponent(actionType)}`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        reason: options.reason || 'web dashboard',
-        taskId: options.taskId || undefined,
-      }),
+  // ═══════════════════════════════════════════════
+  // EVENTS
+  // ═══════════════════════════════════════════════
+  el.refreshBtn.addEventListener('click', refreshAll);
+  el.autoRefresh.addEventListener('change', () => {
+    clearInterval(state.autoTimer);
+    if (el.autoRefresh.checked) state.autoTimer = setInterval(refreshAll, 3000);
+  });
+
+  if (el.cwdForm) {
+    el.cwdForm.addEventListener('submit', async (e) => { e.preventDefault(); await openProjectHistory(el.cwdInput.value); });
+  }
+  if (el.cwdInput) {
+    el.cwdInput.addEventListener('input', () => { state.cwdDraft = el.cwdInput.value; });
+  }
+  if (el.useActiveProjectBtn) {
+    el.useActiveProjectBtn.addEventListener('click', async () => {
+      const pref = preferredActiveRun();
+      if (!pref) { showNotice('当前没有活跃 run', 'warn'); return; }
+      await openProjectHistory(pref.project.cwd, pref.run_id);
     });
-    showNotice(`${humanizeAction(actionType)} 已提交`);
-    await loadSnapshot();
-    renderAll();
   }
 
-	  function syncAutoRefresh() {
-	    clearInterval(state.autoTimer);
-	    if (!el.autoRefresh.checked) return;
-	    state.autoTimer = setInterval(refreshAll, 3000);
-	  }
+  // View tabs
+  document.querySelectorAll('.nav-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchView(tab.dataset.view));
+  });
 
-	  async function openProjectFromInput() {
-	    await openProjectHistory(el.cwdInput && el.cwdInput.value);
-	  }
+  // Settings tabs
+  document.querySelectorAll('.settings-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      if (tab.dataset.settingsTab) switchSettingsTab(tab.dataset.settingsTab);
+      else if (tab.dataset.policyTab) { state.policyTab = tab.dataset.policyTab; renderPolicyEditor(); }
+    });
+  });
 
-	  el.refreshBtn.addEventListener('click', refreshAll);
-	  el.autoRefresh.addEventListener('change', syncAutoRefresh);
-	  if (el.cwdForm) {
-	    el.cwdForm.addEventListener('submit', async (event) => {
-	      event.preventDefault();
-	      await openProjectFromInput();
-	    });
-	  }
-	  if (el.cwdInput) {
-	    el.cwdInput.addEventListener('input', () => {
-	      state.cwdDraft = el.cwdInput.value;
-	    });
-	  }
-	  if (el.useActiveProjectBtn) {
-	    el.useActiveProjectBtn.addEventListener('click', async () => {
-	      const preferred = preferredActiveRun();
-	      if (!preferred) {
-	        showNotice('当前没有活跃 run 可切回。', 'warn');
-	        return;
-	      }
-	      await openProjectHistory(preferred.project.cwd, preferred.run_id);
-	    });
-	  }
-	  window.addEventListener('popstate', async () => {
-	    const params = new URLSearchParams(window.location.search);
-	    state.currentProjectCwd = normalizeCwdInput(params.get('cwd'));
-	    state.currentRunId = String(params.get('runId') || '').trim() || null;
-	    state.cwdDraft = state.currentProjectCwd || '';
-	    setCwdInputValue(state.cwdDraft, { force: true });
-	    await refreshAll();
-	  });
+  // Settings buttons
+  if (el.saveGlobalConfigBtn) el.saveGlobalConfigBtn.addEventListener('click', saveGlobalConfig);
+  if (el.resetGlobalConfigBtn) el.resetGlobalConfigBtn.addEventListener('click', resetGlobalConfig);
+  if (el.createSnapshotBtn) el.createSnapshotBtn.addEventListener('click', createSnapshot);
+  if (el.createSnapshotBtn2) el.createSnapshotBtn2.addEventListener('click', createSnapshot);
 
-	  refreshAll();
-	  syncAutoRefresh();
+  // Init
+  state.routingFocusModels = loadRoutingFocusModelsFromStorage();
+  setupFoldListeners();
+  refreshAll();
+  if (el.autoRefresh.checked) state.autoTimer = setInterval(refreshAll, 3000);
 })();
 </script>
 </body>

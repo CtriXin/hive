@@ -3,6 +3,8 @@ import os from 'os';
 import path from 'path';
 import type { BudgetStatus, HiveConfig, SubTask, TiersConfig } from './types.js';
 import type { ModelRegistry } from './model-registry.js';
+import type { TaskFingerprint } from './task-fingerprint.js';
+import { normalizeModelChannelMap } from './model-channel-policy.js';
 import { resolveModelRoute } from './mms-routes-loader.js';
 
 export type FailureType = 'rate_limit' | 'server_error' | 'quality_fail';
@@ -49,7 +51,131 @@ export const DEFAULT_CONFIG: HiveConfig = {
   },
   host: 'claude-code',
   tiers: DEFAULT_TIERS,
+  model_blacklist: [],
+  channel_blacklist: [],
+  model_channel_map: {},
 };
+
+type BlacklistConfig = Pick<HiveConfig, 'model_blacklist'> | undefined;
+
+function escapeRegex(pattern: string): string {
+  return pattern.replace(/[|\\{}()[\]^$+?.*]/g, '\\$&');
+}
+
+export function normalizeModelBlacklist(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const normalized = value
+    .map((entry) => String(entry || '').trim().toLowerCase())
+    .filter(Boolean);
+  return [...new Set(normalized)];
+}
+
+export function normalizeChannelBlacklist(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const normalized = value
+    .map((entry) => String(entry || '').trim().toLowerCase())
+    .filter(Boolean);
+  return [...new Set(normalized)];
+}
+
+export function matchModelBlacklistPattern(
+  config: BlacklistConfig,
+  modelId: string,
+): string | null {
+  const patterns = normalizeModelBlacklist(config?.model_blacklist);
+  if (patterns.length === 0) return null;
+  const normalizedModel = String(modelId || '').trim().toLowerCase();
+  if (!normalizedModel) return null;
+  for (const pattern of patterns) {
+    if (pattern === normalizedModel) return pattern;
+    const regex = new RegExp(`^${escapeRegex(pattern).replace(/\\\*/g, '.*')}$`, 'i');
+    if (regex.test(normalizedModel)) {
+      return pattern;
+    }
+  }
+  return null;
+}
+
+export function isModelBlacklisted(
+  config: BlacklistConfig,
+  modelId: string,
+): boolean {
+  return Boolean(matchModelBlacklistPattern(config, modelId));
+}
+
+export function isChannelBlacklisted(
+  config: Pick<HiveConfig, 'channel_blacklist'> | undefined,
+  channelId: string,
+): boolean {
+  if (!config?.channel_blacklist?.length) return false;
+  const normalized = String(channelId || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return config.channel_blacklist.some(
+    (p) => String(p || '').trim().toLowerCase() === normalized,
+  );
+}
+
+function buildBlacklistFallbackFingerprint(role?: string): TaskFingerprint {
+  if (role === 'planning') {
+    return {
+      role: 'planning',
+      domains: ['typescript', 'architecture'],
+      complexity: 'high',
+      needs_strict_boundary: true,
+      needs_fast_turnaround: false,
+      is_repair_round: false,
+    };
+  }
+  if (role === 'review') {
+    return {
+      role: 'review',
+      domains: ['typescript', 'integration'],
+      complexity: 'medium-high',
+      needs_strict_boundary: true,
+      needs_fast_turnaround: false,
+      is_repair_round: false,
+    };
+  }
+  if (role === 'translation') {
+    return {
+      role: 'implementation',
+      domains: ['docs'],
+      complexity: 'low',
+      needs_strict_boundary: false,
+      needs_fast_turnaround: true,
+      is_repair_round: false,
+    };
+  }
+  return {
+    role: role === 'general' ? 'implementation' : 'implementation',
+    domains: ['typescript'],
+    complexity: 'medium',
+    needs_strict_boundary: false,
+    needs_fast_turnaround: false,
+    is_repair_round: false,
+  };
+}
+
+function selectBlacklistedFallbackModel(
+  registry: ModelRegistry,
+  config: BlacklistConfig,
+  role?: string,
+): string | undefined {
+  if (role === 'translation') {
+    const candidates = registry.getAll()
+      .filter((item) => !isModelBlacklisted(config, item.id) && registry.canResolveForModel(item.id))
+      .sort((a, b) => b.chinese - a.chinese || b.reasoning - a.reasoning);
+    return candidates[0]?.id;
+  }
+
+  const ranked = registry.rankModelsForTask(buildBlacklistFallbackFingerprint(role))
+    .filter((item) =>
+      !item.blocked_by?.length
+      && !isModelBlacklisted(config, item.model)
+      && registry.canResolveForModel(item.model));
+
+  return ranked[0]?.model;
+}
 
 export function findRepoRoot(cwd: string): string | null {
   let dir = path.resolve(cwd);
@@ -116,13 +242,15 @@ export function deepMerge<T>(...sources: Array<Partial<T>>): T {
 
 export function getConfigSource(cwd: string): { global: string; local: string | null } {
   // In sandboxed environments, os.homedir() may return a nested sandbox dir.
-  // Try sandbox home first, then real user home as fallback.
+  // Prefer real user home first (same as findMmsRoutesPath), sandbox as fallback.
   const sandboxHome = path.join(os.homedir(), '.hive', 'config.json');
   const realUser = process.env.USER || process.env.LOGNAME || '';
   const realHome = realUser ? path.join('/Users', realUser, '.hive', 'config.json') : '';
 
   let globalPath = sandboxHome;
-  if (!fs.existsSync(sandboxHome) && realHome && fs.existsSync(realHome)) {
+  if (realHome && fs.existsSync(realHome)) {
+    globalPath = realHome;
+  } else if (realHome && !fs.existsSync(sandboxHome)) {
     globalPath = realHome;
   }
 
@@ -174,6 +302,10 @@ export function loadConfig(cwd: string = process.cwd()): HiveConfig {
     }
   }
 
+  merged.model_blacklist = normalizeModelBlacklist(merged.model_blacklist);
+  merged.channel_blacklist = normalizeChannelBlacklist(merged.channel_blacklist);
+  merged.model_channel_map = normalizeModelChannelMap(merged.model_channel_map);
+
   return merged;
 }
 
@@ -190,22 +322,49 @@ export function resolveTierModel(
   autoFn: () => string,
   registry?: ModelRegistry,
   role?: string,
+  config: BlacklistConfig = DEFAULT_CONFIG,
 ): string {
-  if (tierModel === 'auto') return autoFn();
+  const finalizeModel = (candidate: string): string => {
+    const blockedPattern = matchModelBlacklistPattern(config, candidate);
+    if (!blockedPattern) return candidate;
+
+    const autoCandidate = autoFn();
+    if (autoCandidate && autoCandidate !== candidate && !isModelBlacklisted(config, autoCandidate)) {
+      return autoCandidate;
+    }
+
+    if (registry) {
+      const fallback = selectBlacklistedFallbackModel(registry, config, role);
+      if (fallback && fallback !== candidate) {
+        return fallback;
+      }
+    }
+
+    throw new Error(`Model "${candidate}" is blocked by model_blacklist pattern "${blockedPattern}"`);
+  };
+
+  if (tierModel === 'auto') return finalizeModel(autoFn());
 
   // If registry is available, try provider shorthand resolution
+  let resolved = tierModel;
   if (registry) {
     // Check if it's an exact model ID first
     const exact = registry.get(tierModel);
-    if (exact) return tierModel;
+    if (exact) {
+      resolved = tierModel;
+      return finalizeModel(resolved);
+    }
 
     // Treat as provider shorthand — find best model from that provider for the role
-    const resolved = registry.resolveProviderShorthand(tierModel, role);
-    if (resolved) return resolved;
+    const providerResolved = registry.resolveProviderShorthand(tierModel, role);
+    if (providerResolved) {
+      resolved = providerResolved;
+      return finalizeModel(resolved);
+    }
   }
 
   // Fallback: return as-is (assume exact model ID even if not in registry)
-  return tierModel;
+  return finalizeModel(resolved);
 }
 
 export function getModelForTask(
@@ -213,12 +372,19 @@ export function getModelForTask(
   config: HiveConfig,
   registry: ModelRegistry,
 ): string {
-  if (config.overrides[task.id] && !config.overrides[task.id].startsWith('claude-')) {
+  if (
+    config.overrides[task.id]
+    && !config.overrides[task.id].startsWith('claude-')
+    && !isModelBlacklisted(config, config.overrides[task.id])
+  ) {
     return config.overrides[task.id];
   }
 
   const ranked = registry.rankModelsForTask(task)
-    .filter((item) => !item.blocked_by?.length && !item.model.startsWith('claude-'));
+    .filter((item) =>
+      !item.blocked_by?.length
+      && !item.model.startsWith('claude-')
+      && !isModelBlacklisted(config, item.model));
   if (ranked.length > 0) {
     return ranked[0].model;
   }
@@ -236,6 +402,9 @@ export function getModelForTask(
       'kimi-for-coding',
     ],
     registry,
+    new Set(),
+    new Set(),
+    config,
   ) || config.fallback_worker;
 }
 
@@ -243,7 +412,15 @@ export function isClaudeModel(modelId: string): boolean {
   return modelId.startsWith('claude-');
 }
 
-export function ensureStageModelAllowed(stage: ModelStage, modelId: string): void {
+export function ensureStageModelAllowed(
+  stage: ModelStage,
+  modelId: string,
+  config: BlacklistConfig = DEFAULT_CONFIG,
+): void {
+  const blockedPattern = matchModelBlacklistPattern(config, modelId);
+  if (blockedPattern) {
+    throw new Error(`Model "${modelId}" is blocked by model_blacklist pattern "${blockedPattern}"`);
+  }
   if (!isClaudeModel(modelId)) return;
   if (stage === 'planner' || stage === 'final_review') return;
   throw new Error(
@@ -328,7 +505,8 @@ export function resolveFallback(
   const safeRanked = registry.rankModelsForTask(task)
     .filter((item) => !item.blocked_by?.length
       && !excludedModels.has(item.model)
-      && !item.model.startsWith('claude-'));
+      && !item.model.startsWith('claude-')
+      && !isModelBlacklisted(config, item.model));
 
   const rankedCandidateModels = safeRanked
     .map((item) => item.model)
@@ -353,14 +531,20 @@ export function resolveFallback(
     if (alternateProvider) {
       return alternateProvider.model;
     }
-    const rankedFallback = pickExecutableModelCandidate(rankedCandidateModels, registry, excludedProviders);
+    const rankedFallback = pickExecutableModelCandidate(
+      rankedCandidateModels,
+      registry,
+      excludedProviders,
+      excludedModels,
+      config,
+    );
     if (rankedFallback) {
       return rankedFallback;
     }
   }
 
   if (errorType === 'quality_fail') {
-    const rankedFallback = pickExecutableModelCandidate(rankedCandidateModels, registry, excludedProviders);
+    const rankedFallback = pickExecutableModelCandidate(rankedCandidateModels, registry, excludedProviders, excludedModels, config);
     if (rankedFallback) {
       return rankedFallback;
     }
@@ -381,6 +565,7 @@ export function resolveFallback(
     registry,
     excludedProviders,
     excludedModels,
+    config,
   );
   if (configuredFallback) {
     return configuredFallback;
@@ -394,9 +579,11 @@ function pickExecutableModelCandidate(
   registry: ModelRegistry,
   excludedProviders: Set<string> = new Set(),
   excludedModels: Set<string> = new Set(),
+  config: BlacklistConfig = DEFAULT_CONFIG,
 ): string | undefined {
   for (const candidate of candidates) {
     if (!candidate || candidate.startsWith('claude-') || excludedModels.has(candidate)) continue;
+    if (isModelBlacklisted(config, candidate)) continue;
     const provider = registry.get(candidate)?.provider;
     if (provider && excludedProviders.has(provider)) continue;
     if (registry.canResolveForModel(candidate)) {

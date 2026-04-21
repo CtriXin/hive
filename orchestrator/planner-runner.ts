@@ -659,6 +659,7 @@ export async function synthesizeAgentBusReplies(
     () => registry.selectDiscussPartner(plannerModel),
     registry,
     'review',
+    config,
   );
 
   const replyText = replies.map(r =>
@@ -943,6 +944,7 @@ export async function planGoal(
     () => registry.selectForPlanning(),
     registry,
     'planning',
+    config,
   );
 
   const asciiRatio = goal.split('').filter(c => c.charCodeAt(0) < 128).length / Math.max(goal.length, 1);
@@ -955,6 +957,7 @@ export async function planGoal(
       () => registry.selectTranslator(),
       registry,
       'translation',
+      config,
     );
     const modelInfo = registry.get(translatorModel);
     if (!modelInfo) {

@@ -151,8 +151,11 @@ export interface ModelRoute {
   anthropic_base_url: string;
   api_key: string;
   provider_id?: string;
+  use_count?: number;
   priority?: number;
   role?: string;
+  openai_base_url?: string;
+  fallback_routes?: ModelRoute[];
 }
 
 export interface DiscussConfig {

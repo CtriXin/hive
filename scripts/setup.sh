@@ -103,7 +103,7 @@ echo "━━━ Environment Check ━━━"
 
 # MMS routes
 if [ -f "$MMS_ROUTES" ]; then
-  ROUTE_COUNT=$(node -e "try{const r=JSON.parse(require('fs').readFileSync('$MMS_ROUTES','utf8'));console.log(Object.keys(r).length)}catch{console.log(0)}" 2>/dev/null)
+  ROUTE_COUNT=$(node -e "try{const r=JSON.parse(require('fs').readFileSync('$MMS_ROUTES','utf8'));const routes=(r&&typeof r==='object'&&r.routes&&typeof r.routes==='object')?r.routes:r;console.log(Object.keys(routes||{}).length)}catch{console.log(0)}" 2>/dev/null)
   ok "MMS model-routes.json: $ROUTE_COUNT routes"
 else
   warn "MMS model-routes.json not found at $MMS_ROUTES"
@@ -167,6 +167,6 @@ echo ""
 echo " Upgrade anytime:  curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash"
 echo " Stable(default):  HIVE_CHANNEL=stable  (latest tag)"
 echo " Bleeding edge:    HIVE_CHANNEL=main"
-echo " Pin exact ref:    HIVE_INSTALL_REF=v2.1.3"
+echo " Pin exact ref:    HIVE_INSTALL_REF=v${VERSION}"
 echo " Or from local:    cd $HIVE_HOME && git fetch --tags && git checkout --detach \$(git tag --list 'v*' --sort=-version:refname | head -1) && npm install && npm run build"
 echo ""

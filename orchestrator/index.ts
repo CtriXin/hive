@@ -33,6 +33,7 @@ export { buildRoundScoreEntry, buildRoundScoreSignals, computeRoundScore, loadRu
 export { loadHiveShellDashboard, renderHiveShellDashboard, resolveHiveShellRunId } from './hiveshell-dashboard.js';
 export { collectMindkeeperRoomRefs, formatMindkeeperRoomRef } from './memory-linkage.js';
 export { collectHumanBridgeRefs, formatHumanBridgeRef } from './human-bridge-linkage.js';
+export { buildDoctorReport, renderDoctorReport } from './doctor.js';
 export {
   buildCompactPacket,
   buildWorkspaceCompactPacket,
@@ -80,6 +81,7 @@ export async function main() {
     '--events',
     '--plan',
     '--worker',
+    '--model',
   ]);
   const positionalArgsAfterCommand: string[] = [];
   for (let i = 1; i < args.length; i += 1) {
@@ -118,6 +120,7 @@ export async function main() {
     console.log('  hive restore');
     console.log('  hive runs');
     console.log('  hive web [--port <port>]');
+    console.log('  hive doctor [--cwd <path>] [--model <id>]');
     process.exit(exitCode);
   };
   const isTerminal = (s: string) => s === 'done' || s === 'blocked';
@@ -368,6 +371,13 @@ export async function main() {
     return true;
   };
 
+  const printDoctor = async (cwd: string, modelId?: string): Promise<boolean> => {
+    const { buildDoctorReport, renderDoctorReport } = await import('./doctor.js');
+    const report = await buildDoctorReport(cwd, { modelIds: modelId ? [modelId] : undefined });
+    console.log(renderDoctorReport(report));
+    return report.warnings.length === 0;
+  };
+
   if (command === 'run') {
     const { bootstrapRun, runGoal } = await import('./driver.js');
     const goal = getFlag('--goal') || firstPositionalAfterCommand || '';
@@ -431,6 +441,15 @@ export async function main() {
     const latestScore = scoreHistory?.rounds.at(-1);
     if (latestScore) {
       console.log(`📈 score: ${latestScore.score} (delta ${formatScoreDelta(latestScore.delta_from_previous)})`);
+    }
+    return;
+  }
+
+  if (command === 'doctor') {
+    const cwd = getFlag('--cwd') || process.cwd();
+    const ok = await printDoctor(cwd, getFlag('--model') || firstPositionalAfterCommand);
+    if (!ok) {
+      process.exitCode = 1;
     }
     return;
   }
@@ -983,6 +1002,7 @@ export async function main() {
       () => registry.selectTranslator(),
       registry,
       'translation',
+      config,
     );
     const translatorInfo = registry.get(translatorModel);
     console.log(`\n🌐 Translating with ${translatorModel}...`);
@@ -1034,6 +1054,7 @@ export async function main() {
       () => registry.selectForReporter(),
       registry,
       'general',
+      config,
     );
     const reporterInfo = registry.get(reporterModel);
     const reporterProvider = reporterInfo?.provider || reporterModel;

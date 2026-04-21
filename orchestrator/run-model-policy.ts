@@ -270,9 +270,19 @@ export function resolveEffectiveRunModelPolicy(cwd: string, runId?: string): Eff
   };
 }
 
-function resolveDiscussModels(value: string | string[], registry: ModelRegistry): string[] {
+function resolveDiscussModels(
+  value: string | string[],
+  registry: ModelRegistry,
+  config: HiveConfig,
+): string[] {
   const values = Array.isArray(value) ? value : [value];
-  return values.map((entry) => resolveTierModel(entry, () => registry.selectDiscussPartner('kimi-for-coding'), registry, 'review'));
+  return values.map((entry) => resolveTierModel(
+    entry,
+    () => registry.selectDiscussPartner('kimi-for-coding'),
+    registry,
+    'review',
+    config,
+  ));
 }
 
 export function previewResolvedModelPolicy(cwd: string, patch?: RunModelPolicyPatch | null): EffectiveRunModelPolicy {
@@ -285,12 +295,12 @@ export function previewResolvedModelPolicy(cwd: string, patch?: RunModelPolicyPa
     ...stage,
     effective: stage.stage === 'translator'
       ? {
-        model: resolveTierModel(effective.translator.model, () => registry.selectTranslator(), registry, 'translation'),
+        model: resolveTierModel(effective.translator.model, () => registry.selectTranslator(), registry, 'translation', config),
         fallback: effective.translator.fallback,
       }
       : stage.stage === 'planner'
         ? {
-          model: resolveTierModel(effective.planner.model, () => registry.selectForPlanning(), registry, 'planning'),
+          model: resolveTierModel(effective.planner.model, () => registry.selectForPlanning(), registry, 'planning', config),
           fallback: effective.planner.fallback,
         }
         : stage.stage === 'executor'
@@ -307,27 +317,27 @@ export function previewResolvedModelPolicy(cwd: string, patch?: RunModelPolicyPa
               discuss_threshold: 0.7,
               depends_on: [],
               review_scale: 'auto',
-            }), registry, 'implementation'),
+            }), registry, 'implementation', config),
             fallback: effective.executor.fallback,
           }
           : stage.stage === 'discuss'
             ? {
-              model: resolveDiscussModels(effective.discuss.model, registry),
+              model: resolveDiscussModels(effective.discuss.model, registry, config),
               fallback: effective.discuss.fallback,
               mode: effective.discuss.mode,
             }
             : stage.stage === 'reviewer.cross_review'
               ? {
-                model: resolveTierModel(effective.reviewer.cross_review.model, () => registry.selectReviewer(), registry, 'review'),
+                model: resolveTierModel(effective.reviewer.cross_review.model, () => registry.selectReviewer(), registry, 'review', config),
                 fallback: effective.reviewer.cross_review.fallback,
               }
               : stage.stage === 'reviewer.arbitration'
                 ? {
-                  model: resolveTierModel(effective.reviewer.arbitration.model, () => registry.selectReviewer(), registry, 'review'),
+                  model: resolveTierModel(effective.reviewer.arbitration.model, () => registry.selectReviewer(), registry, 'review', config),
                   fallback: effective.reviewer.arbitration.fallback,
                 }
                 : {
-                  model: resolveTierModel(effective.reviewer.final_review.model, () => registry.selectForFinalReview(), registry, 'review'),
+                  model: resolveTierModel(effective.reviewer.final_review.model, () => registry.selectForFinalReview(), registry, 'review', config),
                   fallback: effective.reviewer.final_review.fallback,
                 },
   }));

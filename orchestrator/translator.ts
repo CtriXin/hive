@@ -49,7 +49,7 @@ export async function translateToEnglish(
     console.error(`⚠️ Translate failed with ${translatorModel}: ${err.message?.slice(0, 80)}`);
 
     const registry = getRegistry();
-    const fallbackModel = registry.selectTranslatorFallback(translatorModel);
+    const fallbackModel = registry.selectTranslatorFallback(translatorModel, loadConfig(process.cwd()));
     const fallbackInfo = registry.get(fallbackModel);
 
     if (fallbackInfo) {
@@ -67,7 +67,7 @@ async function doTranslate(
   provider: string,
 ): Promise<TranslationResult> {
   const startTime = Date.now();
-  ensureStageModelAllowed('translator', model);
+  ensureStageModelAllowed('translator', model, loadConfig(process.cwd()));
   const { baseUrl, apiKey } = resolveProvider(provider, model);
 
   const result = await safeQuery({

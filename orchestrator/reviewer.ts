@@ -680,6 +680,7 @@ async function runAuthoritySynthesis(
     () => fallbackRegistry.selectForFinalReview(),
     fallbackRegistry,
     'review',
+    hiveConfig,
   );
   let synthesisProvider = normalizeProviderId(fallbackRegistry.getModel(synthesisModel));
   logAuthoritySynthesisPrimary(synthesisModel, synthesisProvider);
@@ -1134,6 +1135,7 @@ Rules:
     () => fallbackRegistry.selectForArbitration(),
     fallbackRegistry,
     'review',
+    hiveConfig,
   );
   console.log(`    ⚖️ Arbitration model: ${arbitrationModel}`);
   logArbitrationRoute(arbitrationModel);
@@ -1244,6 +1246,7 @@ Rules:
     () => fallbackRegistry.selectForFinalReview(),
     fallbackRegistry,
     'review',
+    hiveConfig,
   );
   console.log(`    🔬 Final review model: ${finalReviewModel}`);
   logFinalReviewRoute(finalReviewModel);
@@ -1648,6 +1651,7 @@ export async function reviewCascade(
     () => registry.selectCrossReviewer(workerResult.model),
     registry,
     'review',
+    hiveConfig,
   );
   const reviewerProvider = normalizeProviderId(registry.getModel(reviewerModel));
   const crossResult = await runCrossReview(workerResult, task, reviewerModel, reviewerProvider, registry, hiveConfig);

@@ -9,11 +9,13 @@ import fs from 'fs';
 import path from 'path';
 import type { ProviderEntry, ProvidersConfig } from './types.js';
 import { loadConfig } from './hive-config.js';
+import { resolveConfiguredChannelProvider } from './model-channel-policy.js';
 import { normalizeModelId } from './model-defaults.js';
+import { resolveOpenAIChatTargetUrl } from './openai-bridge.js';
 import { resolveProjectPath } from './project-paths.js';
 import {
   isClaudeCodeDirectRoute,
-  resolveModelRouteFull,
+  resolveModelRouteFullWithBlacklist,
   invalidateCache as invalidateMmsCache,
 } from './mms-routes-loader.js';
 
@@ -103,8 +105,27 @@ function isGatewayFamilyModel(modelId: string): boolean {
   return /^(gpt-|gemini-|o[134]-)/i.test(normalizeModelId(modelId));
 }
 
+function routeLooksDirectAnthropic(baseUrl: string): boolean {
+  if (!baseUrl) return false;
+  try {
+    const pathname = new URL(baseUrl).pathname.replace(/\/+$/, '').toLowerCase();
+    return pathname === '' || pathname === '/' || pathname.endsWith('/anthropic');
+  } catch {
+    return /\/anthropic\/?$/i.test(baseUrl);
+  }
+}
+
 function normalizeProviderId(providerId?: string): string {
   return (providerId || '').trim().toLowerCase();
+}
+
+function normalizeRequestedProviderPin(providerId: string, modelId?: string): string {
+  const normalized = normalizeProviderId(providerId);
+  if (!normalized) return '';
+  if (modelId && isGatewayFamilyModel(modelId) && normalized === 'openai') {
+    return '';
+  }
+  return providerId;
 }
 
 function assertResolvedRouteUrl(modelId: string, routeBaseUrl: string): void {
@@ -156,7 +177,7 @@ function buildResolvedProviderFromMms(
 }
 
 function selectPinnedMmsRoute(
-  resolved: NonNullable<ReturnType<typeof resolveModelRouteFull>>,
+  resolved: NonNullable<ReturnType<typeof resolveModelRouteFullWithBlacklist>>,
   providerId: string,
 ): {
   anthropic_base_url: string;
@@ -201,11 +222,44 @@ export function resolveProvider(
   providerId: string,
   modelId?: string,
 ): ResolvedProvider {
+  const normalizedProviderPin = normalizeRequestedProviderPin(providerId, modelId);
+  // Load Hive config for channel blacklist (optional)
+  let channelBlacklist: string[] = [];
+  let hiveConfig: ReturnType<typeof loadConfig> | null = null;
+  let configuredProviderId = '';
+  try {
+    hiveConfig = loadConfig(process.cwd());
+    channelBlacklist = hiveConfig.channel_blacklist || [];
+  } catch {
+    // ignore config read failure
+  }
+  if (!normalizedProviderPin && modelId && hiveConfig) {
+    const configuredChannel = resolveConfiguredChannelProvider(hiveConfig.model_channel_map, modelId);
+    if (configuredChannel) {
+      if (configuredChannel.status !== 'resolved') {
+        if (configuredChannel.status === 'ambiguous') {
+          throw new Error(
+            `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" is ambiguous: ${configuredChannel.candidates.join(', ')}`,
+          );
+        }
+        throw new Error(
+          `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" does not match any MMS channel`,
+        );
+      }
+      configuredProviderId = configuredChannel.provider_id;
+    }
+  }
+
   // ── Level 1: MMS model-routes.json ──
   if (modelId) {
-    const resolved = resolveModelRouteFull(modelId);
+    const resolved = resolveModelRouteFullWithBlacklist(modelId, channelBlacklist);
     if (resolved) {
-      const selectedRoute = selectPinnedMmsRoute(resolved, providerId);
+      const selectedRoute = selectPinnedMmsRoute(resolved, normalizedProviderPin || configuredProviderId);
+      if ((normalizedProviderPin || configuredProviderId) && !selectedRoute) {
+        throw new Error(
+          `Configured provider "${normalizedProviderPin || configuredProviderId}" is not available for model "${resolved.modelId}" in MMS routes`,
+        );
+      }
       if (selectedRoute) {
         return buildResolvedProviderFromMms(resolved.modelId, selectedRoute);
       }
@@ -270,10 +324,43 @@ export function resolveProvider(
  * Convenience wrapper for callers that only have a modelId.
  */
 export function resolveProviderForModel(modelId: string): ResolvedProvider {
-  // Try MMS route first
-  const resolved = resolveModelRouteFull(modelId);
+  // Load Hive config for channel blacklist (optional)
+  let channelBlacklist: string[] = [];
+  let hiveConfig: ReturnType<typeof loadConfig> | null = null;
+  let configuredProviderId = '';
+  try {
+    hiveConfig = loadConfig(process.cwd());
+    channelBlacklist = hiveConfig.channel_blacklist || [];
+  } catch {
+    // ignore config read failure
+  }
+  if (hiveConfig) {
+    const configuredChannel = resolveConfiguredChannelProvider(hiveConfig.model_channel_map, modelId);
+    if (configuredChannel) {
+      if (configuredChannel.status !== 'resolved') {
+        if (configuredChannel.status === 'ambiguous') {
+          throw new Error(
+            `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" is ambiguous: ${configuredChannel.candidates.join(', ')}`,
+          );
+        }
+        throw new Error(
+          `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" does not match any MMS channel`,
+        );
+      }
+      configuredProviderId = configuredChannel.provider_id;
+    }
+  }
+
+  // Try MMS route first (with blacklist support)
+  const resolved = resolveModelRouteFullWithBlacklist(modelId, channelBlacklist);
   if (resolved) {
-    return buildResolvedProviderFromMms(resolved.modelId, resolved.route);
+    const selectedRoute = selectPinnedMmsRoute(resolved, configuredProviderId);
+    if (configuredProviderId && !selectedRoute) {
+      throw new Error(
+        `Configured provider "${configuredProviderId}" is not available for model "${resolved.modelId}" in MMS routes`,
+      );
+    }
+    return buildResolvedProviderFromMms(resolved.modelId, selectedRoute || resolved.route);
   }
 
   // No MMS route — caller needs to know the providerId
@@ -348,7 +435,12 @@ export async function quickPing(
     let apiKey: string;
     try {
       const resolved = resolveProvider(providerId || '', canonicalModelId);
-      url = resolved.baseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
+      const normalizedBaseUrl = resolved.baseUrl.replace(/\/+$/, '');
+      if (isGatewayFamilyModel(canonicalModelId) && !routeLooksDirectAnthropic(normalizedBaseUrl)) {
+        url = resolveOpenAIChatTargetUrl(normalizedBaseUrl);
+      } else {
+        url = normalizedBaseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';
+      }
       apiKey = resolved.apiKey;
     } catch (err) {
       if (!isGatewayFamilyModel(canonicalModelId)) {
@@ -360,19 +452,33 @@ export async function quickPing(
       apiKey = process.env.ANTHROPIC_AUTH_TOKEN || '';
     }
 
+    const useOpenAiChat = /\/chat\/completions(?:\?|$)/i.test(url);
     const resp = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: canonicalModelId,
-        max_tokens: 1,
-        stream: true,
-        messages: [{ role: 'user', content: 'ping' }],
-      }),
+      headers: useOpenAiChat
+        ? {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'Authorization': `Bearer ${apiKey}`,
+        }
+        : {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+      body: JSON.stringify(useOpenAiChat
+        ? {
+          model: canonicalModelId,
+          max_tokens: 1,
+          stream: true,
+          messages: [{ role: 'user', content: 'ping' }],
+        }
+        : {
+          model: canonicalModelId,
+          max_tokens: 1,
+          stream: true,
+          messages: [{ role: 'user', content: 'ping' }],
+        }),
       signal: AbortSignal.timeout(timeoutMs),
     });
     const ms = Date.now() - start;

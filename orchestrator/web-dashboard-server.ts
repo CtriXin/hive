@@ -6,20 +6,33 @@ import {
   clearWebConfigPolicyStage,
   clearWebModelPolicyStage,
   consumePolicySaveResult,
+  createWebConfigSnapshot,
+  deleteWebConfigSnapshot,
   listWebActiveRuns,
+  listWebMmsMeta,
+  listWebMmsRoutes,
+  listWebModelDetails,
+  listWebModelRouting,
   listWebProjects,
+  listWebProviders,
   listWebRuns,
   loadWebConfigPolicy,
   loadWebDashboardSnapshot,
+  loadWebGlobalConfig,
   loadWebModelPolicy,
   listWebModelOptions,
+  listWebConfigSnapshots,
   resetWebConfigPolicy,
+  resetWebGlobalConfig,
   resetWebModelPolicy,
+  restoreWebConfigSnapshot,
   submitWebSteeringAction,
   updateWebConfigPolicy,
+  updateWebGlobalConfig,
   updateWebModelPolicy,
 } from './web-dashboard.js';
 import { buildCompactPacket } from './compact-packet.js';
+import { buildDoctorReport, renderDoctorReport } from './doctor.js';
 import { loadHiveShellDashboard } from './hiveshell-dashboard.js';
 import type { RunModelPolicyPatch, RunModelPolicySource, RunModelPolicyStage } from './run-model-policy.js';
 import type { SteeringActionType } from './types.js';
@@ -80,6 +93,10 @@ function resolveRequestCwd(defaultCwd: string, searchParams: URLSearchParams): s
   return path.resolve(requested);
 }
 
+function resolveConfigScope(searchParams: URLSearchParams): 'global' | 'project' {
+  return searchParams.get('scope') === 'project' ? 'project' : 'global';
+}
+
 function runExists(cwd: string, runId: string): boolean {
   return Boolean(loadWebDashboardSnapshot(cwd, runId));
 }
@@ -136,7 +153,127 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
     }
 
     if (method === 'GET' && pathname === '/api/model-options') {
-      sendJson(res, 200, { models: listWebModelOptions() });
+      sendJson(res, 200, { models: listWebModelOptions(requestCwd) });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/providers') {
+      sendJson(res, 200, { providers: listWebProviders(requestCwd) });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/mms-routes') {
+      sendJson(res, 200, { routes: listWebMmsRoutes() });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/mms-meta') {
+      sendJson(res, 200, { meta: listWebMmsMeta() });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/doctor') {
+      const modelId = searchParams.get('model') || undefined;
+      const report = await buildDoctorReport(requestCwd, { modelIds: modelId ? [modelId] : undefined });
+      sendJson(res, 200, { report, markdown: renderDoctorReport(report) });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/model-routing') {
+      sendJson(res, 200, { routing: listWebModelRouting(requestCwd) });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/models') {
+      sendJson(res, 200, { models: listWebModelDetails(requestCwd) });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/global-config') {
+      const scope = resolveConfigScope(searchParams);
+      const surface = loadWebGlobalConfig(requestCwd, scope);
+      sendJson(res, 200, surface);
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/global-config') {
+      const scope = resolveConfigScope(searchParams);
+      const body = await readBody(req);
+      let payload: { patch?: Record<string, unknown> } = {};
+      try {
+        payload = parseJsonBody(body);
+      } catch {
+        sendError(res, 400, 'invalid json body');
+        return;
+      }
+      if (!payload.patch || typeof payload.patch !== 'object') {
+        sendError(res, 400, 'invalid config patch');
+        return;
+      }
+      try {
+        const surface = updateWebGlobalConfig(requestCwd, payload.patch, scope);
+        sendJson(res, 200, surface);
+      } catch (error) {
+        sendError(res, 400, error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/global-config/reset') {
+      const scope = resolveConfigScope(searchParams);
+      try {
+        const surface = resetWebGlobalConfig(requestCwd, scope);
+        sendJson(res, 200, surface);
+      } catch (error) {
+        sendError(res, 400, error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/snapshots') {
+      sendJson(res, 200, { snapshots: listWebConfigSnapshots() });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/snapshots') {
+      const body = await readBody(req);
+      let payload: { label?: string } = {};
+      try {
+        payload = parseJsonBody(body);
+      } catch {
+        sendError(res, 400, 'invalid json body');
+        return;
+      }
+      try {
+        const snapshot = createWebConfigSnapshot(payload.label);
+        sendJson(res, 200, { snapshot });
+      } catch (error) {
+        sendError(res, 400, error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    const snapshotRestoreMatch = pathname.match(/^\/api\/snapshots\/([^/]+)\/restore$/);
+    if (method === 'POST' && snapshotRestoreMatch) {
+      const snapshotId = decodeURIComponent(snapshotRestoreMatch[1]);
+      try {
+        const config = restoreWebConfigSnapshot(snapshotId);
+        sendJson(res, 200, { config });
+      } catch (error) {
+        sendError(res, 400, error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    const snapshotDeleteMatch = pathname.match(/^\/api\/snapshots\/([^/]+)$/);
+    if (method === 'DELETE' && snapshotDeleteMatch) {
+      const snapshotId = decodeURIComponent(snapshotDeleteMatch[1]);
+      try {
+        deleteWebConfigSnapshot(snapshotId);
+        sendJson(res, 200, { deleted: true });
+      } catch (error) {
+        sendError(res, 400, error instanceof Error ? error.message : String(error));
+      }
       return;
     }
 

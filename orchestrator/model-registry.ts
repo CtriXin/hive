@@ -2,7 +2,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type { SubTask, Complexity } from './types.js';
+import type { SubTask, Complexity, HiveConfig } from './types.js';
 import type { BenchmarkPolicy, ModelProfile, ProfileScoreKey } from './profiler.js';
 import {
   getEffectiveScore,
@@ -13,7 +13,7 @@ import {
 } from './profiler.js';
 import type { TaskFingerprint } from './task-fingerprint.js';
 import { buildTaskFingerprint } from './task-fingerprint.js';
-import { getModelForTask, loadConfig } from './hive-config.js';
+import { getModelForTask, isModelBlacklisted, loadConfig } from './hive-config.js';
 import { resolveProjectPath } from './project-paths.js';
 import { resolveProvider as resolveConfiguredProvider, getAllProviders } from './provider-resolver.js';
 import { isClaudeCodeDirectRoute, loadMmsRoutes, resolveModelRoute } from './mms-routes-loader.js';
@@ -378,16 +378,21 @@ export class ModelRegistry {
     return [...this.models.keys()].filter((id) => this.getSpeedTier(id) === tier);
   }
 
-  selectTranslatorFallback(failedModel: string): string {
-    const fast = this.getModelsBySpeedTier('fast').filter((id) => id !== failedModel);
+  selectTranslatorFallback(
+    failedModel: string,
+    config?: Pick<HiveConfig, 'model_blacklist'>,
+  ): string {
+    const fast = this.getModelsBySpeedTier('fast').filter((id) => id !== failedModel && !isModelBlacklisted(config, id));
     if (fast.length > 0) {
       const best = fast.map((id) => ({ id, c: this.get(id)?.chinese || 0 })).sort((a, b) => b.c - a.c);
       return best[0].id;
     }
-    const balanced = this.getModelsBySpeedTier('balanced').filter((id) => id !== failedModel);
+    const balanced = this.getModelsBySpeedTier('balanced').filter((id) => id !== failedModel && !isModelBlacklisted(config, id));
     if (balanced.length > 0) return balanced[0];
-    return this.getAll().filter((m) => m.id !== failedModel).sort((a, b) => b.chinese - a.chinese)[0]?.id
-      || this.firstKnownModel(['glm-5-turbo', 'kimi-for-coding', 'kimi-k2.5']);
+    return this.getAll()
+      .filter((m) => m.id !== failedModel && !isModelBlacklisted(config, m.id))
+      .sort((a, b) => b.chinese - a.chinese)[0]?.id
+      || this.firstKnownModel(['glm-5-turbo', 'kimi-for-coding', 'kimi-k2.5'], config);
   }
 
   // ── Score update ──
@@ -522,12 +527,15 @@ export class ModelRegistry {
     return entries;
   }
 
-  private firstKnownModel(preferredIds: string[]): string {
+  private firstKnownModel(
+    preferredIds: string[],
+    config?: Pick<HiveConfig, 'model_blacklist'>,
+  ): string {
     for (const id of preferredIds) {
       const cid = normalizeModelId(id);
-      if (this.models.has(cid)) return cid;
+      if (this.models.has(cid) && !isModelBlacklisted(config, cid)) return cid;
     }
-    return [...this.models.keys()][0] || '';
+    return [...this.models.keys()].find((id) => !isModelBlacklisted(config, id)) || '';
   }
 
   /**

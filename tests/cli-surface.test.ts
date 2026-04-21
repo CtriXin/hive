@@ -551,4 +551,213 @@ describe('CLI alias + latest-run ergonomics', () => {
       expect(result.stdout).toContain('hive r --execute');
     });
   });
+
+  describe('doctor surface', () => {
+    it('hive doctor shows MMS and config diagnostics', async () => {
+      const homeDir = path.join(TMP_DIR, 'home');
+      const routesPath = path.join(homeDir, '.config', 'mms', 'model-routes.json');
+      fs.mkdirSync(path.dirname(routesPath), { recursive: true });
+      writeJson(routesPath, {
+        _meta: { generated_at: new Date().toISOString(), generator: 'test' },
+        routes: {
+          'gpt-5.4': {
+            anthropic_base_url: 'http://82.156.121.141:4001',
+            api_key: 'primary-key',
+            provider_id: 'xin',
+            priority: 100,
+            role: 'auto',
+          },
+        },
+      });
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        status: 200,
+        ok: true,
+      } as any);
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('USER', 'cli-surface-user');
+      vi.stubEnv('LOGNAME', 'cli-surface-user');
+      vi.stubEnv('MMS_ROUTES_PATH', routesPath);
+
+      const result = await runCli(['doctor', '--cwd', TMP_DIR, '--model', 'gpt-5.4']);
+
+      expect(result.exitCode).toBeUndefined();
+      expect(result.stderr).toBe('');
+      expect(result.stdout).toContain('== Hive Doctor ==');
+      expect(result.stdout).toContain('== MMS ==');
+      expect(result.stdout).toContain('== Config Layers ==');
+      expect(result.stdout).toContain('gpt-5.4');
+
+      fetchMock.mockRestore();
+      vi.unstubAllEnvs();
+    });
+
+    it('hive doctor tells user to run mms when model-routes.json is missing', async () => {
+      const homeDir = path.join(TMP_DIR, 'home-missing-mms');
+      const routesPath = path.join(homeDir, '.config', 'mms', 'model-routes.json');
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('USER', 'cli-surface-user');
+      vi.stubEnv('LOGNAME', 'cli-surface-user');
+      vi.stubEnv('MMS_ROUTES_PATH', routesPath);
+
+      const result = await runCli(['doctor', '--cwd', TMP_DIR, '--model', 'gpt-5.4']);
+
+      expect(result.exitCode).toBeUndefined();
+      expect(result.stdout).toContain(`未找到 ${routesPath}`);
+      expect(result.stdout).toContain('先执行 `mms` 刷新 model-routes');
+
+      vi.unstubAllEnvs();
+    });
+
+    it('hive doctor shows auto policy and web hint when MMS exists but hive mapping is empty', async () => {
+      const homeDir = path.join(TMP_DIR, 'home-auto-policy');
+      const routesPath = path.join(homeDir, '.config', 'mms', 'model-routes.json');
+      fs.mkdirSync(path.dirname(routesPath), { recursive: true });
+      writeJson(routesPath, {
+        version: 1,
+        generated_at: new Date().toISOString(),
+        routes: {
+          'gpt-5.4': {
+            primary: {
+              anthropic_base_url: 'http://82.156.121.141:4001',
+              openai_base_url: 'http://82.156.121.141:4001/openai',
+              api_key: 'primary-key',
+              provider_id: 'xin',
+            },
+          },
+        },
+      });
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        status: 200,
+        ok: true,
+      } as any);
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('USER', 'cli-surface-user');
+      vi.stubEnv('LOGNAME', 'cli-surface-user');
+      vi.stubEnv('MMS_ROUTES_PATH', routesPath);
+
+      const result = await runCli(['doctor', '--cwd', TMP_DIR, '--model', 'gpt-5.4']);
+
+      expect(result.exitCode).toBeUndefined();
+      expect(result.stdout).toContain('policy=auto [MMS primary]');
+      expect(result.stdout).toContain('默认按 auto 使用 MMS primary');
+      expect(result.stdout).toContain('hive web --port 3100');
+
+      fetchMock.mockRestore();
+      vi.unstubAllEnvs();
+    });
+
+    it('hive doctor explains that GPT OpenAI bridge failed when chat/completions returns 404', async () => {
+      const homeDir = path.join(TMP_DIR, 'home-gpt-404');
+      const routesPath = path.join(homeDir, '.config', 'mms', 'model-routes.json');
+      fs.mkdirSync(path.dirname(routesPath), { recursive: true });
+      writeJson(routesPath, {
+        version: 1,
+        generated_at: new Date().toISOString(),
+        routes: {
+          'gpt-5.4': {
+            primary: {
+              anthropic_base_url: 'https://relay.example.com',
+              openai_base_url: 'https://relay.example.com/openai',
+              api_key: 'primary-key',
+              provider_id: 'companycrsopenai',
+            },
+          },
+        },
+      });
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        status: 404,
+        ok: false,
+      } as any);
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('USER', 'cli-surface-user');
+      vi.stubEnv('LOGNAME', 'cli-surface-user');
+      vi.stubEnv('MMS_ROUTES_PATH', routesPath);
+
+      const result = await runCli(['doctor', '--cwd', TMP_DIR, '--model', 'gpt-5.4']);
+
+      expect(result.exitCode).toBeUndefined();
+      expect(result.stdout).toContain('HTTP 404');
+      expect(result.stdout).toContain('OpenAI bridge');
+      expect(result.stdout).toContain('chat/completions 本身不可用');
+
+      fetchMock.mockRestore();
+      vi.unstubAllEnvs();
+    });
+
+    it('hive doctor retries transient timeout before marking model unhealthy', async () => {
+      const homeDir = path.join(TMP_DIR, 'home-doctor-retry');
+      const routesPath = path.join(homeDir, '.config', 'mms', 'model-routes.json');
+      fs.mkdirSync(path.dirname(routesPath), { recursive: true });
+      writeJson(routesPath, {
+        version: 1,
+        generated_at: new Date().toISOString(),
+        routes: {
+          'glm-5': {
+            primary: {
+              anthropic_base_url: 'http://127.0.0.1:4001',
+              openai_base_url: 'http://127.0.0.1:4001',
+              api_key: 'primary-key',
+              provider_id: 'newapi-personal-tokyo',
+            },
+          },
+        },
+      });
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+        .mockRejectedValueOnce(new Error('The operation was aborted due to timeout'))
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+        } as any);
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('USER', 'cli-surface-user');
+      vi.stubEnv('LOGNAME', 'cli-surface-user');
+      vi.stubEnv('MMS_ROUTES_PATH', routesPath);
+
+      const result = await runCli(['doctor', '--cwd', TMP_DIR, '--model', 'glm-5']);
+
+      expect(result.exitCode).toBeUndefined();
+      expect(result.stdout).toContain('glm-5: OK');
+      expect(result.stdout).not.toContain('glm-5: TIMEOUT');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      fetchMock.mockRestore();
+      vi.unstubAllEnvs();
+    });
+
+    it('hive doctor downgrades repeated timeout to WARN instead of ERROR', async () => {
+      const homeDir = path.join(TMP_DIR, 'home-doctor-timeout-warn');
+      const routesPath = path.join(homeDir, '.config', 'mms', 'model-routes.json');
+      fs.mkdirSync(path.dirname(routesPath), { recursive: true });
+      writeJson(routesPath, {
+        version: 1,
+        generated_at: new Date().toISOString(),
+        routes: {
+          'glm-5': {
+            primary: {
+              anthropic_base_url: 'http://127.0.0.1:4001',
+              openai_base_url: 'http://127.0.0.1:4001',
+              api_key: 'primary-key',
+              provider_id: 'newapi-personal-tokyo',
+            },
+          },
+        },
+      });
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('The operation was aborted due to timeout'));
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('USER', 'cli-surface-user');
+      vi.stubEnv('LOGNAME', 'cli-surface-user');
+      vi.stubEnv('MMS_ROUTES_PATH', routesPath);
+
+      const result = await runCli(['doctor', '--cwd', TMP_DIR, '--model', 'glm-5']);
+
+      expect(result.exitCode).toBeUndefined();
+      expect(result.stdout).toContain('glm-5: WARN');
+      expect(result.stdout).not.toContain('glm-5: ERROR');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      fetchMock.mockRestore();
+      vi.unstubAllEnvs();
+    });
+  });
 });

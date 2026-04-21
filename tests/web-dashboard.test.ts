@@ -4,6 +4,7 @@ import path from 'path';
 import type { RunSpec, RunState, SteeringActionType } from '../orchestrator/types.js';
 import {
   listWebActiveRuns,
+  listWebModelRouting,
   listWebProjects,
   listWebRuns,
   loadWebDashboardSnapshot,
@@ -11,6 +12,7 @@ import {
   submitWebSteeringAction,
 } from '../orchestrator/web-dashboard.js';
 import { createDashboardServer } from '../orchestrator/web-dashboard-server.js';
+import { invalidateCache as invalidateMmsCache } from '../orchestrator/mms-routes-loader.js';
 
 const TMP_DIR = '/tmp/hive-web-dashboard-test';
 const OTHER_TMP_DIR = '/tmp/hive-web-dashboard-test-other';
@@ -31,6 +33,7 @@ function resetDir(): void {
   fs.mkdirSync(TMP_DIR, { recursive: true });
   fs.mkdirSync(OTHER_TMP_DIR, { recursive: true });
   fs.mkdirSync(path.join(GLOBAL_HOME, '.hive'), { recursive: true });
+  fs.writeFileSync(path.join(GLOBAL_HOME, '.hive', 'config.json'), '{}', 'utf-8');
   if (fs.existsSync(REGISTRY_PATH)) {
     fs.rmSync(REGISTRY_PATH, { force: true });
   }
@@ -39,6 +42,14 @@ function resetDir(): void {
 function writeJson(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf-8');
+}
+
+function writeMmsRoutes(routes: Record<string, unknown>): void {
+  writeJson(path.join(GLOBAL_HOME, '.config', 'mms', 'model-routes.json'), {
+    _meta: { generated_at: new Date().toISOString(), generator: 'test' },
+    routes,
+  });
+  invalidateMmsCache();
 }
 
 function makeSpec(overrides: Partial<RunSpec> = {}): RunSpec {
@@ -75,14 +86,17 @@ function makeState(overrides: Partial<RunState> = {}): RunState {
 describe('web-dashboard adapter', () => {
   beforeEach(() => {
     resetDir();
+    invalidateMmsCache();
     vi.restoreAllMocks();
     vi.stubEnv('HIVE_WEB_REGISTRY_PATH', REGISTRY_PATH);
     vi.stubEnv('HOME', GLOBAL_HOME);
     vi.stubEnv('USER', 'hive-web-test-user');
     vi.stubEnv('LOGNAME', 'hive-web-test-user');
+    vi.stubEnv('MMS_ROUTES_PATH', path.join(GLOBAL_HOME, '.config', 'mms', 'model-routes.json'));
   });
 
   afterEach(() => {
+    invalidateMmsCache();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
@@ -210,6 +224,73 @@ describe('web-dashboard adapter', () => {
     const snapshot = loadWebDashboardSnapshot(TMP_DIR, 'run-updated-at');
     expect(snapshot).not.toBeNull();
     expect(snapshot!.updated_at).toBe('2026-04-10T10:30:00.000Z');
+  });
+
+  it('listWebModelRouting exposes per-model channel choices for exact mapping', () => {
+    writeMmsRoutes({
+      'gpt-5.4': {
+        anthropic_base_url: 'http://82.156.121.141:4001',
+        api_key: 'primary-key',
+        provider_id: 'xin',
+        priority: 100,
+        role: 'auto',
+        fallback_routes: [
+          {
+            anthropic_base_url: 'http://127.0.0.1:18317/v1',
+            api_key: 'cpa-key',
+            provider_id: 'us-cpa-local-codex',
+            priority: 90,
+            role: 'fallback',
+          },
+        ],
+      },
+    });
+    writeJson(path.join(GLOBAL_HOME, '.hive', 'config.json'), {
+      model_channel_map: { 'gpt-5.4': 'cpa' },
+    });
+
+    const rows = listWebModelRouting(TMP_DIR);
+    const row = rows.find((item) => item.model_id === 'gpt-5.4');
+    expect(row).toBeTruthy();
+    expect(row?.selection.mode).toBe('exact');
+    expect(row?.selection.pattern).toBe('gpt-5.4');
+    expect(row?.selection.selector).toBe('cpa');
+    expect(row?.effective_provider_id).toBe('us-cpa-local-codex');
+    expect(row?.available_channels.map((item) => item.provider_id)).toEqual(['xin', 'us-cpa-local-codex']);
+    expect(row?.available_channels[0].route_role).toBe('main');
+    expect(row?.available_channels[1].route_role).toBe('fallback');
+  });
+
+  it('listWebModelRouting marks wildcard mapping as inherited pattern', () => {
+    writeMmsRoutes({
+      'gpt-5.3': {
+        anthropic_base_url: 'http://82.156.121.141:4001',
+        api_key: 'primary-key',
+        provider_id: 'xin',
+        priority: 100,
+        role: 'auto',
+        fallback_routes: [
+          {
+            anthropic_base_url: 'http://127.0.0.1:18317/v1',
+            api_key: 'cpa-key',
+            provider_id: 'us-cpa-local-codex',
+            priority: 90,
+            role: 'fallback',
+          },
+        ],
+      },
+    });
+    writeJson(path.join(GLOBAL_HOME, '.hive', 'config.json'), {
+      model_channel_map: { 'gpt-*': 'cpa' },
+    });
+
+    const rows = listWebModelRouting(TMP_DIR);
+    const row = rows.find((item) => item.model_id === 'gpt-5.3');
+    expect(row).toBeTruthy();
+    expect(row?.selection.mode).toBe('pattern');
+    expect(row?.selection.pattern).toBe('gpt-*');
+    expect(row?.selection.selector).toBe('cpa');
+    expect(row?.effective_provider_id).toBe('us-cpa-local-codex');
   });
 
   it('loadWebDashboardSnapshot surfaces attention signals', () => {
@@ -575,6 +656,7 @@ describe('web-dashboard server', () => {
     const res = await request(server, 'GET', '/api/model-options');
     expect(res.status).toBe(200);
     expect(Array.isArray((res.data as any).models)).toBe(true);
+    expect(typeof (res.data as any).models[0]?.blacklisted).toBe('boolean');
   });
 
   it('GET /api/projects returns fallback current project', async () => {
@@ -773,6 +855,164 @@ describe('web-dashboard server', () => {
     const stored = JSON.parse(fs.readFileSync(path.join(GLOBAL_HOME, '.hive', 'config.json'), 'utf-8'));
     expect(stored.tiers.planner.model).toBe('qwen3-max');
     expect((res.data as any).save_result.path).toBe(path.join(GLOBAL_HOME, '.hive', 'config.json'));
+  });
+
+  it('POST /api/global-config persists model_blacklist and reflects it in model options', async () => {
+    const server = createDashboardServer({ cwd: TMP_DIR });
+    const saveRes = await request(
+      server,
+      'POST',
+      '/api/global-config',
+      JSON.stringify({ patch: { model_blacklist: ['claude-*', ' claude-* '] } }),
+    );
+    expect(saveRes.status).toBe(200);
+
+    const stored = JSON.parse(fs.readFileSync(path.join(GLOBAL_HOME, '.hive', 'config.json'), 'utf-8'));
+    expect(stored.model_blacklist).toEqual(['claude-*']);
+
+    const modelRes = await request(createDashboardServer({ cwd: TMP_DIR }), 'GET', '/api/model-options');
+    expect(modelRes.status).toBe(200);
+    expect((modelRes.data as any).models.some((model: any) => model.id.startsWith('claude-') && model.blacklisted)).toBe(true);
+  });
+
+  it('POST /api/global-config persists model_channel_map and reflects it in model routing', async () => {
+    writeMmsRoutes({
+      'gpt-5.4': {
+        anthropic_base_url: 'http://82.156.121.141:4001',
+        api_key: 'primary-key',
+        provider_id: 'xin',
+        priority: 100,
+        role: 'auto',
+        fallback_routes: [
+          {
+            anthropic_base_url: 'http://127.0.0.1:18317/v1',
+            api_key: 'cpa-key',
+            provider_id: 'us-cpa-local-codex',
+            priority: 90,
+            role: 'fallback',
+          },
+        ],
+      },
+    });
+
+    const server = createDashboardServer({ cwd: TMP_DIR });
+    const saveRes = await request(
+      server,
+      'POST',
+      '/api/global-config',
+      JSON.stringify({ patch: { model_channel_map: { 'gpt-5.4': 'cpa' } } }),
+    );
+    expect(saveRes.status).toBe(200);
+
+    const stored = JSON.parse(fs.readFileSync(path.join(GLOBAL_HOME, '.hive', 'config.json'), 'utf-8'));
+    expect(stored.model_channel_map).toEqual({ 'gpt-5.4': 'cpa' });
+
+    const routingRes = await request(createDashboardServer({ cwd: TMP_DIR }), 'GET', '/api/model-routing');
+    expect(routingRes.status).toBe(200);
+    const row = (routingRes.data as any).routing.find((item: any) => item.model_id === 'gpt-5.4');
+    expect(row.effective_provider_id).toBe('us-cpa-local-codex');
+    expect(row.selection.mode).toBe('exact');
+    expect(row.available_channels.map((item: any) => item.provider_id)).toEqual(['xin', 'us-cpa-local-codex']);
+    expect(row.policy.pattern).toBe('gpt-5.4');
+    expect(row.policy.selector).toBe('cpa');
+    expect(row.policy.status).toBe('resolved');
+  });
+
+  it('POST /api/global-config?scope=project persists project model_channel_map without touching global config', async () => {
+    fs.mkdirSync(path.join(TMP_DIR, '.git'), { recursive: true });
+    writeMmsRoutes({
+      'gpt-5.4': {
+        anthropic_base_url: 'http://82.156.121.141:4001',
+        api_key: 'primary-key',
+        provider_id: 'xin',
+        priority: 100,
+        role: 'auto',
+        fallback_routes: [
+          {
+            anthropic_base_url: 'http://127.0.0.1:18317/v1',
+            api_key: 'cpa-key',
+            provider_id: 'us-cpa-local-codex',
+            priority: 90,
+            role: 'fallback',
+          },
+        ],
+      },
+    });
+
+    const server = createDashboardServer({ cwd: TMP_DIR });
+    const saveRes = await request(
+      server,
+      'POST',
+      '/api/global-config?scope=project',
+      JSON.stringify({ patch: { model_channel_map: { 'gpt-5.4': 'cpa' } } }),
+    );
+    expect(saveRes.status).toBe(200);
+    expect((saveRes.data as any).target.scope).toBe('project');
+    expect((saveRes.data as any).target.path).toBe(path.join(TMP_DIR, '.hive', 'config.json'));
+
+    const projectStored = JSON.parse(fs.readFileSync(path.join(TMP_DIR, '.hive', 'config.json'), 'utf-8'));
+    expect(projectStored.model_channel_map).toEqual({ 'gpt-5.4': 'cpa' });
+
+    const globalStored = JSON.parse(fs.readFileSync(path.join(GLOBAL_HOME, '.hive', 'config.json'), 'utf-8'));
+    expect(globalStored.model_channel_map).toBeUndefined();
+
+    const routingRes = await request(createDashboardServer({ cwd: TMP_DIR }), 'GET', '/api/model-routing');
+    expect(routingRes.status).toBe(200);
+    const row = (routingRes.data as any).routing.find((item: any) => item.model_id === 'gpt-5.4');
+    expect(row.effective_provider_id).toBe('us-cpa-local-codex');
+  });
+
+  it('POST /api/global-config rejects ambiguous model_channel_map selectors', async () => {
+    writeMmsRoutes({
+      'gpt-5.4': {
+        anthropic_base_url: 'https://crs.adsconflux.xyz/openai',
+        api_key: 'crs-1',
+        provider_id: 'companycrsopenai',
+        priority: 160,
+        role: 'auto',
+      },
+      'gpt-5': {
+        anthropic_base_url: 'http://127.0.0.1:19300/openai',
+        api_key: 'crs-2',
+        provider_id: 'uscrsopenai',
+        priority: 150,
+        role: 'auto',
+      },
+    });
+
+    const server = createDashboardServer({ cwd: TMP_DIR });
+    const saveRes = await request(
+      server,
+      'POST',
+      '/api/global-config',
+      JSON.stringify({ patch: { model_channel_map: { 'gpt-5.4': 'crs' } } }),
+    );
+    expect(saveRes.status).toBe(400);
+    expect((saveRes.data as any).error).toContain('ambiguous');
+  });
+
+  it('GET /api/doctor returns report with current config and model diagnostics', async () => {
+    writeMmsRoutes({
+      'gpt-5.4': {
+        anthropic_base_url: 'http://82.156.121.141:4001',
+        api_key: 'primary-key',
+        provider_id: 'xin',
+        priority: 100,
+        role: 'auto',
+      },
+    });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      status: 200,
+      ok: true,
+    } as any);
+
+    const server = createDashboardServer({ cwd: TMP_DIR });
+    const res = await request(server, 'GET', '/api/doctor?model=gpt-5.4');
+    expect(res.status).toBe(200);
+    expect((res.data as any).report.mms.exists).toBe(true);
+    expect((res.data as any).report.models.some((item: any) => item.model_id === 'gpt-5.4')).toBe(true);
+    expect((res.data as any).markdown).toContain('== Hive Doctor ==');
+    fetchMock.mockRestore();
   });
 
   it('DELETE /api/config-policy/project preserves unrelated config fields', async () => {

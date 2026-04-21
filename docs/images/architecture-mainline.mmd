@@ -1,0 +1,36 @@
+flowchart TD
+  User["Operator / AI agent"]
+
+  subgraph Entry["Entry surfaces"]
+    CLI["hive CLI"]
+    MCP["MCP tools"]
+    WEB["hive web"]
+  end
+
+  subgraph Runtime["Hive runtime"]
+    BOOT["Run bootstrap + state machine"]
+    PLAN["Planner + driver loop"]
+    ROUTE["Capability routing + provider resilience"]
+    WORK["Workers in isolated git worktrees"]
+    REVIEW["Review cascade + verification + merge"]
+    CONTROL["Layered policy + steering + discuss/advisory"]
+  end
+
+  subgraph Surfaces["Artifacts and operator surfaces"]
+    RUNS[".ai/runs/<run-id>"]
+    CLIVIEW["status / watch / compact / shell / runs / steer"]
+    WEBVIEW["decision surface + model policy center"]
+  end
+
+  User --> CLI
+  User --> MCP
+  User --> WEB
+  CLI --> BOOT
+  MCP --> BOOT
+  WEB --> BOOT
+  BOOT --> PLAN --> ROUTE --> WORK --> REVIEW --> RUNS
+  CONTROL -. applies across .-> PLAN
+  CONTROL -. applies across .-> WORK
+  CONTROL -. applies across .-> REVIEW
+  RUNS --> CLIVIEW
+  RUNS --> WEBVIEW

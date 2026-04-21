@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hive v2.1.0 架构图</title>
+    <link rel="stylesheet" href="./architecture-shared.css" />
+  </head>
+  <body>
+    <main class="frame">
+      <section class="hero">
+        <div class="eyebrow">Hive v2.1.0 主线</div>
+        <h1>Hive 架构图</h1>
+        <p class="subtitle">当前 reality：CLI、MCP、以及本地 Web 共用同一套 run-time control loop。</p>
+      </section>
+
+      <section class="section entry">
+        <h2 class="section-title">入口面 <span class="section-note">入口不同，但底层 runtime 是同一套</span></h2>
+        <div class="cards entry-grid">
+          <article class="card entry-card entry-cli">
+            <div class="card-title"><code>hive</code> CLI</div>
+            <div class="card-copy">从 terminal 发起 run、恢复执行、观察状态、提交 steering、查看 compact/restore、以及打开 Web。</div>
+            <div class="meta">
+              <span class="chip">run / resume</span>
+              <span class="chip">status / watch</span>
+              <span class="chip">compact / shell / web</span>
+            </div>
+          </article>
+          <article class="card entry-card entry-mcp">
+            <div class="card-title">MCP tools</div>
+            <div class="card-copy">给宿主提供结构化入口，用于 planning、execution、reporting、run 查询以及 steering。</div>
+            <div class="meta">
+              <span class="chip violet">plan_tasks</span>
+              <span class="chip violet">run_goal / run_status</span>
+              <span class="chip violet">submit_steering</span>
+            </div>
+          </article>
+          <article class="card entry-card entry-web">
+            <div class="card-title"><code>hive web</code></div>
+            <div class="card-copy">本地 browser decision surface，聚焦 stop reason、next action、active runs，以及模型策略中心。</div>
+            <div class="meta">
+              <span class="chip green">decision-first UI</span>
+              <span class="chip green">模型策略中心</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section runtime">
+        <h2 class="section-title">核心控制循环 <span class="section-note">一次 run 在 Hive 里真实发生的事情</span></h2>
+        <div class="pipeline">
+          <article class="card runtime-boot">
+            <div class="card-title">Run 启动 + 状态机</div>
+            <div class="card-copy">创建 `spec.json` / `state.json`，管理 phases、terminal states、retry，以及 loop progress。</div>
+            <div class="meta"><span class="chip">spec / state / progress</span></div>
+          </article>
+          <div class="arrow">→</div>
+          <article class="card runtime-plan">
+            <div class="card-title">Planner + driver loop</div>
+            <div class="card-copy">负责 plan、resume、repair vs replan 决策，并维持整个 operator loop 的一致性。</div>
+            <div class="meta"><span class="chip violet">plan / execute / repair / replan</span></div>
+          </article>
+          <div class="arrow">→</div>
+          <article class="card runtime-route">
+            <div class="card-title">能力路由 + provider 韧性</div>
+            <div class="card-copy">负责 effective model 选择、fallback、bounded retry、cooldown，以及 route health。</div>
+            <div class="meta"><span class="chip green">routing / fallback / retry</span></div>
+          </article>
+          <div class="arrow">→</div>
+          <article class="card runtime-work">
+            <div class="card-title">隔离 git worktree workers</div>
+            <div class="card-copy">每个 task 在自己的 worktree 里执行，这样可以并行、可 review、也更安全地 merge。</div>
+            <div class="meta"><span class="chip green">parallel task execution</span></div>
+          </article>
+          <div class="arrow">→</div>
+          <article class="card runtime-review">
+            <div class="card-title">Review 级联 + verification + merge</div>
+            <div class="card-copy">通过 cross-review、authority、build/test verification，以及 progressive merge 来真正收口。</div>
+            <div class="meta"><span class="chip orange">review / verify / merge</span></div>
+          </article>
+        </div>
+
+        <div class="controls">
+          <article class="card control-wide">
+            <div class="card-title">分层策略 + steering</div>
+            <div class="card-copy">现在不是“全局拍脑袋配置”。Hive 会跨层解析 effective policy，并对正在运行的 run 保持 safe-point 生效语义。</div>
+            <div class="meta">
+              <span class="chip">Run &gt; Project &gt; Global &gt; Default</span>
+              <span class="chip">safe-point override</span>
+            </div>
+          </article>
+          <article class="card">
+            <div class="card-title">Discuss / advisory / memory</div>
+            <div class="card-copy">worker 不确定性、advisory 信号、以及 recall 上下文，会真实进入 control loop，而不是留在边上。</div>
+          </article>
+          <article class="card">
+            <div class="card-title">人工 steering</div>
+            <div class="card-copy">暂停、继续、请求 replan 等操作会持久化，并在 safe point 被消费，而不是临时 UI 按钮。</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section artifacts">
+        <h2 class="section-title">运行产物与观察面 <span class="section-note">先有持久化 run truth，再有 CLI / Web 呈现</span></h2>
+        <div class="cards artifacts-grid">
+          <article class="card artifact-run">
+            <div class="card-title"><code>.ai/runs/&lt;run-id&gt;</code></div>
+            <div class="card-copy">每个 run 都会落盘 plan、result、loop progress、worker status、score history、steering state、provider health 和 model overrides。</div>
+            <div class="meta">
+              <span class="chip orange">plan / result</span>
+              <span class="chip orange">worker-status / score-history</span>
+              <span class="chip orange">model-overrides / provider-health</span>
+            </div>
+          </article>
+          <article class="card artifact-cli">
+            <div class="card-title">CLI 观察面</div>
+            <div class="card-copy"><code>status</code>、<code>watch</code>、<code>compact</code>、<code>restore</code>、<code>shell</code>、<code>workers</code>、<code>runs</code> 都读取持久化 run artifacts。</div>
+          </article>
+          <article class="card artifact-web">
+            <div class="card-title">Web 观察面</div>
+            <div class="card-copy">browser 页面主要回答 verdict、blocker、next action、active project/run，以及模型策略中心。</div>
+          </article>
+        </div>
+
+        <div class="footer-note">
+          <div class="footer-pill">这是本地 browser Web，不是 hosted SaaS dashboard</div>
+          <div class="footer-pill">重点是 operator clarity 与可复现 artifacts</div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

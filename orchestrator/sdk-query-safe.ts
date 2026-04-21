@@ -5,6 +5,11 @@
 
 import { query } from '@anthropic-ai/claude-code';
 import type { SDKMessage } from '@anthropic-ai/claude-code';
+import {
+  ensureModelProxy,
+  getModelProxyPort,
+  registerModelProxyRoute,
+} from './model-proxy.js';
 
 const DEFAULT_WORKER_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -34,11 +39,71 @@ export async function safeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult
   if (!opts.options.model) {
     throw new Error('safeQuery requires explicit options.model to avoid implicit Claude fallback');
   }
+  opts.options.env = await prepareSdkEnvForQuery(opts.options.model, opts.options.env);
+  assertClaudeManualOnlyGuard(opts.options.model, opts.options.env);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
+  let timeoutHandle: NodeJS.Timeout | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`Worker timeout after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+    timeoutHandle = setTimeout(
+      () => reject(new Error(`Worker timeout after ${Math.round(timeoutMs / 1000)}s`)),
+      timeoutMs,
+    );
+    timeoutHandle.unref?.();
   });
-  return Promise.race([claudeCodeQuery(opts), timeoutPromise]);
+  try {
+    return await Promise.race([claudeCodeQuery(opts), timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+async function prepareSdkEnvForQuery(modelId: string, env: Record<string, string>): Promise<Record<string, string>> {
+  const proxyMode = env.HIVE_MODEL_PROXY_MODE?.trim();
+  if (proxyMode !== 'openai-chat' && proxyMode !== 'direct') {
+    return env;
+  }
+
+  const baseUrl = env.HIVE_MODEL_PROXY_BASE_URL?.trim();
+  const apiKey = env.HIVE_MODEL_PROXY_API_KEY?.trim();
+  if (!baseUrl || !apiKey) {
+    throw new Error(`Model proxy bridge is missing route config for "${modelId}"`);
+  }
+
+  const port = await ensureModelProxy();
+  if (!port) {
+    throw new Error(`Model proxy is unavailable for "${modelId}"`);
+  }
+
+  registerModelProxyRoute(modelId, baseUrl, apiKey, proxyMode);
+  const nextEnv = { ...env };
+  nextEnv.ANTHROPIC_BASE_URL = `http://127.0.0.1:${getModelProxyPort()}`;
+  nextEnv.ANTHROPIC_AUTH_TOKEN = 'proxy-managed';
+  delete nextEnv.HIVE_MODEL_PROXY_MODE;
+  delete nextEnv.HIVE_MODEL_PROXY_BASE_URL;
+  delete nextEnv.HIVE_MODEL_PROXY_API_KEY;
+  return nextEnv;
+}
+
+function assertClaudeManualOnlyGuard(modelId: string, env: Record<string, string>): void {
+  if (!modelId.startsWith('claude-')) return;
+
+  const baseUrl = env.ANTHROPIC_BASE_URL?.trim();
+  const authToken = env.ANTHROPIC_AUTH_TOKEN?.trim();
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR?.trim();
+  const homeDir = env.HOME?.trim();
+
+  if (!baseUrl || !authToken) {
+    throw new Error(
+      `Blocked automatic Claude launch for "${modelId}": explicit ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN are required because OAuth Claude is manual-only.`,
+    );
+  }
+  if (!claudeConfigDir || !homeDir) {
+    throw new Error(
+      `Blocked automatic Claude launch for "${modelId}": isolated HOME and CLAUDE_CONFIG_DIR are required because OAuth Claude is manual-only.`,
+    );
+  }
 }
 
 // ── Claude Code SDK path (for claude-* models) ──

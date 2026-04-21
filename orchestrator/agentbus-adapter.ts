@@ -390,6 +390,7 @@ export async function synthesizeWorkerDiscussRepliesWithModel(
     () => registry.selectDiscussPartner(workerModel),
     registry,
     'review',
+    config,
   );
 
   const replyText = replies.map(r =>

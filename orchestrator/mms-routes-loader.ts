@@ -4,12 +4,14 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fuzzyResolveModel } from './discuss-lib/config.js';
+import { normalizeMmsRoutesPayload } from './mms-routes-contract.js';
 
 export interface MmsRoute {
   anthropic_base_url: string;
   api_key: string;
   provider_id: string;
-  priority: number;
+  use_count?: number;
+  priority?: number;
   role: string;
   openai_base_url?: string;
   capabilities?: string[];
@@ -23,7 +25,8 @@ export interface MmsFallbackRoute {
   anthropic_base_url: string;
   api_key: string;
   provider_id: string;
-  priority: number;
+  use_count?: number;
+  priority?: number;
   role: string;
   openai_base_url?: string;
   capabilities?: string[];
@@ -123,10 +126,10 @@ function findMmsRoutesPath(): string {
   }
 
   const candidates = [
-    // Standard path
-    path.join(os.homedir(), '.config', 'mms', 'model-routes.json'),
-    // Real user home (outside sandbox)
+    // Real user home (outside sandbox) — highest priority
     '/Users/' + (process.env.USER || process.env.LOGNAME || '') + '/.config/mms/model-routes.json',
+    // Standard path (may be sandboxed)
+    path.join(os.homedir(), '.config', 'mms', 'model-routes.json'),
   ];
 
   for (const candidate of candidates) {
@@ -141,6 +144,9 @@ function findMmsRoutesPath(): string {
 let resolvedPath: string | null = null;
 
 function getMmsRoutesPath(): string {
+  if (process.env.MMS_ROUTES_PATH) {
+    return process.env.MMS_ROUTES_PATH;
+  }
   if (!resolvedPath) {
     resolvedPath = findMmsRoutesPath();
   }
@@ -170,8 +176,8 @@ export function loadMmsRoutes(): MmsRouteTable | null {
 
   try {
     const raw = fs.readFileSync(routesPath, 'utf-8');
-    const parsed = JSON.parse(raw) as MmsRouteTable;
-    if (!parsed.routes || typeof parsed.routes !== 'object') {
+    const parsed = normalizeMmsRoutesPayload(JSON.parse(raw)) as MmsRouteTable | null;
+    if (!parsed || !parsed.routes || typeof parsed.routes !== 'object') {
       return null;
     }
     cache = { mtimeMs, table: parsed };
@@ -229,6 +235,48 @@ export function resolveModelRouteFull(modelId: string): ResolvedModelRoute | nul
 
   // Prefix fallback — 'minimax' → MiniMax-M2.7 (highest priority)
   return resolveModelByPrefix(modelId);
+}
+
+/**
+ * Resolve a model ID with channel blacklist support.
+ * If the primary route's provider is blacklisted, falls back to the first
+ * non-blacklisted fallback route.
+ */
+export function resolveModelRouteFullWithBlacklist(
+  modelId: string,
+  blacklist?: string[],
+): ResolvedModelRoute | null {
+  const resolved = resolveModelRouteFull(modelId);
+  if (!resolved || !blacklist?.length) {
+    return resolved;
+  }
+
+  const isBlocked = (pid: string) =>
+    blacklist.some((b) => b.trim().toLowerCase() === pid.trim().toLowerCase());
+
+  if (!isBlocked(resolved.route.provider_id)) {
+    return resolved;
+  }
+
+  // Primary blocked — try fallbacks in order
+  for (const fb of resolved.route.fallback_routes || []) {
+    if (!isBlocked(fb.provider_id)) {
+      return {
+        modelId: resolved.modelId,
+        route: {
+          ...resolved.route,
+          anthropic_base_url: fb.anthropic_base_url,
+          api_key: fb.api_key,
+          provider_id: fb.provider_id,
+          priority: fb.priority,
+          role: fb.role,
+        },
+      };
+    }
+  }
+
+  // All blocked
+  return null;
 }
 
 /** Convenience: returns just the route (backward compat) */
@@ -292,4 +340,141 @@ export function isMmsAvailable(): boolean {
 export function invalidateCache(): void {
   cache = null;
   resolvedPath = null;
+}
+
+export interface MmsRoutesMeta {
+  file_path: string;
+  exists: boolean;
+  route_count: number;
+  mtime_iso: string | null;
+  size_bytes: number | null;
+}
+
+export function getMmsRoutesMeta(): MmsRoutesMeta {
+  const routesPath = getMmsRoutesPath();
+  const table = loadMmsRoutes();
+  let mtimeIso: string | null = null;
+  let sizeBytes: number | null = null;
+  try {
+    const stat = fs.statSync(routesPath);
+    mtimeIso = new Date(stat.mtimeMs).toISOString();
+    sizeBytes = stat.size;
+  } catch {
+    // ignore
+  }
+  return {
+    file_path: routesPath,
+    exists: getMtimeMs(routesPath) !== null,
+    route_count: table ? Object.keys(table.routes).length : 0,
+    mtime_iso: mtimeIso,
+    size_bytes: sizeBytes,
+  };
+}
+
+// ── MMS Channel Cache (read-only scan of ~/.config/mms/cache/models_*.json) ──
+
+export interface MmsChannelCache {
+  raw_models: string[];
+  working_url: string | null;
+  base_source: string;
+  error: string | null;
+  error_kind: string | null;
+}
+
+export interface MmsChannelInfo {
+  id: string;
+  raw_models: string[];
+  model_count: number;
+  working_url: string | null;
+  base_source: string;
+  error: string | null;
+  error_kind: string | null;
+  anthropic_base_url?: string;
+  route_role: 'main' | 'fallback' | 'none';
+}
+
+function getMmsCacheDir(): string {
+  const routesPath = getMmsRoutesPath();
+  return path.join(path.dirname(routesPath), 'cache');
+}
+
+function loadMmsChannelCache(channelId: string): MmsChannelCache | null {
+  const cacheDir = getMmsCacheDir();
+  const filePath = path.join(cacheDir, `models_${channelId}.json`);
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(raw) as MmsChannelCache;
+  } catch {
+    return null;
+  }
+}
+
+export function listMmsChannels(): MmsChannelInfo[] {
+  const cacheDir = getMmsCacheDir();
+  if (!fs.existsSync(cacheDir)) return [];
+
+  const table = loadMmsRoutes();
+  const mainProviders = new Set<string>();
+  const fallbackProviders = new Set<string>();
+
+  if (table) {
+    for (const route of Object.values(table.routes)) {
+      mainProviders.add(route.provider_id);
+      for (const fb of route.fallback_routes || []) {
+        fallbackProviders.add(fb.provider_id);
+      }
+    }
+  }
+
+  // Load anthropic_base_urls.json for URL mapping
+  // Values may be {url, ts} objects (not plain strings)
+  let baseUrls: Record<string, { url: string; ts?: string }> = {};
+  try {
+    const baseUrlPath = path.join(cacheDir, 'anthropic_base_urls.json');
+    const raw = fs.readFileSync(baseUrlPath, 'utf-8');
+    baseUrls = JSON.parse(raw) as Record<string, { url: string; ts?: string }>;
+  } catch {
+    // ignore
+  }
+
+  const channels: MmsChannelInfo[] = [];
+
+  for (const file of fs.readdirSync(cacheDir)) {
+    const match = file.match(/^models_(.+)\.json$/);
+    if (!match) continue;
+
+    const channelId = match[1];
+    const cache = loadMmsChannelCache(channelId);
+    if (!cache) continue;
+
+    const baseUrlKey = Object.keys(baseUrls).find((k) => k.startsWith(channelId + '::'));
+    const baseUrlEntry = baseUrlKey ? baseUrls[baseUrlKey] : undefined;
+    const anthropicBaseUrl = baseUrlEntry
+      ? (typeof baseUrlEntry === 'string' ? baseUrlEntry : baseUrlEntry.url)
+      : undefined;
+
+    let role: 'main' | 'fallback' | 'none' = 'none';
+    if (mainProviders.has(channelId)) role = 'main';
+    else if (fallbackProviders.has(channelId)) role = 'fallback';
+
+    channels.push({
+      id: channelId,
+      raw_models: cache.raw_models,
+      model_count: cache.raw_models.length,
+      working_url: cache.working_url,
+      base_source: cache.base_source,
+      error: cache.error,
+      error_kind: cache.error_kind,
+      anthropic_base_url: anthropicBaseUrl,
+      route_role: role,
+    });
+  }
+
+  return channels.sort((a, b) => {
+    const roleOrder = { main: 0, fallback: 1, none: 2 };
+    if (roleOrder[a.route_role] !== roleOrder[b.route_role]) {
+      return roleOrder[a.route_role] - roleOrder[b.route_role];
+    }
+    return a.id.localeCompare(b.id);
+  });
 }

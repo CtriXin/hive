@@ -40,6 +40,17 @@ describe('hive-config', () => {
       resolveTierModel('qwen3-max', () => { called = true; return 'x'; });
       expect(called).toBe(false);
     });
+
+    it('falls back to auto selection when configured model is blacklisted', () => {
+      const result = resolveTierModel(
+        'claude-opus-4-6',
+        () => 'qwen3-max',
+        undefined,
+        undefined,
+        { model_blacklist: ['claude-*'] },
+      );
+      expect(result).toBe('qwen3-max');
+    });
   });
 
   describe('getModelForTask', () => {
@@ -82,6 +93,24 @@ describe('hive-config', () => {
       const selected = getModelForTask(baseTask, DEFAULT_CONFIG, fakeRegistry);
       expect(selected).toBe('qwen3-max');
     });
+
+    it('skips blacklisted ranked candidates', () => {
+      const fakeRegistry = {
+        rankModelsForTask: () => [
+          { model: 'qwen3-max', blocked_by: [] },
+          { model: 'glm-5-turbo', blocked_by: [] },
+        ],
+        canResolveForModel: () => true,
+        get: (modelId: string) => ({ provider: modelId.startsWith('qwen') ? 'qwen' : 'glm-cn' }),
+      } as unknown as ModelRegistry;
+
+      const selected = getModelForTask(
+        baseTask,
+        { ...DEFAULT_CONFIG, model_blacklist: ['qwen*'] },
+        fakeRegistry,
+      );
+      expect(selected).toBe('glm-5-turbo');
+    });
   });
 
   describe('resolveFallback', () => {
@@ -112,6 +141,26 @@ describe('hive-config', () => {
       const selected = resolveFallback('kimi-for-coding', 'server_error', task, DEFAULT_CONFIG, fakeRegistry);
       expect(selected).toBe('qwen3-max');
     });
+
+    it('skips blacklisted fallback candidates', () => {
+      const fakeRegistry = {
+        rankModelsForTask: () => [
+          { model: 'qwen3-max', blocked_by: [] },
+          { model: 'glm-5-turbo', blocked_by: [] },
+        ],
+        canResolveForModel: () => true,
+        get: (modelId: string) => ({ provider: modelId.startsWith('qwen') ? 'qwen' : 'glm-cn' }),
+      } as unknown as ModelRegistry;
+
+      const selected = resolveFallback(
+        'kimi-for-coding',
+        'quality_fail',
+        task,
+        { ...DEFAULT_CONFIG, model_blacklist: ['qwen*'] },
+        fakeRegistry,
+      );
+      expect(selected).toBe('glm-5-turbo');
+    });
   });
 
   describe('ensureStageModelAllowed', () => {
@@ -120,6 +169,14 @@ describe('hive-config', () => {
       expect(() => ensureStageModelAllowed('final_review', 'claude-opus-4-6')).not.toThrow();
       expect(() => ensureStageModelAllowed('executor', 'claude-opus-4-6')).toThrow(/not allowed/);
       expect(() => ensureStageModelAllowed('cross_review', 'claude-sonnet-4-6')).toThrow(/not allowed/);
+    });
+
+    it('rejects models matched by model_blacklist', () => {
+      expect(() => ensureStageModelAllowed(
+        'planner',
+        'claude-opus-4-6',
+        { model_blacklist: ['claude-*'] },
+      )).toThrow(/model_blacklist/);
     });
   });
 });
