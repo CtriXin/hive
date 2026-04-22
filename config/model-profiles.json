@@ -161,10 +161,10 @@
     "glm-5-turbo": {
       "scores": {
         "implementation": {
-          "value": 0.9998778305789073,
-          "samples": 98,
-          "effective_samples": 92.29999999999993,
-          "last_updated": "2026-04-20T06:36:55.927Z"
+          "value": 0.9998985993804931,
+          "samples": 99,
+          "effective_samples": 93.14999999999992,
+          "last_updated": "2026-04-22T08:50:23.892Z"
         },
         "review": {
           "value": 0.5,
@@ -185,10 +185,10 @@
           "last_updated": "2026-04-20T06:11:57.499Z"
         },
         "spec_adherence": {
-          "value": 0.7000000000000001,
-          "samples": 3,
-          "effective_samples": 3,
-          "last_updated": "2026-04-13T15:31:49.394Z"
+          "value": 0.625,
+          "samples": 4,
+          "effective_samples": 4,
+          "last_updated": "2026-04-22T08:50:23.902Z"
         },
         "scope_discipline": {
           "value": 0.93,
@@ -466,9 +466,9 @@
       "scores": {
         "implementation": {
           "value": 1,
-          "samples": 226,
-          "effective_samples": 226.15,
-          "last_updated": "2026-04-21T16:08:31.118Z"
+          "samples": 261,
+          "effective_samples": 261.15,
+          "last_updated": "2026-04-22T10:16:17.875Z"
         },
         "review": {
           "value": 0.5,

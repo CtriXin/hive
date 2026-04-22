@@ -119,10 +119,37 @@ function normalizeProviderId(providerId?: string): string {
   return (providerId || '').trim().toLowerCase();
 }
 
+function isGenericFamilyProviderPin(providerId: string, modelId: string): boolean {
+  const normalizedProvider = normalizeProviderId(providerId);
+  const normalizedModelId = normalizeModelId(modelId).toLowerCase();
+
+  if (isGatewayFamilyModel(normalizedModelId) && normalizedProvider === 'openai') {
+    return true;
+  }
+
+  if (/^glm(?:-|$)/i.test(normalizedModelId) && ['glm', 'glm-cn', 'glm-en'].includes(normalizedProvider)) {
+    return true;
+  }
+
+  if (/^qwen/i.test(normalizedModelId) && normalizedProvider === 'qwen') {
+    return true;
+  }
+
+  if (/^kimi/i.test(normalizedModelId) && ['kimi', 'kimi-codingplan'].includes(normalizedProvider)) {
+    return true;
+  }
+
+  if (/^minimax/i.test(normalizedModelId) && ['minimax-cn', 'minimax-en'].includes(normalizedProvider)) {
+    return true;
+  }
+
+  return false;
+}
+
 function normalizeRequestedProviderPin(providerId: string, modelId?: string): string {
   const normalized = normalizeProviderId(providerId);
   if (!normalized) return '';
-  if (modelId && isGatewayFamilyModel(modelId) && normalized === 'openai') {
+  if (modelId && isGenericFamilyProviderPin(normalized, modelId)) {
     return '';
   }
   return providerId;
@@ -133,24 +160,27 @@ function assertResolvedRouteUrl(modelId: string, routeBaseUrl: string): void {
     throw new Error(`Model "${modelId}" resolved to an invalid provider URL: ${routeBaseUrl || '(empty)'}`);
   }
 
-  if (isGatewayFamilyModel(modelId)) {
+  if (normalizeModelId(modelId).startsWith('claude-')) {
+    let routePath = '';
+    try {
+      routePath = new URL(routeBaseUrl).pathname.replace(/\/+$/, '');
+    } catch {
+      routePath = '';
+    }
+    const routeLooksClaudeCompatible = routePath === ''
+      || routePath === '/'
+      || routePath.endsWith('/anthropic');
+    if (!routeLooksClaudeCompatible) {
+      throw new Error(
+        `Model "${modelId}" resolved to non-Claude-compatible base URL "${routeBaseUrl}". `
+        + 'Expected a direct Anthropic-compatible route ending with /anthropic.'
+      );
+    }
     return;
   }
 
-  let routePath = '';
-  try {
-    routePath = new URL(routeBaseUrl).pathname.replace(/\/+$/, '');
-  } catch {
-    routePath = '';
-  }
-  const routeLooksClaudeCompatible = routePath === ''
-    || routePath === '/'
-    || routePath.endsWith('/anthropic');
-  if (!routeLooksClaudeCompatible) {
-    throw new Error(
-      `Model "${modelId}" resolved to non-Claude-compatible base URL "${routeBaseUrl}". `
-      + 'Expected a direct Anthropic-compatible route ending with /anthropic.'
-    );
+  if (isGatewayFamilyModel(modelId)) {
+    return;
   }
 }
 
@@ -206,6 +236,34 @@ function selectPinnedMmsRoute(
   return matchedFallback;
 }
 
+function collectAvailableProviders(
+  resolved: NonNullable<ReturnType<typeof resolveModelRouteFullWithBlacklist>>,
+): string[] {
+  return [
+    resolved.route.provider_id,
+    ...(resolved.route.fallback_routes || []).map((fallback) => fallback.provider_id),
+  ].filter(Boolean);
+}
+
+function raiseConfiguredChannelResolutionFailure(
+  modelId: string,
+  configuredChannel: Extract<
+    NonNullable<ReturnType<typeof resolveConfiguredChannelProvider>>,
+    { status: 'missing' | 'ambiguous' }
+  >,
+) : never {
+  if (configuredChannel.status === 'ambiguous') {
+    throw new Error(
+      `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" is ambiguous: ${configuredChannel.candidates.join(', ')}`,
+    );
+  }
+
+  throw new Error(
+    `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" did not match any current MMS channel. `
+    + `Available providers: ${configuredChannel.candidates.join(', ') || '(none)'}`,
+  );
+}
+
 /**
  * 解析 provider 配置，返回可用的 baseUrl 和 apiKey
  *
@@ -237,16 +295,10 @@ export function resolveProvider(
     const configuredChannel = resolveConfiguredChannelProvider(hiveConfig.model_channel_map, modelId);
     if (configuredChannel) {
       if (configuredChannel.status !== 'resolved') {
-        if (configuredChannel.status === 'ambiguous') {
-          throw new Error(
-            `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" is ambiguous: ${configuredChannel.candidates.join(', ')}`,
-          );
-        }
-        throw new Error(
-          `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" does not match any MMS channel`,
-        );
+        raiseConfiguredChannelResolutionFailure(modelId, configuredChannel);
+      } else {
+        configuredProviderId = configuredChannel.provider_id;
       }
-      configuredProviderId = configuredChannel.provider_id;
     }
   }
 
@@ -254,10 +306,13 @@ export function resolveProvider(
   if (modelId) {
     const resolved = resolveModelRouteFullWithBlacklist(modelId, channelBlacklist);
     if (resolved) {
-      const selectedRoute = selectPinnedMmsRoute(resolved, normalizedProviderPin || configuredProviderId);
-      if ((normalizedProviderPin || configuredProviderId) && !selectedRoute) {
+      const pinnedProviderId = normalizedProviderPin || configuredProviderId;
+      const selectedRoute = selectPinnedMmsRoute(resolved, pinnedProviderId);
+      if (pinnedProviderId && !selectedRoute) {
+        const availableProviders = collectAvailableProviders(resolved);
         throw new Error(
-          `Configured provider "${normalizedProviderPin || configuredProviderId}" is not available for model "${resolved.modelId}" in MMS routes`,
+          `Configured provider "${pinnedProviderId}" is not available for model "${resolved.modelId}" in MMS routes. `
+          + `Available providers: ${availableProviders.join(', ') || '(none)'}`,
         );
       }
       if (selectedRoute) {
@@ -338,16 +393,10 @@ export function resolveProviderForModel(modelId: string): ResolvedProvider {
     const configuredChannel = resolveConfiguredChannelProvider(hiveConfig.model_channel_map, modelId);
     if (configuredChannel) {
       if (configuredChannel.status !== 'resolved') {
-        if (configuredChannel.status === 'ambiguous') {
-          throw new Error(
-            `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" is ambiguous: ${configuredChannel.candidates.join(', ')}`,
-          );
-        }
-        throw new Error(
-          `Configured channel selector "${configuredChannel.selector}" for model "${modelId}" does not match any MMS channel`,
-        );
+        raiseConfiguredChannelResolutionFailure(modelId, configuredChannel);
+      } else {
+        configuredProviderId = configuredChannel.provider_id;
       }
-      configuredProviderId = configuredChannel.provider_id;
     }
   }
 
@@ -356,8 +405,10 @@ export function resolveProviderForModel(modelId: string): ResolvedProvider {
   if (resolved) {
     const selectedRoute = selectPinnedMmsRoute(resolved, configuredProviderId);
     if (configuredProviderId && !selectedRoute) {
+      const availableProviders = collectAvailableProviders(resolved);
       throw new Error(
-        `Configured provider "${configuredProviderId}" is not available for model "${resolved.modelId}" in MMS routes`,
+        `Configured provider "${configuredProviderId}" is not available for model "${resolved.modelId}" in MMS routes. `
+        + `Available providers: ${availableProviders.join(', ') || '(none)'}`,
       );
     }
     return buildResolvedProviderFromMms(resolved.modelId, selectedRoute || resolved.route);
@@ -436,7 +487,7 @@ export async function quickPing(
     try {
       const resolved = resolveProvider(providerId || '', canonicalModelId);
       const normalizedBaseUrl = resolved.baseUrl.replace(/\/+$/, '');
-      if (isGatewayFamilyModel(canonicalModelId) && !routeLooksDirectAnthropic(normalizedBaseUrl)) {
+      if (!routeLooksDirectAnthropic(normalizedBaseUrl)) {
         url = resolveOpenAIChatTargetUrl(normalizedBaseUrl);
       } else {
         url = normalizedBaseUrl.replace(/\/v1\/?$/, '') + '/v1/messages';

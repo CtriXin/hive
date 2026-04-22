@@ -52,6 +52,27 @@ describe('Phase 2A: State Machine', () => {
       expect(state.status).toBe('blocked');
       expect(state.terminal_reason).toBe('planner_failure');
     });
+
+    it('should inherit auto-merge from the execution mode contract by default', () => {
+      const spec = createRunSpec({
+        goal: 'Test goal',
+        cwd: '/tmp/test',
+        execution_mode: 'auto-execute-small',
+      });
+
+      expect(spec.allow_auto_merge).toBe(true);
+    });
+
+    it('should still honor an explicit allowAutoMerge override', () => {
+      const spec = createRunSpec({
+        goal: 'Test goal',
+        cwd: '/tmp/test',
+        execution_mode: 'auto-execute-small',
+        allowAutoMerge: false,
+      });
+
+      expect(spec.allow_auto_merge).toBe(false);
+    });
   });
 
   describe('TaskRunStatus transitions', () => {

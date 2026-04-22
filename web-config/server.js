@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Hive Config Server — 独立的模型配置页面服务器
- * Usage: node web-config/server.js [--port 3456] [--no-open]
+ * Usage: node web-config/server.js [--port <port>] [--no-open]
  */
 import fs from 'fs';
 import http from 'http';
@@ -17,7 +17,7 @@ const DEFAULT_HOST = '127.0.0.1';
 
 function parsePort(argv = process.argv) {
   const idx = argv.indexOf('--port');
-  return idx >= 0 ? Number(argv[idx + 1]) || 3456 : 3456;
+  return idx >= 0 ? Number(argv[idx + 1]) || 0 : 0;
 }
 
 function hasFlag(flag, argv = process.argv) {
@@ -194,25 +194,10 @@ export function createConfigServer(options = {}) {
     }
 
     if (pathname === '/api/config' && method === 'POST') {
-      let payload = {};
-      try {
-        payload = JSON.parse(await readBody(req));
-      } catch {
-        sendError(res, 400, 'Invalid JSON body');
-        return;
-      }
-
-      if (!payload.config || typeof payload.config !== 'object' || Array.isArray(payload.config)) {
-        sendError(res, 400, 'Missing config object');
-        return;
-      }
-
-      try {
-        writeJsonSafe(configPath, payload.config);
-        sendJson(res, 200, { success: true, path: configPath });
-      } catch (err) {
-        sendError(res, 500, err instanceof Error ? err.message : String(err));
-      }
+      sendJson(res, 403, {
+        error: 'Refusing to auto-modify ~/.hive/config.json. Global config is human-reviewed only; download the JSON, review it manually, then edit the file yourself.',
+        path: configPath,
+      });
       return;
     }
 
@@ -229,22 +214,37 @@ export function createConfigServer(options = {}) {
   });
 }
 
-export function startConfigServer(options = {}) {
-  const port = options.port ?? parsePort();
+function resolveListenPort(port) {
+  return Number.isFinite(port) && Number(port) > 0 ? Number(port) : 0;
+}
+
+export async function startConfigServer(options = {}) {
+  const requestedPort = resolveListenPort(options.port ?? parsePort());
   const host = options.host || DEFAULT_HOST;
   const noOpen = options.noOpen ?? hasFlag('--no-open');
   const server = createConfigServer(options);
 
-  server.listen(port, host, () => {
-    const url = `http://${host}:${port}`;
-    console.log(`\n🐝 Hive Config Server running at ${url}`);
-    console.log(`   Config file: ${options.configPath || resolveHiveConfigPath()}`);
-    console.log(`   MMS routes: ${options.mmsRoutesPath || resolveMmsRoutesPath()}`);
-    if (!noOpen) {
-      console.log('   Opening browser...');
-      openBrowser(url);
-    }
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(requestedPort, host, () => {
+      server.off('error', reject);
+      resolve();
+    });
   });
+
+  const address = server.address();
+  const actualPort = typeof address === 'object' && address ? address.port : requestedPort;
+  const url = `http://${host}:${actualPort}`;
+  console.log(`\n🐝 Hive Config Server running at ${url}`);
+  console.log(`   Config file: ${options.configPath || resolveHiveConfigPath()}`);
+  console.log(`   MMS routes: ${options.mmsRoutesPath || resolveMmsRoutesPath()}`);
+  if (!requestedPort) {
+    console.log('   Auto-selected an available local port. Use --port <port> to pin one.');
+  }
+  if (!noOpen) {
+    console.log('   Opening browser...');
+    openBrowser(url);
+  }
 
   return server;
 }
@@ -257,28 +257,17 @@ function isExecutedDirectly() {
 }
 
 if (isExecutedDirectly()) {
-  const port = parsePort();
-  const host = DEFAULT_HOST;
-  const noOpen = hasFlag('--no-open');
-  const server = createConfigServer();
-
-  server.on('error', (err) => {
-    if (err && err.code === 'EADDRINUSE') {
-      console.error(`Port ${port} is already in use. Try: node web-config/server.js --port ${port + 1}`);
+  startConfigServer({
+    port: parsePort(),
+    host: DEFAULT_HOST,
+    noOpen: hasFlag('--no-open'),
+  }).catch((err) => {
+    const requestedPort = resolveListenPort(parsePort());
+    if (err && err.code === 'EADDRINUSE' && requestedPort) {
+      console.error(`Port ${requestedPort} is already in use. Try: node web-config/server.js --port ${requestedPort + 1}`);
       process.exit(1);
     }
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
-  });
-
-  server.listen(port, host, () => {
-    const url = `http://${host}:${port}`;
-    console.log(`\n🐝 Hive Config Server running at ${url}`);
-    console.log(`   Config file: ${resolveHiveConfigPath()}`);
-    console.log(`   MMS routes: ${resolveMmsRoutesPath()}`);
-    if (!noOpen) {
-      console.log('   Opening browser...');
-      openBrowser(url);
-    }
   });
 }

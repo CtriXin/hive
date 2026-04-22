@@ -789,6 +789,7 @@ export function createRunSpec(options: CreateRunOptions): RunSpec {
   });
   const normalizedMode = normalizeExecutionMode(executionMode);
   const lane = options.lane ?? deriveLaneFromMode(normalizedMode);
+  const modeContract = getModeContract(normalizedMode);
   return {
     id: makeRunId(),
     goal: options.goal,
@@ -803,7 +804,7 @@ export function createRunSpec(options: CreateRunOptions): RunSpec {
     max_rounds: options.maxRounds ?? 6,
     max_worker_retries: options.maxWorkerRetries ?? 2,
     max_replans: options.maxReplans ?? 1,
-    allow_auto_merge: options.allowAutoMerge ?? false,
+    allow_auto_merge: options.allowAutoMerge ?? modeContract.allow_auto_merge,
     stop_on_high_risk: options.stopOnHighRisk ?? true,
     created_at: new Date().toISOString(),
   };

@@ -1,4 +1,6 @@
 // orchestrator/dispatcher.ts — Worker dispatcher: spawn, stream, discuss, collect
+import crypto from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import {
   type TaskPlan,
@@ -134,6 +136,83 @@ function assertNoProviderApiError(result: { messages?: SDKMessage[] } | null | u
   }
 }
 
+function shouldFallbackToInPlaceExecution(err: unknown): boolean {
+  const message = (err as Error | undefined)?.message || String(err || '');
+  return /not in a git repository|no WorktreeCreate hooks are configured/i.test(message);
+}
+
+interface ExpectedFileSnapshot {
+  exists: boolean;
+  hash: string | null;
+}
+
+function normalizeExpectedFilePath(filePath: string): string {
+  return String(filePath || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '');
+}
+
+function snapshotExpectedFile(rootDir: string, relativePath: string): ExpectedFileSnapshot {
+  const normalizedPath = normalizeExpectedFilePath(relativePath);
+  if (!normalizedPath) {
+    return { exists: false, hash: null };
+  }
+
+  const absolutePath = path.join(rootDir, normalizedPath);
+  try {
+    const stat = fs.statSync(absolutePath);
+    if (!stat.isFile()) {
+      return { exists: true, hash: `non-file:${stat.size}:${stat.mtimeMs}` };
+    }
+    const content = fs.readFileSync(absolutePath);
+    return {
+      exists: true,
+      hash: crypto.createHash('sha1').update(content).digest('hex'),
+    };
+  } catch {
+    return { exists: false, hash: null };
+  }
+}
+
+function captureExpectedFiles(rootDir: string, expectedFiles: string[] | undefined): Map<string, ExpectedFileSnapshot> {
+  const snapshots = new Map<string, ExpectedFileSnapshot>();
+  for (const filePath of expectedFiles || []) {
+    const normalizedPath = normalizeExpectedFilePath(filePath);
+    if (!normalizedPath || snapshots.has(normalizedPath)) continue;
+    snapshots.set(normalizedPath, snapshotExpectedFile(rootDir, normalizedPath));
+  }
+  return snapshots;
+}
+
+function detectExpectedFileChanges(
+  rootDir: string,
+  before: Map<string, ExpectedFileSnapshot>,
+): string[] {
+  const changed: string[] = [];
+  for (const [filePath, previous] of before.entries()) {
+    const current = snapshotExpectedFile(rootDir, filePath);
+    if (current.exists !== previous.exists || current.hash !== previous.hash) {
+      changed.push(filePath);
+    }
+  }
+  return changed;
+}
+
+function mergeChangedFiles(primary: string[], extra: string[]): string[] {
+  return [...new Set([...primary, ...extra].filter(Boolean))].sort();
+}
+
+function configuredRouteLabel(model: string, provider?: string): string {
+  return provider ? `${model}@${provider}` : `${model}@configured-route`;
+}
+
+function attachWorkerFailureResult(error: unknown, workerResult: WorkerResult): Error {
+  const wrapped = error instanceof Error ? error : new Error(String(error || 'Worker failed'));
+  (wrapped as Error & { workerResult?: WorkerResult }).workerResult = workerResult;
+  return wrapped;
+}
+
 // ── spawnWorker ──
 
 function resolvePinnedProvider(
@@ -185,7 +264,6 @@ async function resolveRunnableFallback(
     excludeModels?: string[];
     excludeProviders?: string[];
     pingTimeoutMs?: number;
-    allowClaudeFallback?: boolean;
     allowSoftPingFailure?: boolean;
   } = {},
 ): Promise<ResolvedWorkerFallback | null> {
@@ -285,18 +363,6 @@ async function resolveRunnableFallback(
       if (resolved) return resolved;
     }
 
-    if (options.allowClaudeFallback) {
-      const claudeCandidates = [
-        registry.getClaudeTier?.('sonnet')?.id,
-        registry.getClaudeTier?.('opus')?.id,
-        'claude-sonnet-4-6',
-        'claude-opus-4-6',
-      ].filter((candidate): candidate is string => Boolean(candidate));
-      for (const [index, candidate] of claudeCandidates.entries()) {
-        const resolved = await tryCandidate(candidate, 100 + index);
-        if (resolved) return resolved;
-      }
-    }
     if (softFallback) {
       return softFallback;
     }
@@ -311,8 +377,10 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   const startTime = Date.now();
   let worktreePath = config.cwd;
   let branch = '';
+  let worktreeFallbackReason = '';
   let currentModel = config.model;
   let currentProvider = config.provider;
+  const allowExecutorFallback = false;
   const pinnedProvider = resolvePinnedProvider(config.model, config.benchmarkRoutingPolicy);
   if (pinnedProvider) {
     currentProvider = pinnedProvider;
@@ -345,9 +413,18 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   let baseUrl: string;
   let apiKey: string;
   try {
-    ({ baseUrl, apiKey } = resolveProvider(currentProvider, config.model));
+    const resolvedProvider = resolveProvider(currentProvider, config.model);
+    baseUrl = resolvedProvider.baseUrl;
+    apiKey = resolvedProvider.apiKey;
+    currentProvider = resolvedProvider.providerId || currentProvider;
   } catch (err) {
-    if (!isUnsupportedMmsTransportError(err)) {
+    if (!isUnsupportedMmsTransportError(err) || !allowExecutorFallback) {
+      if (isUnsupportedMmsTransportError(err) && !allowExecutorFallback) {
+        throw new Error(
+          `Executor route resolution failed for configured route ${configuredRouteLabel(config.model, currentProvider)}: `
+          + `${(err as Error).message}. Hive executor fallback is disabled.`,
+        );
+      }
       throw err;
     }
     const registry = getRegistry();
@@ -360,7 +437,6 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       {
         providerHealthDir: config.providerHealthDir,
         excludeModels: [...attemptedModels],
-        allowClaudeFallback: true,
         allowSoftPingFailure: true,
       },
     );
@@ -427,14 +503,28 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
 
   // 2. Create worktree (use plan cwd, not process cwd)
   if (config.worktree) {
-    const wt = await createWorktree({
-      name: `worker-${config.taskId}`,
-      cwd: config.cwd,
-      ...(config.fromBranch ? { fromBranch: config.fromBranch } : {}),
-    });
-    worktreePath = wt.path;
-    branch = wt.branch;
+    try {
+      const wt = await createWorktree({
+        name: `worker-${config.taskId}`,
+        cwd: config.cwd,
+        ...(config.fromBranch ? { fromBranch: config.fromBranch } : {}),
+      });
+      worktreePath = wt.path;
+      branch = wt.branch;
+    } catch (err) {
+      if (!shouldFallbackToInPlaceExecution(err)) {
+        throw err;
+      }
+      worktreeFallbackReason = (err as Error)?.message || 'worktree unavailable';
+      worktreePath = config.cwd;
+      branch = '';
+      console.warn(
+        `[hive] Worktree unavailable for ${config.taskId}; falling back to in-place execution at ${config.cwd}: ${worktreeFallbackReason}`,
+      );
+    }
   }
+
+  const expectedFilesBefore = captureExpectedFiles(worktreePath, config.expectedFiles);
 
   // 3. Build prompt
   const contextSection = config.contextInputs.length > 0
@@ -476,10 +566,21 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
     ].join('\n')
     : '';
 
+  const inPlaceFallbackNotice = worktreeFallbackReason
+    ? [
+      '',
+      '## Runtime Notice',
+      `Git worktree setup is unavailable for this project, so run directly in: ${config.cwd}`,
+      'Do NOT assume an isolated branch or sandboxed worktree exists.',
+      '',
+    ].join('\n')
+    : '';
+
   const fullPrompt = [
     taskPrompt,
     contextSection,
     worktreeNotice,
+    inPlaceFallbackNotice,
     uncertaintyProtocol,
   ].join('\n');
 
@@ -492,9 +593,15 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   reportStatus('starting', {
     started_at: new Date(startTime).toISOString(),
     task_summary: config.taskDescription,
-    event_message: 'Worker session started',
+    event_message: worktreeFallbackReason
+      ? `Worker session started (in-place fallback: ${worktreeFallbackReason})`
+      : 'Worker session started',
   });
+  let workerStarted = true;
   appendTranscript('system', `Worker started for ${config.taskId}`);
+  if (worktreeFallbackReason) {
+    appendTranscript('system', `Worktree unavailable; running in place at ${config.cwd}: ${worktreeFallbackReason}`);
+  }
 
   const handleLiveMessage = (msg: SDKMessage): void => {
     if (msg.type !== 'assistant' && msg.type !== 'result') return;
@@ -545,10 +652,12 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
 
   let result;
   const requestedModel = config.model;
-  const requestedProvider = pinnedProvider || config.provider;
+  const requestedProvider = pinnedProvider || currentProvider || config.provider;
+  let lastProviderErrorMessage = '';
 
-  // Phase 8B: Wrap all provider calls in try-finally for health store persistence
   try {
+    // Phase 8B: Wrap all provider calls in try-finally for health store persistence
+    try {
     // ── Same-provider bounded retry loop ──
     // Max 2 retries after original attempt (3 total).
     // Non-retryable failures block immediately.
@@ -564,7 +673,9 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
         healthStore.recordSuccess(currentProvider);
       }
     } catch (err: any) {
+      result = undefined;
       const errorType = classifyError(err);
+      lastProviderErrorMessage = err?.message || String(err || errorType);
 
       // First failure: record it
       if (retryAttempt === 0) {
@@ -608,11 +719,11 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
 
   // ── Channel fallback (only after same-provider retry budget exhausted) ──
   if (!result) {
-    const disableChannelFallback = !!config.benchmarkRoutingPolicy?.disable_channel_fallback;
-    const disableModelFallback = !!config.benchmarkRoutingPolicy?.disable_model_fallback;
+    const allowChannelFallback = allowExecutorFallback && !config.benchmarkRoutingPolicy?.disable_channel_fallback;
+    const allowModelFallback = allowExecutorFallback && !config.benchmarkRoutingPolicy?.disable_model_fallback;
     const fallbackErrorType = primaryErrorType ?? 'unknown_provider_failure';
 
-    if (!disableChannelFallback) {
+    if (allowChannelFallback) {
       const channelFallbacks = getModelFallbackRoutes(currentModel);
       for (const fb of channelFallbacks) {
         if (fb.provider_id === currentProvider) continue;
@@ -663,8 +774,12 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       }
     }
 
-    if (!result && disableModelFallback) {
-      throw new Error(`No-fallback benchmark mode: ${currentModel}@${currentProvider} failed with ${fallbackErrorType}`);
+    if (!result && !allowModelFallback) {
+      const failureDetail = lastProviderErrorMessage || `provider_failure=${fallbackErrorType}`;
+      throw new Error(
+        `Executor failed for configured route ${configuredRouteLabel(requestedModel, requestedProvider)}: `
+        + `${failureDetail} (provider_failure=${fallbackErrorType}). Hive executor fallback is disabled.`,
+      );
     }
 
     if (!result) {
@@ -680,7 +795,6 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
           providerHealthDir: config.providerHealthDir,
           excludeModels: [...attemptedModels],
           excludeProviders: [...failedProviders],
-          allowClaudeFallback: true,
           allowSoftPingFailure: true,
         },
       );
@@ -725,136 +839,195 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
       assertNoProviderApiError(result);
     }
   }
-  } finally {
-    healthStore?.save();
-  }
-
-  // Process collected messages
-  for (const msg of result.messages) {
-    const type = categorizeMessage(msg);
-    const content = extractContent(msg);
-    messages.push({ type, content, timestamp: Date.now() });
-
-    if (msg.type === 'result' && (msg as any).usage) {
-      tokenUsage.input += (msg as any).usage.input_tokens || 0;
-      tokenUsage.output += (msg as any).usage.output_tokens || 0;
+    } finally {
+      healthStore?.save();
     }
 
-    // Detect DISCUSS_TRIGGER — only match when model actively triggers,
-    // not when echoing the uncertainty protocol instructions back.
-    const isActiveTrigger = msg.type === 'assistant'
-      && /^\[DISCUSS_TRIGGER\]/m.test(content)
-      && !content.includes('Include the marker [DISCUSS_TRIGGER]');
-    if (isActiveTrigger && !discussTriggered) {
-      discussTriggered = true;
-      reportStatus('discussing', {
-        discuss_triggered: true,
-        task_summary: 'Waiting for discuss result',
-        last_message: summarizeMessage(content),
-        event_message: 'Worker requested discuss assistance',
-      });
-      appendTranscript('system', 'Worker requested discuss assistance');
-      const discussHandlerResult = await handleDiscussTrigger(
-        config, worktreePath,
-      );
-      const discussResult = discussHandlerResult.result;
-      if (discussHandlerResult.collab) {
-        workerDiscussCollab = discussHandlerResult.collab;
+    // Process collected messages
+    for (const msg of result.messages) {
+      const type = categorizeMessage(msg);
+      const content = extractContent(msg);
+      messages.push({ type, content, timestamp: Date.now() });
+
+      if (msg.type === 'result' && (msg as any).usage) {
+        tokenUsage.input += (msg as any).usage.input_tokens || 0;
+        tokenUsage.output += (msg as any).usage.output_tokens || 0;
       }
-      discussResults.push(discussResult);
-      reportStatus('running', {
-        discuss_triggered: true,
-        task_summary: summarizeMessage(discussResult.decision),
-        event_message: `Discussion resolved with ${discussResult.quality_gate}`,
-        last_message: summarizeMessage(discussResult.decision),
-        discuss_conclusion: {
-          quality_gate: discussResult.quality_gate,
-          conclusion: discussResult.decision,
-        },
-      });
-      appendTranscript('system', `Discuss result (${discussResult.quality_gate}): ${discussResult.decision}`);
 
-      if (discussResult.quality_gate !== 'fail') {
-        const resumeResult = await safeQuery({
-          prompt: [
-            `Discussion result: ${discussResult.decision}`,
-            `Reasoning: ${discussResult.reasoning}`,
-            '',
-            'Continue your task with this decision. Do NOT trigger another discussion.',
-          ].join('\n'),
-          options: {
-            resume: sessionId,
-            cwd: worktreePath,
-            model: currentModel,
-            env: buildSdkEnv(currentModel, baseUrl, apiKey),
-            maxTurns: config.maxTurns,
-          },
-          onMessage: handleLiveMessage,
+      // Detect DISCUSS_TRIGGER — only match when model actively triggers,
+      // not when echoing the uncertainty protocol instructions back.
+      const isActiveTrigger = msg.type === 'assistant'
+        && /^\[DISCUSS_TRIGGER\]/m.test(content)
+        && !content.includes('Include the marker [DISCUSS_TRIGGER]');
+      if (isActiveTrigger && !discussTriggered) {
+        discussTriggered = true;
+        reportStatus('discussing', {
+          discuss_triggered: true,
+          task_summary: 'Waiting for discuss result',
+          last_message: summarizeMessage(content),
+          event_message: 'Worker requested discuss assistance',
         });
+        appendTranscript('system', 'Worker requested discuss assistance');
+        const discussHandlerResult = await handleDiscussTrigger(
+          config, worktreePath,
+        );
+        const discussResult = discussHandlerResult.result;
+        if (discussHandlerResult.collab) {
+          workerDiscussCollab = discussHandlerResult.collab;
+        }
+        discussResults.push(discussResult);
+        reportStatus('running', {
+          discuss_triggered: true,
+          task_summary: summarizeMessage(discussResult.decision),
+          event_message: `Discussion resolved with ${discussResult.quality_gate}`,
+          last_message: summarizeMessage(discussResult.decision),
+          discuss_conclusion: {
+            quality_gate: discussResult.quality_gate,
+            conclusion: discussResult.decision,
+          },
+        });
+        appendTranscript('system', `Discuss result (${discussResult.quality_gate}): ${discussResult.decision}`);
 
-        for (const resumeMsg of resumeResult.messages) {
-          const rType = categorizeMessage(resumeMsg);
-          const rContent = extractContent(resumeMsg);
-          messages.push({ type: rType, content: rContent, timestamp: Date.now() });
-          if (resumeMsg.type === 'result' && (resumeMsg as any).usage) {
-            tokenUsage.input += (resumeMsg as any).usage.input_tokens || 0;
-            tokenUsage.output += (resumeMsg as any).usage.output_tokens || 0;
+        if (discussResult.quality_gate !== 'fail') {
+          const resumeResult = await safeQuery({
+            prompt: [
+              `Discussion result: ${discussResult.decision}`,
+              `Reasoning: ${discussResult.reasoning}`,
+              '',
+              'Continue your task with this decision. Do NOT trigger another discussion.',
+            ].join('\n'),
+            options: {
+              resume: sessionId,
+              cwd: worktreePath,
+              model: currentModel,
+              env: buildSdkEnv(currentModel, baseUrl, apiKey),
+              maxTurns: config.maxTurns,
+            },
+            onMessage: handleLiveMessage,
+          });
+
+          for (const resumeMsg of resumeResult.messages) {
+            const rType = categorizeMessage(resumeMsg);
+            const rContent = extractContent(resumeMsg);
+            messages.push({ type: rType, content: rContent, timestamp: Date.now() });
+            if (resumeMsg.type === 'result' && (resumeMsg as any).usage) {
+              tokenUsage.input += (resumeMsg as any).usage.input_tokens || 0;
+              tokenUsage.output += (resumeMsg as any).usage.output_tokens || 0;
+            }
           }
         }
       }
     }
+
+    // 6. Collect diff
+    let changedFiles: string[] = [];
+    if (worktreePath) {
+      const diff = await getWorktreeDiff(worktreePath);
+      changedFiles = diff.files;
+    }
+    changedFiles = mergeChangedFiles(changedFiles, detectExpectedFileChanges(worktreePath, expectedFilesBefore));
+
+    // Detect failures: explicit error messages OR API errors surfaced as assistant text
+    const apiErrorPattern = /\b(API Error: [45]\d{2}|限流|rate.?limit|overloaded|Please run \/login)\b/i;
+    const hasExplicitError = messages.some(m => m.type === 'error');
+    const hasApiError = messages.some(
+      m => m.type === 'assistant' && apiErrorPattern.test(m.content),
+    );
+    const success = !hasExplicitError && !hasApiError;
+
+    reportStatus(success ? 'completed' : 'failed', {
+      discuss_triggered: discussTriggered,
+      changed_files_count: changedFiles.length,
+      success,
+      finished_at: new Date().toISOString(),
+      task_summary: summarizeMessage(messages[messages.length - 1]?.content || ''),
+      last_message: summarizeMessage(messages[messages.length - 1]?.content || ''),
+      event_message: success ? 'Worker finished successfully' : 'Worker finished with errors',
+    });
+    appendTranscript(success ? 'system' : 'error', success ? 'Worker finished successfully' : 'Worker finished with errors');
+    workerStarted = false;
+
+    return {
+      taskId: config.taskId,
+      model: currentModel,
+      runId: config.runId,
+      requested_model: requestedModel,
+      worktreePath,
+      branch,
+      sessionId,
+      output: messages,
+      changedFiles,
+      success,
+      duration_ms: Date.now() - startTime,
+      token_usage: tokenUsage,
+      discuss_triggered: discussTriggered,
+      discuss_results: discussResults,
+      prompt_policy_version: config.promptPolicy?.version,
+      prompt_fragments: config.promptPolicy?.fragments,
+      execution_contract: executionContract,
+      worker_discuss_collab: workerDiscussCollab,
+      provider_failure_subtype: providerFailureSubtype,
+      provider_fallback_used: providerFallbackUsed,
+      provider: currentProvider,
+      requested_provider: requestedProvider,
+    };
+  } catch (err) {
+    if (!workerStarted) {
+      throw err;
+    }
+
+    const failureMessage = (err as Error | undefined)?.message || String(err || 'Worker failed');
+    let changedFiles: string[] = [];
+    try {
+      if (worktreePath) {
+        const diff = await getWorktreeDiff(worktreePath);
+        changedFiles = diff.files;
+      }
+    } catch {
+      changedFiles = [];
+    }
+    changedFiles = mergeChangedFiles(changedFiles, detectExpectedFileChanges(worktreePath, expectedFilesBefore));
+
+    messages.push({ type: 'error', content: failureMessage, timestamp: Date.now() });
+    reportStatus('failed', {
+      discuss_triggered: discussTriggered,
+      changed_files_count: changedFiles.length,
+      success: false,
+      error: failureMessage,
+      finished_at: new Date().toISOString(),
+      task_summary: summarizeMessage(failureMessage),
+      last_message: summarizeMessage(failureMessage),
+      event_message: 'Worker finished with errors',
+    });
+    appendTranscript('error', failureMessage);
+    workerStarted = false;
+
+    const workerResult: WorkerResult = {
+      taskId: config.taskId,
+      model: currentModel,
+      runId: config.runId,
+      requested_model: requestedModel,
+      requested_provider: requestedProvider,
+      worktreePath,
+      branch,
+      sessionId,
+      output: messages,
+      changedFiles,
+      success: false,
+      duration_ms: Date.now() - startTime,
+      token_usage: tokenUsage,
+      discuss_triggered: discussTriggered,
+      discuss_results: discussResults,
+      prompt_policy_version: config.promptPolicy?.version,
+      prompt_fragments: config.promptPolicy?.fragments,
+      execution_contract: executionContract,
+      worker_discuss_collab: workerDiscussCollab,
+      provider_failure_subtype: providerFailureSubtype,
+      provider_fallback_used: providerFallbackUsed,
+      provider: currentProvider,
+    };
+    throw attachWorkerFailureResult(err, workerResult);
   }
-
-  // 6. Collect diff
-  let changedFiles: string[] = [];
-  if (worktreePath) {
-    const diff = await getWorktreeDiff(worktreePath);
-    changedFiles = diff.files;
-  }
-
-  // Detect failures: explicit error messages OR API errors surfaced as assistant text
-  const apiErrorPattern = /\b(API Error: [45]\d{2}|限流|rate.?limit|overloaded|Please run \/login)\b/i;
-  const hasExplicitError = messages.some(m => m.type === 'error');
-  const hasApiError = messages.some(
-    m => m.type === 'assistant' && apiErrorPattern.test(m.content),
-  );
-  const success = !hasExplicitError && !hasApiError;
-
-  reportStatus(success ? 'completed' : 'failed', {
-    discuss_triggered: discussTriggered,
-    changed_files_count: changedFiles.length,
-    success,
-    finished_at: new Date().toISOString(),
-    task_summary: summarizeMessage(messages[messages.length - 1]?.content || ''),
-    last_message: summarizeMessage(messages[messages.length - 1]?.content || ''),
-    event_message: success ? 'Worker finished successfully' : 'Worker finished with errors',
-  });
-  appendTranscript(success ? 'system' : 'error', success ? 'Worker finished successfully' : 'Worker finished with errors');
-
-  return {
-    taskId: config.taskId,
-    model: currentModel,
-    runId: config.runId,
-    requested_model: requestedModel,
-    worktreePath,
-    branch,
-    sessionId,
-    output: messages,
-    changedFiles,
-    success,
-    duration_ms: Date.now() - startTime,
-    token_usage: tokenUsage,
-    discuss_triggered: discussTriggered,
-    discuss_results: discussResults,
-    prompt_policy_version: config.promptPolicy?.version,
-    prompt_fragments: config.promptPolicy?.fragments,
-    execution_contract: executionContract,
-    worker_discuss_collab: workerDiscussCollab,
-    provider_failure_subtype: providerFailureSubtype,
-    provider_fallback_used: providerFallbackUsed,
-    provider: currentProvider,
-    requested_provider: requestedProvider,
-  };
 }
 
 // ── dispatchBatch ──
@@ -966,73 +1139,34 @@ export async function dispatchBatch(
         onWorkerDiscussSnapshot: runtime.onWorkerDiscussSnapshot,
         promptPolicy: task.prompt_policy,
         execution_contract: task.execution_contract,
+        expectedFiles: task.estimated_files,
         providerHealthDir,
       } satisfies WorkerConfig;
     });
 
-    // Preflight: quickPing unique models, replace unhealthy ones
-    const uniqueModels = [...new Set(workerConfigs.map(c => c.model))];
-    const pingResults = await Promise.all(
-      uniqueModels.map(async m => ({ model: m, ...(await quickPing(m, 15000)) })),
-    );
-    const unhealthy = new Set(pingResults.filter(p => !p.ok).map(p => p.model));
-    if (unhealthy.size > 0) {
-      const registry = getRegistry();
-      for (const cfg of workerConfigs) {
-        if (!unhealthy.has(cfg.model)) continue;
-        if (cfg.benchmarkRoutingPolicy?.disable_model_fallback) {
-          console.log(`  ⛔ Preflight unhealthy but fallback suppressed: ${cfg.model} for ${cfg.taskId}`);
-          continue;
-        }
-        const task = tasksInGroup.find(t => t.id === cfg.taskId)!;
-        const fallback = await resolveRunnableFallback(
-          cfg.model,
-          'server_error',
-          task,
-          plan.cwd,
-          registry,
-          {
-            providerHealthDir: cfg.providerHealthDir,
-            excludeModels: [cfg.model],
-            excludeProviders: [cfg.provider],
-            pingTimeoutMs: 15000,
-          },
-        );
-        if (!fallback) {
-          console.log(`  ⛔ Preflight: no runnable fallback for ${cfg.model} (${cfg.taskId})`);
-          continue;
-        }
-        console.log(`  🔄 Preflight: ${cfg.model} unhealthy → ${fallback.model} for ${cfg.taskId}`);
-        cfg.model = fallback.model;
-        cfg.provider = fallback.provider;
-      }
-    }
-
     const preflightBlocked = new Map<string, Error>();
-    if (unhealthy.size > 0) {
-      for (const cfg of workerConfigs) {
-        if (!unhealthy.has(cfg.model)) continue;
-        if (cfg.benchmarkRoutingPolicy?.disable_model_fallback) continue;
-        const task = tasksInGroup.find(t => t.id == cfg.taskId)!;
-        const fallback = await resolveRunnableFallback(
-          cfg.model,
-          'server_error',
-          task,
-          plan.cwd,
-          getRegistry(),
-          {
-            providerHealthDir: cfg.providerHealthDir,
-            excludeModels: [cfg.model],
-            excludeProviders: [cfg.provider],
-            pingTimeoutMs: 15000,
-          },
-        );
-        if (!fallback) {
-          preflightBlocked.set(cfg.taskId, new Error(`Model fallback blocked for ${cfg.model}: no runnable provider/model candidates after preflight health checks`));
-        }
-      }
+    const pingResults = await Promise.all(
+      workerConfigs.map(async (cfg) => ({
+        taskId: cfg.taskId,
+        model: cfg.model,
+        provider: cfg.provider,
+        ping: await quickPing(cfg.model, 15000, cfg.provider || undefined),
+      })),
+    );
+    for (const pingResult of pingResults) {
+      if (pingResult.ping.ok) continue;
+      preflightBlocked.set(
+        pingResult.taskId,
+        new Error(
+          `Executor preflight failed for configured route ${configuredRouteLabel(pingResult.model, pingResult.provider)}: `
+          + `${pingResult.ping.error || 'health check failed'}. Hive executor fallback is disabled.`,
+        ),
+      );
+      console.log(
+        `  ⛔ Preflight blocked ${pingResult.taskId}: ${configuredRouteLabel(pingResult.model, pingResult.provider)} `
+        + `(${pingResult.ping.error || 'health check failed'})`,
+      );
     }
-
     // Report queued status for each worker in the group
     for (const cfg of workerConfigs) {
       if (preflightBlocked.has(cfg.taskId)) continue;
@@ -1058,6 +1192,10 @@ export async function dispatchBatch(
     // Parallel spawn within group
     if (workerConfigs.length > 0) {
       const failResult = (cfg: WorkerConfig, err: Error): WorkerResult => {
+        const attachedWorkerResult = (err as Error & { workerResult?: WorkerResult }).workerResult;
+        if (attachedWorkerResult) {
+          return attachedWorkerResult;
+        }
         const failureSubtype = classifyProviderFailure(err);
         const failureReason = err.message || 'Worker crashed before returning a result';
         const eventMessage = /invalid provider url|non-claude-compatible base url|requires bridge transport/i.test(failureReason)

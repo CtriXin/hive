@@ -384,7 +384,7 @@ export async function main() {
     const cwd = getFlag('--cwd') || process.cwd();
     const mode = (getFlag('--mode') || 'safe') as 'safe' | 'balanced' | 'aggressive';
     const initOnly = args.includes('--init-only');
-    const autoMerge = args.includes('--auto-merge');
+    const autoMerge = args.includes('--auto-merge') ? true : undefined;
 
     if (!goal.trim()) {
       console.error('❌ run requires --goal "<task goal>"');
@@ -968,9 +968,10 @@ export async function main() {
 
   if (command === 'web') {
     const cwd = getFlag('--cwd') || process.cwd();
-    const port = Number(getFlag('--port') || firstPositionalAfterCommand || 3100);
+    const rawPort = getFlag('--port') || firstPositionalAfterCommand;
+    const port = rawPort ? Number(rawPort) : undefined;
     const { startDashboardServer } = await import('./web-dashboard-server.js');
-    startDashboardServer({ cwd, port });
+    await startDashboardServer({ cwd, port });
     return;
   }
 
@@ -1024,7 +1025,7 @@ export async function main() {
     const registry = new (ModelRegistry as any)();
     planJson.cwd = cwd;
     const plan = buildPlanFromClaudeOutput(planJson);
-    const allowAutoMerge = args.includes('--auto-merge');
+    const allowAutoMerge = args.includes('--auto-merge') ? true : undefined;
     const maxRounds = Number(getFlag('--max-rounds') || 6);
     const { spec, state } = bootstrapRun({
       goal: plan.goal,

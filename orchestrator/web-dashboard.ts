@@ -299,10 +299,10 @@ const RUN_SAVE_IMPACT: Record<RunModelPolicySource, string> = {
 
 const CONFIG_SAVE_IMPACT: Record<'global' | 'project', string> = {
   project: '影响这个 repo 后续新建的 run；不改其他项目。',
-  global: '影响这台机器上的 Hive 全局默认；会被 Project 和 Run 覆盖。',
+  global: 'Global 需要人工复核；Web 只展示，不直接写入 ~/.hive/config.json。',
 };
 
-const GLOBAL_CONFIG_WARNING = 'Global 配置会写入真实 ~/.hive/config.json，并影响这台机器后续所有 Hive run。';
+const GLOBAL_CONFIG_WARNING = 'Global ~/.hive/config.json 现在是人工复核模式：Web / CLI 不直接写入；请手动审查后再编辑该文件。';
 
 const EMPTY_CONFIG_POLICY_RESULT: WebConfigPolicyResetResult = {
   scope: 'project',
@@ -516,6 +516,12 @@ function projectConfigPath(cwd: string): string {
   return pickConfigTargetPath(cwd, 'project') || path.join(cwd, '.hive', 'config.json');
 }
 
+function assertConfigScopeWritable(scope: 'global' | 'project'): void {
+  if (scope === 'global') {
+    throw new Error('Refusing to auto-modify ~/.hive/config.json. Global config is human-reviewed only; use project scope here, or edit the file manually after review.');
+  }
+}
+
 function readConfigLayerContexts(cwd: string): ConfigLayerContext[] {
   const source = getConfigSource(cwd);
   const globalRaw = readJsonSafe<HiveConfig>(source.global);
@@ -691,7 +697,7 @@ function buildConfigPolicyLayers(cwd: string, runId: string): WebModelPolicyLaye
     path: configPathExists(context.path),
     priority: index + 2,
     summary: context.scope === 'global' ? '跨项目默认值' : '当前 repo 的默认值',
-    writable: true,
+    writable: context.scope !== 'global',
     blocked_reason: context.scope === 'global' ? GLOBAL_CONFIG_WARNING : undefined,
     impact: impactTextForConfig(context.scope),
     stages: buildConfigLayerStages(context, effectiveRun),
@@ -759,6 +765,7 @@ function buildConfigPolicySurface(cwd: string, runId: string): WebConfigPolicySu
 }
 
 function writeConfigPolicy(scope: 'global' | 'project', cwd: string, patch: RunModelPolicyPatch): WebConfigPolicySurface {
+  assertConfigScopeWritable(scope);
   const targetPath = configPolicyPathForScope(cwd, scope);
   const current = readJsonSafe<HiveConfig>(targetPath);
   const next = applyPatchToConfig(current, patch);
@@ -768,6 +775,7 @@ function writeConfigPolicy(scope: 'global' | 'project', cwd: string, patch: RunM
 }
 
 function resetConfigPolicy(scope: 'global' | 'project', cwd: string): WebConfigPolicySurface {
+  assertConfigScopeWritable(scope);
   const targetPath = configPolicyPathForScope(cwd, scope);
   if (!fs.existsSync(targetPath)) {
     setConfigPolicyResult(buildConfigResetResult(scope, targetPath, 'delete'));
@@ -915,7 +923,7 @@ function rebuildConfigLayers(cwd: string, runId: string): WebModelPolicyLayer[] 
     path: configPathExists(context.path),
     priority: index + 2,
     summary: layerSummary(context.scope, context.config),
-    writable: true,
+    writable: context.scope !== 'global',
     blocked_reason: context.scope === 'global' ? GLOBAL_CONFIG_WARNING : undefined,
     impact: impactTextForConfig(context.scope),
     stages: buildConfigLayerStages(context, effectiveRun),
@@ -1047,6 +1055,7 @@ function applyConfigWriteFeedback(scope: 'global' | 'project', cwd: string, rese
 }
 
 function writeScopedConfigPolicy(scope: 'global' | 'project', cwd: string, patch: RunModelPolicyPatch): void {
+  assertConfigScopeWritable(scope);
   const targetPath = configPolicyPathForScope(cwd, scope);
   const current = readJsonSafe<HiveConfig>(targetPath);
   const next = applyPatchToConfig(current, patch);
@@ -1055,6 +1064,7 @@ function writeScopedConfigPolicy(scope: 'global' | 'project', cwd: string, patch
 }
 
 function resetScopedConfigPolicy(scope: 'global' | 'project', cwd: string): void {
+  assertConfigScopeWritable(scope);
   const targetPath = configPolicyPathForScope(cwd, scope);
   const current = readJsonSafe<HiveConfig>(targetPath);
   const next = removeAllConfigPolicyFields(current);
@@ -1139,6 +1149,7 @@ function clearRunPolicyStage(cwd: string, runId: string, source: RunModelPolicyS
 }
 
 function clearConfigPolicyStage(scope: 'global' | 'project', cwd: string, stage: RunModelPolicyStage): WebConfigPolicySurface {
+  assertConfigScopeWritable(scope);
   const targetPath = configPolicyPathForScope(cwd, scope);
   const current = readJsonSafe<HiveConfig>(targetPath);
   const next = removePatchedFieldsFromConfig(current, singleStagePatch(stage));
@@ -1157,7 +1168,7 @@ function resetConfigMessageScope(scope: 'global' | 'project', cwd: string, reset
 }
 
 function noteForConfigPolicy(): string {
-  return 'Project 和 Global 都可编辑。保存后会明确告诉你写到了哪一层、影响哪个范围；其中 Global 会写入真实 ~/.hive/config.json。';
+  return 'Project 可直接编辑。Global ~/.hive/config.json 仅展示，不允许 Web/CLI 自动写入；如需修改，请人工审查后手动编辑。';
 }
 
 function currentConfigPolicySurface(cwd: string, runId: string): WebConfigPolicySurface {
@@ -2378,8 +2389,8 @@ function editableConfigTarget(cwd: string, scope: 'global' | 'project'): WebEdit
     scope,
     path: targetPath,
     exists,
-    writable: true,
-    note: '当前编辑 Global layer；会影响后续所有 Hive run。',
+    writable: false,
+    note: '当前查看 Global layer。Global ~/.hive/config.json 需要人工复核，Web 不直接写入。',
   };
 }
 
@@ -2408,6 +2419,7 @@ export function updateWebGlobalConfig(
   patch: Partial<HiveConfig>,
   scope: 'global' | 'project' = 'global',
 ): WebEditableConfigSurface {
+  assertConfigScopeWritable(scope);
   const target = editableConfigTarget(cwd, scope);
   if (!target.path || !target.writable) {
     throw new Error(`当前 cwd 没有可写的 ${scope} 配置文件`);
@@ -2432,6 +2444,7 @@ export function resetWebGlobalConfig(
   cwd: string,
   scope: 'global' | 'project' = 'global',
 ): WebEditableConfigSurface {
+  assertConfigScopeWritable(scope);
   const target = editableConfigTarget(cwd, scope);
   if (!target.path || !target.writable) {
     throw new Error(`当前 cwd 没有可写的 ${scope} 配置文件`);

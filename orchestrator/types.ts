@@ -152,6 +152,7 @@ export interface WorkerConfig {
   benchmarkRoutingPolicy?: BenchmarkRoutingPolicy;
   onWorkerDiscussSnapshot?: (snapshot: CollabStatusSnapshot) => void | Promise<void>;
   execution_contract?: TaskExecutionContract;
+  expectedFiles?: string[];
   /** Phase 8A: Provider health store path for resilience tracking */
   providerHealthDir?: string;
 }

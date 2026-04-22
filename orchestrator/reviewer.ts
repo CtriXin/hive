@@ -96,7 +96,7 @@ function finalizeAndLogReviewResult(
     plan,
     registry,
     fingerprint,
-    result,
+    withReviewMetadata(result),
     tokenStages,
     opts,
   );
@@ -881,6 +881,44 @@ function buildDiffContractBoundaryResult(
   source: 'authority-layer' | 'legacy-cascade',
 ): ReviewResult | null {
   const contract = getTaskExecutionContract(task);
+  const workerError = workerResult.output.find((msg) => msg.type === 'error')?.content;
+  const workerInfraFailure = Boolean(
+    workerResult.provider_failure_subtype
+    || (workerError && looksLikeInfrastructureFailure(workerError)),
+  );
+
+  if (!workerResult.success) {
+    return finalizeReviewWithOneLog(
+      workerResult,
+      task,
+      plan,
+      registry,
+      fingerprint,
+      withReviewMetadata({
+        taskId: workerResult.taskId,
+        final_stage: 'cross-review',
+        passed: false,
+        findings: [{
+          id: 1,
+          severity: 'red',
+          lens: 'orchestrator',
+          file: '(worker failure)',
+          issue: workerError || 'Worker execution did not succeed before review.',
+          decision: 'flag',
+          decision_reason: 'Review cannot pass when execution failed before producing a valid result.',
+        }],
+        iterations: 0,
+        duration_ms: Date.now() - startTime,
+        authority: {
+          source,
+          mode: 'single',
+          members: [],
+        },
+      }, workerInfraFailure ? { failure_attribution: 'infra_fault' } : undefined),
+      tokenStages,
+      { infraFailure: workerInfraFailure },
+    );
+  }
 
   if (workerResult.changedFiles.length > 0 && forbidsFileDiff(task)) {
     return finalizeReviewWithOneLog(

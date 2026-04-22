@@ -16,6 +16,7 @@ const {
   updateWorkerStatusMock,
   appendWorkerTranscriptEntryMock,
   createWorktreeMock,
+  getWorktreeDiffMock,
 } = vi.hoisted(() => ({
   resolveProviderMock: vi.fn(),
   quickPingMock: vi.fn(),
@@ -29,6 +30,7 @@ const {
   updateWorkerStatusMock: vi.fn(),
   appendWorkerTranscriptEntryMock: vi.fn(),
   createWorktreeMock: vi.fn(),
+  getWorktreeDiffMock: vi.fn(),
 }));
 
 vi.mock('../orchestrator/provider-resolver.js', () => ({
@@ -76,7 +78,7 @@ vi.mock('../orchestrator/context-recycler.js', () => ({
 
 vi.mock('../orchestrator/worktree-manager.js', () => ({
   createWorktree: createWorktreeMock,
-  getWorktreeDiff: vi.fn(async () => ({ files: [] })),
+  getWorktreeDiff: getWorktreeDiffMock,
 }));
 
 vi.mock('../orchestrator/worker-status-store.js', () => ({
@@ -132,6 +134,7 @@ describe('dispatcher same-provider retry', () => {
     loadConfigMock.mockReturnValue({ fallback_worker: 'glm-5-turbo' });
     ensureStageModelAllowedMock.mockReturnValue(undefined);
     getModelFallbackRoutesMock.mockReturnValue([]);
+    getWorktreeDiffMock.mockResolvedValue({ files: [] });
     createWorktreeMock.mockResolvedValue({ path: '/tmp/worktree-default', branch: 'worker-task' });
     getRegistryMock.mockReturnValue({
       get: (modelId: string) => ({ provider: modelId.startsWith('glm') ? 'glm-cn' : 'kimi' }),
@@ -187,6 +190,40 @@ describe('dispatcher same-provider retry', () => {
     }
   });
 
+  it('records the concrete resolved provider instead of a generic registry alias', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-provider-'));
+    resolveProviderMock.mockReturnValue({
+      baseUrl: 'http://161.33.197.51:4001',
+      apiKey: 'key-newapi',
+      providerId: 'newapi-personal-tokyo',
+    });
+    safeQueryMock.mockResolvedValueOnce({
+      messages: [makeAssistantMessage('done'), makeSuccessMessage()],
+      exitError: null,
+    });
+
+    try {
+      const result = await spawnWorker({
+        taskId: 'task-provider',
+        model: 'glm-5-turbo',
+        provider: 'glm-cn',
+        prompt: 'Create SMOKE.md',
+        cwd,
+        worktree: false,
+        contextInputs: [],
+        discussThreshold: 0.7,
+        maxTurns: 4,
+        taskDescription: 'Create SMOKE.md',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.provider).toBe('newapi-personal-tokyo');
+      expect(result.requested_provider).toBe('newapi-personal-tokyo');
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('blocks immediately on non-retryable auth failure', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-auth-'));
     safeQueryMock.mockRejectedValueOnce(new Error('API Error: 401 Unauthorized'));
@@ -236,7 +273,7 @@ describe('dispatcher same-provider retry', () => {
     }
   });
 
-  it('falls back to channel after retry budget exhausted (2 retries fail)', async () => {
+  it('fails closed after retry budget is exhausted instead of switching channel', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-budget-'));
     getModelFallbackRoutesMock.mockReturnValue([
       {
@@ -258,7 +295,7 @@ describe('dispatcher same-provider retry', () => {
       });
 
     try {
-      const result = await spawnWorker({
+      await expect(spawnWorker({
         taskId: 'task-budget',
         model: 'kimi-for-coding',
         provider: 'kimi',
@@ -270,14 +307,11 @@ describe('dispatcher same-provider retry', () => {
         maxTurns: 4,
         taskDescription: 'Test budget exhaust.',
         providerHealthDir: path.join(cwd, '.ai', 'runs', 'run-budget'),
-      });
+      })).rejects.toThrow(/Hive executor fallback is disabled|provider_failure=rate_limit/i);
 
-      // 3 same-provider attempts + 1 channel fallback = 4 calls
-      expect(safeQueryMock).toHaveBeenCalledTimes(4);
-      expect(result.success).toBe(true);
-      expect(result.provider).toBe('kimi-alt');
-      expect(result.provider_fallback_used).toBe(true);
-      expect(result.provider_failure_subtype).toBe('rate_limit');
+      // 3 same-provider attempts, no channel/model fallback
+      expect(safeQueryMock).toHaveBeenCalledTimes(3);
+      expect(resolveFallbackMock).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -300,6 +334,7 @@ describe('dispatcher runtime fallback', () => {
     loadConfigMock.mockReturnValue({ fallback_worker: 'glm-5-turbo' });
     ensureStageModelAllowedMock.mockReturnValue(undefined);
     getModelFallbackRoutesMock.mockReturnValue([]);
+    getWorktreeDiffMock.mockResolvedValue({ files: [] });
     getRegistryMock.mockReturnValue({
       get: (modelId: string) => ({ provider: modelId.startsWith('glm') ? 'glm-cn' : 'kimi' }),
       getClaudeTier: (tier: string) => ({ id: tier === 'sonnet' ? 'claude-sonnet-4-6' : 'claude-opus-4-6' }),
@@ -312,7 +347,7 @@ describe('dispatcher runtime fallback', () => {
     vi.restoreAllMocks();
   });
 
-  it('retries the same model on an alternate MMS channel when SDK returns model-not-found text', async () => {
+  it('fails closed when SDK keeps returning model-not-found text for the configured route', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-fb-'));
     getModelFallbackRoutesMock.mockReturnValue([
       {
@@ -345,19 +380,8 @@ describe('dispatcher runtime fallback', () => {
         ],
         exitError: new Error('exited with code 1'),
       })
-      // Channel fallback succeeds
-      .mockResolvedValueOnce({
-        messages: [
-          makeAssistantMessage('Patched the requested file successfully.'),
-          { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
-        ],
-        exitError: null,
-      })
-      // Discussion resume (not related to fallback)
-      .mockResolvedValueOnce({ messages: [] });
-
     try {
-      const result = await spawnWorker({
+      await expect(spawnWorker({
         taskId: 'task-a',
         model: 'kimi-for-coding',
         provider: 'kimi',
@@ -369,19 +393,21 @@ describe('dispatcher runtime fallback', () => {
         maxTurns: 4,
         taskDescription: 'Fix the failing worker task.',
         providerHealthDir: path.join(cwd, '.ai', 'runs', 'run-channel-fb'),
-      });
+      })).rejects.toThrow(/Hive executor fallback is disabled|provider_failure/i);
 
       // Retry attempts were recorded in decision history
       const healthFile = path.join(cwd, '.ai', 'runs', 'run-channel-fb', 'provider-health.json');
       const health = JSON.parse(fs.readFileSync(healthFile, 'utf-8'));
       expect(health.decisions.length).toBeGreaterThan(0);
       expect(health.providers.kimi.consecutive_failures).toBeGreaterThanOrEqual(1);
+      expect(resolveFallbackMock).not.toHaveBeenCalled();
+      expect(safeQueryMock).toHaveBeenCalledTimes(3);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  it('blocks model fallback when the fallback provider breaker is already open and still persists provider health data', async () => {
+  it('still persists provider health data when executor fallback is disabled', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-open-breaker-'));
     const providerHealthDir = path.join(cwd, '.ai', 'runs', 'run-open-breaker');
     fs.mkdirSync(providerHealthDir, { recursive: true });
@@ -402,12 +428,11 @@ describe('dispatcher runtime fallback', () => {
       updated_at: new Date().toISOString(),
     }, null, 2));
 
-    // 3 retries + 1 extra to break loop + channel fallback (no routes) + model fallback
     safeQueryMock
       .mockRejectedValue(new Error('API Error: 500 upstream provider unavailable'));
 
     try {
-      const result = await spawnWorker({
+      await expect(spawnWorker({
         taskId: 'task-c',
         model: 'kimi-for-coding',
         provider: 'kimi',
@@ -419,31 +444,17 @@ describe('dispatcher runtime fallback', () => {
         maxTurns: 4,
         taskDescription: 'Retry after breaker opens.',
         providerHealthDir,
-      });
+      })).rejects.toThrow(/Hive executor fallback is disabled|provider_failure/i);
 
-      // If we got here, check what happened
       const saved = JSON.parse(fs.readFileSync(path.join(providerHealthDir, 'provider-health.json'), 'utf-8'));
-      console.error('Result:', result.provider, result.success);
-      console.error('Decisions:', JSON.stringify(saved.decisions, null, 2));
-      console.error('Providers:', JSON.stringify(saved.providers, null, 2));
-      throw new Error(`Expected spawnWorker to reject but it resolved with provider=${result.provider}, success=${result.success}`);
-    } catch (err: any) {
-      if (err.message.includes('Model fallback blocked')) {
-        // Expected behavior
-        const saved = JSON.parse(fs.readFileSync(path.join(providerHealthDir, 'provider-health.json'), 'utf-8'));
-        expect(saved.decisions.some((d: any) => d.action === 'block')).toBe(true);
-        expect(resolveFallbackMock).toHaveBeenCalled();
-      } else if (err.message.includes('Expected spawnWorker to reject')) {
-        throw err;
-      } else {
-        throw err;
-      }
+      expect(saved.decisions.some((d: any) => d.action === 'cooldown' || d.action === 'block')).toBe(true);
+      expect(resolveFallbackMock).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  it('falls back immediately when the assigned MMS route requires bridge transport', async () => {
+  it('fails immediately when the assigned MMS route requires bridge transport', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-bridge-route-'));
     resolveProviderMock.mockImplementation((provider: string, model: string) => {
       if (model === 'glm-5-turbo') {
@@ -462,16 +473,9 @@ describe('dispatcher runtime fallback', () => {
       getClaudeTier: (tier: string) => ({ id: tier === 'sonnet' ? 'claude-sonnet-4-6' : 'claude-opus-4-6' }),
       rankModelsForTask: () => [],
     });
-    safeQueryMock.mockResolvedValueOnce({
-      messages: [
-        makeAssistantMessage('Completed via fallback model.'),
-        { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
-      ],
-      exitError: null,
-    });
 
     try {
-      const result = await spawnWorker({
+      await expect(spawnWorker({
         taskId: 'task-bridge-route',
         model: 'glm-5-turbo',
         provider: 'xin',
@@ -483,22 +487,15 @@ describe('dispatcher runtime fallback', () => {
         maxTurns: 4,
         taskDescription: 'Handle a bridge-only MMS route.',
         providerHealthDir: path.join(cwd, '.ai', 'runs', 'run-bridge-route'),
-      });
-
-      expect(resolveFallbackMock).toHaveBeenCalled();
-      expect(result.success).toBe(true);
-      expect(result.model).toBe('qwen3-max');
-      expect(result.provider).toBe('qwen');
-      expect(result.provider_fallback_used).toBe(true);
-
-      const health = JSON.parse(fs.readFileSync(path.join(cwd, '.ai', 'runs', 'run-bridge-route', 'provider-health.json'), 'utf-8'));
-      expect(health.decisions.some((d: any) => d.action === 'fallback' && String(d.action_reason).includes('bridge transport'))).toBe(true);
+      })).rejects.toThrow(/route resolution failed|requires bridge transport|fallback is disabled/i);
+      expect(resolveFallbackMock).not.toHaveBeenCalled();
+      expect(safeQueryMock).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  it('uses direct Claude fallback when no domestic executor candidate is runnable', async () => {
+  it('does not fall back to Claude in executor when no domestic candidate is runnable', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-claude-fallback-'));
     resolveProviderMock.mockImplementation((provider: string, model: string) => {
       if (model === 'glm-5-turbo' || model === 'kimi-for-coding') {
@@ -536,8 +533,8 @@ describe('dispatcher runtime fallback', () => {
     });
 
     try {
-      const result = await spawnWorker({
-        taskId: 'task-claude-fallback',
+      await expect(spawnWorker({
+        taskId: 'task-no-claude-fallback',
         model: 'glm-5-turbo',
         provider: 'xin',
         prompt: 'Handle an all-bridge domestic environment.',
@@ -548,30 +545,20 @@ describe('dispatcher runtime fallback', () => {
         maxTurns: 4,
         taskDescription: 'Handle an all-bridge domestic environment.',
         providerHealthDir: path.join(cwd, '.ai', 'runs', 'run-claude-fallback'),
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.model).toBe('claude-sonnet-4-6');
-      expect(result.provider).toBe('xin');
-      expect(resolveFallbackMock).toHaveBeenCalledTimes(2);
+      })).rejects.toThrow(/route resolution failed|requires bridge transport|fallback is disabled/i);
+      expect(resolveFallbackMock).not.toHaveBeenCalled();
+      expect(safeQueryMock).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  it('skips bridge-only model fallback candidates after provider failure and uses the next runnable executor', async () => {
+  it('fails closed after provider failure instead of switching executor model', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-runtime-skip-bridge-'));
     safeQueryMock
       .mockRejectedValueOnce(new Error('API Error: 500 upstream provider unavailable'))
       .mockRejectedValueOnce(new Error('API Error: 500 upstream provider unavailable'))
-      .mockRejectedValueOnce(new Error('API Error: 500 upstream provider unavailable'))
-      .mockResolvedValueOnce({
-        messages: [
-          makeAssistantMessage('Recovered on second fallback candidate.'),
-          { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
-        ],
-        exitError: null,
-      });
+      .mockRejectedValueOnce(new Error('API Error: 500 upstream provider unavailable'));
     resolveProviderMock.mockImplementation((provider: string, model: string) => {
       if (model === 'glm-5-turbo') {
         const err = new Error('MMS route for model "glm-5-turbo" requires bridge transport for Claude Code SDK; direct provider mode is not allowed.');
@@ -598,7 +585,7 @@ describe('dispatcher runtime fallback', () => {
     });
 
     try {
-      const result = await spawnWorker({
+      await expect(spawnWorker({
         taskId: 'task-runtime-skip-bridge',
         model: 'kimi-for-coding',
         provider: 'kimi',
@@ -610,12 +597,217 @@ describe('dispatcher runtime fallback', () => {
         maxTurns: 4,
         taskDescription: 'Recover from provider failure with runnable fallback.',
         providerHealthDir: path.join(cwd, '.ai', 'runs', 'run-runtime-skip-bridge'),
+      })).rejects.toThrow(/Hive executor fallback is disabled|provider_failure/i);
+      expect(resolveFallbackMock).not.toHaveBeenCalled();
+      expect(safeQueryMock).toHaveBeenCalledTimes(3);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('dispatcher worktree fallback', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    safeQueryMock.mockReset();
+    resolveProviderMock.mockImplementation((provider: string, model: string) => ({
+      baseUrl: `http://${provider}/${model}`,
+      apiKey: `key-${provider}-${model}`,
+    }));
+    buildSdkEnvMock.mockImplementation((model: string, baseUrl?: string, apiKey?: string) => ({
+      ANTHROPIC_MODEL: model,
+      ANTHROPIC_BASE_URL: baseUrl || '',
+      ANTHROPIC_AUTH_TOKEN: apiKey || '',
+    }));
+    loadConfigMock.mockReturnValue({ fallback_worker: 'glm-5-turbo' });
+    ensureStageModelAllowedMock.mockReturnValue(undefined);
+    getModelFallbackRoutesMock.mockReturnValue([]);
+    getWorktreeDiffMock.mockResolvedValue({ files: [] });
+    getRegistryMock.mockReturnValue({
+      get: (modelId: string) => ({ provider: modelId.startsWith('glm') ? 'glm-cn' : 'kimi' }),
+      getClaudeTier: (tier: string) => ({ id: tier === 'sonnet' ? 'claude-sonnet-4-6' : 'claude-opus-4-6' }),
+      rankModelsForTask: () => [],
+    });
+    resolveFallbackMock.mockReturnValue('glm-5-turbo');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('falls back to in-place execution when git worktree setup is unavailable', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-worktree-fallback-'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    createWorktreeMock.mockRejectedValueOnce(new Error('fatal: not in a git repository (or any of the parent directories): .git'));
+    safeQueryMock.mockResolvedValueOnce({
+      messages: [
+        makeAssistantMessage('Completed directly in the project directory.'),
+        { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+      exitError: null,
+    });
+
+    try {
+      const result = await spawnWorker({
+        taskId: 'task-worktree-fallback',
+        model: 'kimi-for-coding',
+        provider: 'kimi',
+        prompt: 'Patch the file without requiring git worktree support.',
+        cwd,
+        runId: 'run-worktree-fallback',
+        worktree: true,
+        contextInputs: [],
+        discussThreshold: 0.7,
+        maxTurns: 4,
+        taskDescription: 'Patch the file without requiring git worktree support.',
       });
 
       expect(result.success).toBe(true);
-      expect(result.model).toBe('qwen3-max');
-      expect(result.provider).toBe('qwen');
-      expect(resolveFallbackMock).toHaveBeenCalledTimes(2);
+      expect(result.worktreePath).toBe(cwd);
+      expect(result.branch).toBe('');
+      expect(createWorktreeMock).toHaveBeenCalledTimes(1);
+      expect(safeQueryMock).toHaveBeenCalledWith(expect.objectContaining({
+        options: expect.objectContaining({ cwd }),
+      }));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('falling back to in-place execution'));
+      expect(appendWorkerTranscriptEntryMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({
+          type: 'system',
+          content: expect.stringContaining('Worktree unavailable; running in place'),
+        }),
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('still throws when worktree creation fails for a real git error', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-worktree-hard-fail-'));
+    createWorktreeMock.mockRejectedValueOnce(new Error('fatal: invalid reference: main'));
+
+    try {
+      await expect(spawnWorker({
+        taskId: 'task-worktree-hard-fail',
+        model: 'kimi-for-coding',
+        provider: 'kimi',
+        prompt: 'Do not mask real git worktree failures.',
+        cwd,
+        worktree: true,
+        contextInputs: [],
+        discussThreshold: 0.7,
+        maxTurns: 4,
+        taskDescription: 'Do not mask real git worktree failures.',
+      })).rejects.toThrow('invalid reference: main');
+
+      expect(safeQueryMock).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('dispatcher worker bookkeeping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    safeQueryMock.mockReset();
+    resolveProviderMock.mockImplementation((provider: string, model: string) => ({
+      baseUrl: `http://${provider}/${model}`,
+      apiKey: `key-${provider}-${model}`,
+    }));
+    buildSdkEnvMock.mockImplementation((model: string, baseUrl?: string, apiKey?: string) => ({
+      ANTHROPIC_MODEL: model,
+      ANTHROPIC_BASE_URL: baseUrl || '',
+      ANTHROPIC_AUTH_TOKEN: apiKey || '',
+    }));
+    quickPingMock.mockResolvedValue({ ok: true, ms: 1 });
+    loadConfigMock.mockReturnValue({ fallback_worker: 'glm-5-turbo' });
+    ensureStageModelAllowedMock.mockReturnValue(undefined);
+    getModelFallbackRoutesMock.mockReturnValue([]);
+    getWorktreeDiffMock.mockResolvedValue({ files: [] });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('marks a started worker as failed when execution throws after startup', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-terminal-status-'));
+    safeQueryMock.mockRejectedValueOnce(new Error('API Error: 401 Unauthorized'));
+
+    try {
+      await expect(spawnWorker({
+        taskId: 'task-terminal-status',
+        model: 'kimi-for-coding',
+        provider: 'kimi',
+        prompt: 'Fail after startup.',
+        cwd,
+        runId: 'run-terminal-status',
+        sessionId: 'session-terminal-status',
+        worktree: false,
+        contextInputs: [],
+        discussThreshold: 0.7,
+        maxTurns: 4,
+        taskDescription: 'Fail after startup.',
+      })).rejects.toThrow(/auth_failure/i);
+
+      expect(updateWorkerStatusMock).toHaveBeenCalledWith(
+        expect.any(String),
+        'run-terminal-status',
+        expect.objectContaining({
+          task_id: 'task-terminal-status',
+          status: 'starting',
+          session_id: 'session-terminal-status',
+        }),
+      );
+      expect(updateWorkerStatusMock).toHaveBeenCalledWith(
+        expect.any(String),
+        'run-terminal-status',
+        expect.objectContaining({
+          task_id: 'task-terminal-status',
+          status: 'failed',
+          session_id: 'session-terminal-status',
+          success: false,
+        }),
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('adds expected ignored-path files to changedFiles even when git diff is empty', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-expected-files-'));
+    safeQueryMock.mockImplementationOnce(async ({ options }: any) => {
+      const outputPath = path.join(options.cwd, '.ai', 'tmp', 'web-live-demo.txt');
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, 'created by worker');
+      return {
+        messages: [
+          makeAssistantMessage('Wrote the expected ignored-path file.'),
+          { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+        ],
+        exitError: null,
+      };
+    });
+
+    try {
+      const result = await spawnWorker({
+        taskId: 'task-expected-files',
+        model: 'kimi-for-coding',
+        provider: 'kimi',
+        prompt: 'Write the ignored-path file.',
+        cwd,
+        worktree: false,
+        contextInputs: [],
+        discussThreshold: 0.7,
+        maxTurns: 4,
+        taskDescription: 'Write the ignored-path file.',
+        expectedFiles: ['.ai/tmp/web-live-demo.txt'],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.changedFiles).toContain('.ai/tmp/web-live-demo.txt');
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
@@ -639,6 +831,7 @@ describe('dispatcher preflight fallback', () => {
     getModelFallbackRoutesMock.mockReturnValue([]);
     loadConfigMock.mockReturnValue({ fallback_worker: 'glm-5-turbo', tiers: { executor: { fallback: 'glm-5-turbo' } } });
     createWorktreeMock.mockResolvedValue({ path: '/tmp/worktree-preflight', branch: 'worker-task-a' });
+    getWorktreeDiffMock.mockResolvedValue({ files: [] });
     getRegistryMock.mockReturnValue({
       get: (modelId: string) => ({ provider: modelId === 'qwen3-max' ? 'qwen' : 'glm-cn' }),
       getClaudeTier: (tier: string) => ({ id: tier === 'sonnet' ? 'claude-sonnet-4-6' : 'claude-opus-4-6' }),
@@ -650,19 +843,12 @@ describe('dispatcher preflight fallback', () => {
     vi.restoreAllMocks();
   });
 
-  it('preflight skips unrunnable fallback candidates and dispatches a runnable executor model', async () => {
+  it('preflight blocks unhealthy configured routes instead of switching executor model', async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-preflight-'));
     quickPingMock.mockImplementation(async (model: string) => {
       if (model === 'glm-5-turbo') return { ok: false, ms: 1, error: 'HTTP 401' };
       if (model === 'kimi-for-coding') return { ok: false, ms: 1, error: 'BRIDGE_REQUIRED' };
       return { ok: true, ms: 1 };
-    });
-    resolveFallbackMock.mockImplementation((_failedModel: string, _errorType: string, _task: unknown, _config: unknown, _registry: unknown, options?: { excludeModels?: string[] }) => (
-      options?.excludeModels?.includes('kimi-for-coding') ? 'qwen3-max' : 'kimi-for-coding'
-    ));
-    safeQueryMock.mockResolvedValueOnce({
-      messages: [makeSuccessMessage()],
-      exitError: null,
     });
 
     const plan = {
@@ -689,11 +875,11 @@ describe('dispatcher preflight fallback', () => {
 
     try {
       const result = await dispatchBatch(plan as any, getRegistryMock(), { runId: 'run-preflight', round: 1 }, { recordBudget: false });
-      expect(result.worker_results[0]?.model).toBe('qwen3-max');
-      expect(safeQueryMock).toHaveBeenCalledWith(expect.objectContaining({
-        options: expect.objectContaining({ model: 'qwen3-max' }),
-      }));
-      expect(resolveFallbackMock).toHaveBeenCalledTimes(2);
+      expect(result.worker_results[0]?.success).toBe(false);
+      expect(result.worker_results[0]?.model).toBe('glm-5-turbo');
+      expect(result.worker_results[0]?.output[0]?.content).toContain('Executor preflight failed for configured route');
+      expect(safeQueryMock).not.toHaveBeenCalled();
+      expect(resolveFallbackMock).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

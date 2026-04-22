@@ -234,7 +234,8 @@
   .model-card.active { border-color: var(--accent); background: var(--accent-soft); }
   .model-card.hidden-model { opacity: 0.45; }
   .model-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-  .model-name { font-size: 13px; font-weight: 700; }
+  .model-name { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .hidden-badge { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); border: 1px solid rgba(245,158,11,0.25); }
   .model-provider { font-size: 11px; color: var(--text-muted); }
   .model-meta { display: flex; flex-wrap: wrap; gap: 6px; }
   .meta-chip {
@@ -354,7 +355,7 @@
     </div>
     <div class="step-list" id="sidebarSteps"></div>
     <div class="sidebar-footer">
-      Hive v2.1.4 · 配置文件保存于 ~/.hive/config.json
+      Hive Config UI · 全局配置需人工复核后手动更新 ~/.hive/config.json
     </div>
   </aside>
 

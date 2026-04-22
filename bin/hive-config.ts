@@ -14,6 +14,11 @@ import { getAvailableModels, pullModels } from '../orchestrator/model-sync.js';
 
 type JsonRecord = Record<string, unknown>;
 
+function assertGlobalConfigIsManualOnly(useLocal: boolean): void {
+  if (useLocal) return;
+  throw new Error('Refusing to auto-modify ~/.hive/config.json. Global config is human-reviewed only; edit the file manually after review, or use --local.');
+}
+
 function parseValue(raw: string): unknown {
   if (raw === 'true') return true;
   if (raw === 'false') return false;
@@ -75,6 +80,7 @@ function showConfig(cwd: string): void {
 }
 
 function setConfig(cwd: string, keyPath: string, rawValue: string, useLocal: boolean): void {
+  assertGlobalConfigIsManualOnly(useLocal);
   const { global: globalPath, local: localPath } = getConfigSource(cwd);
   const targetPath = useLocal
     ? (localPath || path.join(cwd, '.hive', 'config.json'))
@@ -86,6 +92,7 @@ function setConfig(cwd: string, keyPath: string, rawValue: string, useLocal: boo
 }
 
 function setOverride(cwd: string, taskId: string, model: string, useLocal: boolean): void {
+  assertGlobalConfigIsManualOnly(useLocal);
   const { global: globalPath, local: localPath } = getConfigSource(cwd);
   const targetPath = useLocal
     ? (localPath || path.join(cwd, '.hive', 'config.json'))
@@ -99,6 +106,7 @@ function setOverride(cwd: string, taskId: string, model: string, useLocal: boole
 }
 
 function resetConfig(cwd: string, useLocal: boolean, confirmed: boolean): void {
+  assertGlobalConfigIsManualOnly(useLocal);
   const { global: globalPath, local: localPath } = getConfigSource(cwd);
   const targetPath = useLocal ? localPath : globalPath;
   if (!targetPath || !fs.existsSync(targetPath)) {
@@ -158,6 +166,15 @@ async function main(): Promise<void> {
     case 'reset':
       resetConfig(cwd, useLocal, confirmed);
       return;
+    case 'test': {
+      const { buildConfigPreflightReport, renderConfigPreflightReport } = await import('../orchestrator/config-preflight.js');
+      const report = await buildConfigPreflightReport(cwd);
+      console.log(renderConfigPreflightReport(report));
+      const hasFailures = report.models.some((row) => row.resolution_error || row.ping_ok === false)
+        || report.stage_errors.length > 0
+        || report.probes.some((probe) => !probe.ok);
+      process.exit(hasFailures ? 1 : 0);
+    }
     case 'setup': {
       const { spawnSync } = await import('child_process');
       const { fileURLToPath } = await import('url');
@@ -194,8 +211,9 @@ async function main(): Promise<void> {
         '  hive-config override <task-id> <model> [--local]',
         '  hive-config models',
         '  hive-config pull-models',
+        '  hive-config test',
         '  hive-config reset [--local] --yes',
-        '  hive-config setup [--port 3456] [--no-open]',
+        '  hive-config setup [--port <port>] [--no-open]  # no --port => auto-pick',
       ].join('\n'));
   }
 }

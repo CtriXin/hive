@@ -18,6 +18,12 @@ function makeRepo(): string {
   return dir;
 }
 
+function makeRepoOnBranch(branchName: string): string {
+  const repo = makeRepo();
+  execSync(`git checkout -b "${branchName}"`, { cwd: repo, stdio: 'ignore' });
+  return repo;
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -51,6 +57,18 @@ describe('worktree merge', () => {
 
     expect(result).toEqual({ merged: true });
     expect(fs.readFileSync(path.join(repo, 'docs', 'final.md'), 'utf-8')).toBe('# Final\n');
+  });
+
+  it('defaults to the current branch when the repo does not use main', () => {
+    const repo = makeRepoOnBranch('trunk');
+    const worktree = createWorktree({ cwd: repo, name: 'task-trunk' });
+
+    execSync('git rev-parse --verify trunk', { cwd: worktree.path, stdio: 'ignore' });
+    fs.writeFileSync(path.join(worktree.path, 'TRUNK.txt'), 'ok\n', 'utf-8');
+
+    const diff = getWorktreeDiff(worktree.path);
+    expect(diff.files).toEqual(['TRUNK.txt']);
+    expect(diff.baseRef).toBe('trunk');
   });
 
   it('keeps untouched copied untracked files out of the reported diff', () => {

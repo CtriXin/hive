@@ -56,6 +56,11 @@ export const DEFAULT_CONFIG: HiveConfig = {
   model_channel_map: {},
 };
 
+interface BudgetRuntimeState {
+  current_spent_usd?: number;
+  last_reset?: string;
+}
+
 type BlacklistConfig = Pick<HiveConfig, 'model_blacklist'> | undefined;
 
 function escapeRegex(pattern: string): string {
@@ -214,6 +219,34 @@ export function writeJsonSafe(filePath: string, value: unknown): void {
   jsonFileCache.set(filePath, { mtimeMs: getFileMtimeMs(filePath), value });
 }
 
+function budgetRuntimeStatePath(cwd: string): string {
+  const { global: globalPath } = getConfigSource(cwd);
+  return path.join(path.dirname(globalPath), 'budget-state.json');
+}
+
+function loadBudgetRuntimeState(cwd: string): BudgetRuntimeState {
+  return readJsonSafe<BudgetRuntimeState>(budgetRuntimeStatePath(cwd));
+}
+
+function applyBudgetRuntimeState(config: HiveConfig, cwd: string): HiveConfig {
+  const runtime = loadBudgetRuntimeState(cwd);
+  const merged = deepMerge<HiveConfig>(config);
+  merged.budget = {
+    ...merged.budget,
+    current_spent_usd: typeof runtime.current_spent_usd === 'number'
+      ? runtime.current_spent_usd
+      : merged.budget.current_spent_usd,
+    last_reset: typeof runtime.last_reset === 'string'
+      ? runtime.last_reset
+      : merged.budget.last_reset,
+  };
+  return merged;
+}
+
+function persistBudgetRuntimeState(cwd: string, state: BudgetRuntimeState): void {
+  writeJsonSafe(budgetRuntimeStatePath(cwd), state);
+}
+
 export function deepMerge<T>(...sources: Array<Partial<T>>): T {
   const result: Record<string, unknown> = {};
 
@@ -306,7 +339,7 @@ export function loadConfig(cwd: string = process.cwd()): HiveConfig {
   merged.channel_blacklist = normalizeChannelBlacklist(merged.channel_blacklist);
   merged.model_channel_map = normalizeModelChannelMap(merged.model_channel_map);
 
-  return merged;
+  return applyBudgetRuntimeState(merged, cwd);
 }
 
 /**
@@ -462,16 +495,19 @@ export function getBudgetStatus(config: HiveConfig): BudgetStatus | null {
 }
 
 /**
- * Record spending and write back to global config.
+ * Record spending in a separate runtime state file.
+ * Global ~/.hive/config.json stays human-reviewed and is never auto-mutated.
  * Auto-resets on budget.reset_day if month has changed.
  */
 export function recordSpending(cwd: string, amountUsd: number): BudgetStatus | null {
   if (amountUsd <= 0) {
     return getBudgetStatus(loadConfig(cwd));
   }
-  const { global: globalPath } = getConfigSource(cwd);
-  const raw = readJsonSafe<HiveConfig>(globalPath);
-  const budget = raw.budget || DEFAULT_CONFIG.budget;
+  const config = loadConfig(cwd);
+  const budget = {
+    ...DEFAULT_CONFIG.budget,
+    ...config.budget,
+  };
 
   // Auto-reset: if today >= reset_day and last_reset is a different month
   const now = new Date();
@@ -486,9 +522,14 @@ export function recordSpending(cwd: string, amountUsd: number): BudgetStatus | n
   }
 
   budget.current_spent_usd = (budget.current_spent_usd || 0) + amountUsd;
-  raw.budget = budget;
-  writeJsonSafe(globalPath, raw);
-  return getBudgetStatus(loadConfig(cwd));
+  persistBudgetRuntimeState(cwd, {
+    current_spent_usd: budget.current_spent_usd,
+    last_reset: budget.last_reset,
+  });
+  return getBudgetStatus({
+    ...config,
+    budget,
+  });
 }
 
 export function resolveFallback(

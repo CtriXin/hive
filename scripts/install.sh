@@ -13,7 +13,7 @@ warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 err()  { echo -e "${RED}✗${NC} $1"; }
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " Hive Installer v2.0.0"
+echo " Hive Installer"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
@@ -42,6 +42,15 @@ echo ""
 echo "▶ Building TypeScript..."
 npm run build 2>&1 | tail -3
 ok "Build complete"
+
+# ── Global CLI Registration ──────────────────────────
+echo ""
+echo "▶ Registering global CLI commands..."
+if bash "$HIVE_DIR/scripts/register-global-cli.sh" "$HIVE_DIR"; then
+  ok "Global commands ready: hive, hive-config"
+else
+  warn "Global CLI registration failed (non-fatal). Use $HIVE_DIR/bin/hive for now."
+fi
 
 # ── Step 4: MMS model-routes.json check ──────────────
 echo ""
@@ -114,12 +123,18 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " Installation complete!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo " Hive Config UI:  npx hive-config setup"
-echo " MCP server:      npm run start:mcp"
-echo " CLI:             npx hive"
-echo " Config CLI:      npx hive-config"
+echo " Ready:"
+echo "   1. Configure models:  hive-config setup"
+echo "   2. Verify config:     hive-config test"
+echo "   3. Open project web:  cd /your/project && hive web"
 echo ""
-echo " MCP config (add to Claude settings.json):"
+echo " Install:"
+echo "   location:  $HIVE_DIR"
+echo "   cli:       hive"
+echo "   config:    hive-config"
+echo "   mcp:       node $HIVE_DIR/dist/mcp-server/index.js"
+echo ""
+echo " Claude MCP:"
 echo "   {"
 echo "     \"mcpServers\": {"
 echo "       \"hive\": {"
@@ -128,4 +143,10 @@ echo "         \"args\": [\"$HIVE_DIR/dist/mcp-server/index.js\"]"
 echo "       }"
 echo "     }"
 echo "   }"
+echo ""
+echo " Note:"
+echo "   ~/.hive/config.json is human-reviewed only."
+echo "   hive-config setup exports JSON for manual review; it does not auto-write global config."
+echo "   hive-config test shows tier -> model -> channel -> route"
+echo "   and runs a minimal runtime smoke check."
 echo ""

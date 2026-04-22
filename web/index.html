@@ -1835,6 +1835,15 @@
         };
       });
     }
+    const readonly = target && !target.writable;
+    if (el.saveGlobalConfigBtn) {
+      el.saveGlobalConfigBtn.disabled = Boolean(readonly);
+      el.saveGlobalConfigBtn.textContent = readonly ? 'Global 仅读' : '保存配置';
+    }
+    if (el.resetGlobalConfigBtn) {
+      el.resetGlobalConfigBtn.disabled = Boolean(readonly);
+      el.resetGlobalConfigBtn.textContent = readonly ? '不可重置' : '恢复默认';
+    }
   }
 
   function renderDoctor() {
@@ -2001,6 +2010,10 @@
   }
 
   async function saveGlobalConfig() {
+    if (state.globalConfigTarget && !state.globalConfigTarget.writable) {
+      showNotice(state.globalConfigTarget.note || 'Global ~/.hive/config.json 需要人工复核，Web 不直接写入。', 'warn');
+      return;
+    }
     try {
       const tiersPatch = {};
       el.globalTiersEditor.querySelectorAll('[data-tier-key]').forEach(sel => {
@@ -2041,6 +2054,10 @@
   }
 
   async function resetGlobalConfig() {
+    if (state.globalConfigTarget && !state.globalConfigTarget.writable) {
+      showNotice(state.globalConfigTarget.note || 'Global ~/.hive/config.json 需要人工复核，Web 不直接写入。', 'warn');
+      return;
+    }
     if (!confirm('确定恢复默认配置？当前配置将被覆盖。')) return;
     try {
       const data = await api(withSettingsScope(withCwd('/api/global-config/reset')), { method: 'POST' });

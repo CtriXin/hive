@@ -56,8 +56,8 @@ const { createWorktree, removeWorktree, listWorktrees } = require('./dist/orches
 try {
   const wt = createWorktree({ name: '$WORKER_NAME', branch: '$BRANCH_NAME' });
   console.log('Created: ' + wt.name + ' @ ' + wt.path);
-  removeWorktree('$WORKER_NAME');
-  console.log('Removed: $WORKER_NAME');
+  removeWorktree(wt.name, true);
+  console.log('Removed: ' + wt.name);
 } catch(e) {
   console.error('Error: ' + e.message);
   process.exit(1);

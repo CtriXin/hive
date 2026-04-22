@@ -108,6 +108,34 @@ describe('buildSdkEnv — ANTHROPIC_BASE_URL normalization', () => {
       expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
     });
 
+    it('routes non-gateway non-claude families through direct proxy mode on OpenAI-compatible routes', () => {
+      const cases = ['kimi-for-coding', 'glm-5-turbo', 'qwen3-max', 'MiniMax-M2.5'];
+      process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
+
+      for (const modelId of cases) {
+        const env = buildSdkEnv(modelId, `https://relay.example.com/${modelId}/openapi/v1`, 'key');
+        expect(env.HIVE_MODEL_PROXY_MODE).toBe('direct');
+        expect(env.HIVE_MODEL_PROXY_BASE_URL).toBe(`https://relay.example.com/${modelId}/openapi`);
+        expect(env.HIVE_MODEL_PROXY_API_KEY).toBe('key');
+        expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+      }
+    });
+
+    it('routes gateway families through openai-chat bridge mode on OpenAI-compatible routes', () => {
+      const cases = ['gpt-5.4', 'gemini-2.5-pro', 'o3-mini'];
+      process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/v1';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'tok';
+
+      for (const modelId of cases) {
+        const env = buildSdkEnv(modelId, `https://relay.example.com/${modelId}/openapi/v1`, 'key');
+        expect(env.HIVE_MODEL_PROXY_MODE).toBe('openai-chat');
+        expect(env.HIVE_MODEL_PROXY_BASE_URL).toBe(`https://relay.example.com/${modelId}/openapi`);
+        expect(env.HIVE_MODEL_PROXY_API_KEY).toBe('key');
+        expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+      }
+    });
+
     it('does not override explicit anthropic route with inherited gateway env', () => {
       process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com/openapi/v1';
       process.env.ANTHROPIC_AUTH_TOKEN = 'tok';

@@ -13,7 +13,7 @@ import { reviewCascade } from '../orchestrator/reviewer.js';
 import { ModelRegistry } from '../orchestrator/model-registry.js';
 import { checkProviderHealth, getAllProviders, resolveProviderForModel, quickPing } from '../orchestrator/provider-resolver.js';
 import { isMmsAvailable, loadMmsRoutes } from '../orchestrator/mms-routes-loader.js';
-import { getBudgetStatus, getBudgetWarning, loadConfig, recordSpending, resolveTierModel, resolveFallback } from '../orchestrator/hive-config.js';
+import { getBudgetStatus, getBudgetWarning, loadConfig, recordSpending, resolveTierModel } from '../orchestrator/hive-config.js';
 import { saveRoundScore } from '../orchestrator/score-history.js';
 import { saveRunPlan, saveRunResult, saveRunSpec, saveRunState } from '../orchestrator/run-store.js';
 import { selectPromptPolicy } from '../orchestrator/prompt-policy.js';
@@ -189,6 +189,18 @@ function validateExecutePlanArgs(planJson?: string, planPath?: string): string |
   return null;
 }
 
+export function normalizeExecutePlanArg(value?: string): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+export function validateNormalizedExecutePlanArgs(planJson?: string, planPath?: string): string | null {
+  return validateExecutePlanArgs(planJson, planPath);
+}
+
 function resolveExecutePlanFromPayload(payload: unknown): { plan: TaskPlan | null; error?: string } {
   const runnablePlan = extractRunnableTaskPlan(payload);
   if (!runnablePlan) {
@@ -206,11 +218,18 @@ function resolveExecutePlanFromPayload(payload: unknown): { plan: TaskPlan | nul
   return { plan: runnablePlan };
 }
 
-function loadExecutePlanFromJson(planJson: string): { plan: TaskPlan | null; error?: string } {
+export function loadExecutePlanFromJson(planJson: string): { plan: TaskPlan | null; error?: string } {
   try {
     const parsed = JSON.parse(planJson);
     return resolveExecutePlanFromPayload(parsed);
   } catch (error) {
+    const resolvedPath = path.isAbsolute(planJson) ? planJson : path.resolve(process.cwd(), planJson);
+    if (fs.existsSync(resolvedPath)) {
+      return {
+        plan: null,
+        error: `execute_plan plan_json looks like a file path (${planJson}). Pass it as plan_path instead.`,
+      };
+    }
     const message = error instanceof Error ? error.message : String(error);
     return {
       plan: null,
@@ -645,7 +664,9 @@ server.tool(
   },
   async ({ plan_json, plan_path, report_language, resume_plan_id }) => {
     const effectiveCwd = process.cwd();
-    const argError = validateExecutePlanArgs(plan_json, plan_path);
+    const normalizedPlanJson = normalizeExecutePlanArg(plan_json);
+    const normalizedPlanPath = normalizeExecutePlanArg(plan_path);
+    const argError = validateExecutePlanArgs(normalizedPlanJson, normalizedPlanPath);
     if (argError) {
       return {
         content: [{ type: 'text', text: argError }],
@@ -654,8 +675,8 @@ server.tool(
     }
 
     let plan: TaskPlan;
-    if (plan_json) {
-      const resolved = loadExecutePlanFromJson(plan_json);
+    if (normalizedPlanJson) {
+      const resolved = loadExecutePlanFromJson(normalizedPlanJson);
       if (!resolved.plan) {
         return {
           content: [{ type: 'text', text: resolved.error || 'execute_plan could not load plan_json.' }],
@@ -663,11 +684,11 @@ server.tool(
         };
       }
       plan = resolved.plan;
-    } else if (plan_path) {
-      const resolved = loadExecutePlanFromPath(effectiveCwd, plan_path);
+    } else if (normalizedPlanPath) {
+      const resolved = loadExecutePlanFromPath(effectiveCwd, normalizedPlanPath);
       if (!resolved.plan) {
         return {
-          content: [{ type: 'text', text: resolved.error || `execute_plan could not load ${plan_path}.` }],
+          content: [{ type: 'text', text: resolved.error || `execute_plan could not load ${normalizedPlanPath}.` }],
           isError: true,
         };
       }
@@ -921,31 +942,30 @@ server.tool(
         : undefined;
 
       // Preflight: quickPing before spawning
-      let actualModel = model;
-      let preflightFallback: string | null = null;
       const ping = await quickPing(model, 3000, provider);
-      if (!ping.ok && !benchmark_no_fallback) {
-        const registry = new ModelRegistry();
-        const config = loadConfig(cwd || process.cwd());
-        const fb = resolveFallback(model, 'server_error', {
-          id: task_id, description: prompt.slice(0, 200), complexity: 'medium',
-          category: 'general', assigned_model: model, assignment_reason: '',
-          estimated_files: [], acceptance_criteria: [],
-          discuss_threshold: discuss_threshold, depends_on: [], review_scale: 'auto',
-        }, config, registry);
-        console.log(`  🔄 Preflight: ${model} unhealthy (${ping.error}), using ${fb}`);
-        preflightFallback = `${model} → ${fb} (${ping.error})`;
-        actualModel = fb;
-      } else if (!ping.ok && benchmark_no_fallback) {
-        console.log(`  ⛔ Preflight failed in benchmark no-fallback mode: ${model} (${ping.error})`);
+      if (!ping.ok) {
+        console.log(`  ⛔ Preflight blocked dispatch_single: ${model} (${ping.error || 'health check failed'})`);
+        return {
+          content: [{
+            type: 'text',
+            text: [
+              '## dispatch_single preflight failed',
+              '',
+              `**model**: ${model}`,
+              `**provider**: ${provider || '(configured route)'}`,
+              `**error**: ${ping.error || 'health check failed'}`,
+              '**note**: Hive executor fallback is disabled. Fix the configured route and retry.',
+            ].join('\n'),
+          }],
+          isError: true,
+        };
       }
 
       const result = await spawnWorker({
         taskId: task_id,
-        model: actualModel,
+        model,
         provider: provider || '',
         benchmarkRoutingPolicy,
-        assignedModel: model,
         prompt,
         cwd: cwd || process.cwd(),
         worktree: worktree ?? false,
@@ -977,7 +997,7 @@ server.tool(
         benchmark_no_fallback,
         preflight_ping_ok: ping.ok,
         runId,
-        preflight_fallback: preflightFallback,
+        preflight_fallback: null,
       };
       const artifactPath = writeMcpJsonArtifact(
         cwd || process.cwd(),

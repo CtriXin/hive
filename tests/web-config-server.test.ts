@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { createConfigServer, loadMmsData } from '../web-config/server.js';
+import { createConfigServer, loadMmsData, startConfigServer } from '../web-config/server.js';
 
 const TMP_ROOT = path.join(os.tmpdir(), 'hive-web-config-server-test');
 const CONFIG_PATH = path.join(TMP_ROOT, '.hive', 'config.json');
@@ -110,7 +110,7 @@ describe('web-config server', () => {
     expect(html).toContain('Hive 配置中心');
   });
 
-  it('reads and writes config through api', async () => {
+  it('reads config and refuses to auto-write global config through api', async () => {
     const before = await fetch(`${baseUrl}/api/config`).then((res) => res.json());
     expect(before.path).toBe(CONFIG_PATH);
     expect(before.config.tiers.planner.model).toBe('kimi-for-coding');
@@ -126,20 +126,23 @@ describe('web-config server', () => {
       }),
     });
 
-    expect(save.status).toBe(200);
+    expect(save.status).toBe(403);
+    await expect(save.json()).resolves.toMatchObject({
+      path: CONFIG_PATH,
+    });
     const saved = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')) as Record<string, unknown>;
-    expect((saved.tiers as { planner: { model: string } }).planner.model).toBe('gpt-5.4');
+    expect((saved.tiers as { planner: { model: string } }).planner.model).toBe('kimi-for-coding');
   });
 
-  it('returns 400 on malformed json body', async () => {
+  it('still refuses write requests even if body is malformed', async () => {
     const res = await fetch(`${baseUrl}/api/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{bad json',
     });
 
-    expect(res.status).toBe(400);
-    await expect(res.json()).resolves.toEqual({ error: 'Invalid JSON body' });
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ path: CONFIG_PATH });
   });
 
   it('returns api data with mms metadata', async () => {
@@ -150,5 +153,31 @@ describe('web-config server', () => {
     expect(data.mms.path).toBe(MMS_ROUTES_PATH);
     expect(data.mms.models).toHaveLength(2);
     expect(data.capabilities.models).toBeTypeOf('object');
+  });
+
+  it('startConfigServer auto-picks an available port when none is specified', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const autoServer = await startConfigServer({
+      configPath: CONFIG_PATH,
+      mmsRoutesPath: MMS_ROUTES_PATH,
+      rootDir: process.cwd(),
+      staticDir: path.join(process.cwd(), 'web-config'),
+      noOpen: true,
+    });
+
+    try {
+      const addr = autoServer.address() as AddressInfo | null;
+      expect(addr && addr.port).toBeGreaterThan(0);
+      expect(logSpy.mock.calls.some((call) => String(call[0]).includes('http://127.0.0.1:'))).toBe(true);
+      expect(logSpy.mock.calls.some((call) => String(call[0]).includes('Auto-selected'))).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        autoServer.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      logSpy.mockRestore();
+    }
   });
 });

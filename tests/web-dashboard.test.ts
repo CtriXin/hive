@@ -11,7 +11,7 @@ import {
   resetWebConfigPolicy,
   submitWebSteeringAction,
 } from '../orchestrator/web-dashboard.js';
-import { createDashboardServer } from '../orchestrator/web-dashboard-server.js';
+import { createDashboardServer, startDashboardServer } from '../orchestrator/web-dashboard-server.js';
 import { invalidateCache as invalidateMmsCache } from '../orchestrator/mms-routes-loader.js';
 
 const TMP_DIR = '/tmp/hive-web-dashboard-test';
@@ -843,7 +843,7 @@ describe('web-dashboard server', () => {
     expect((res.data as any).error).toBe('invalid json body');
   });
 
-  it('POST /api/config-policy/global persists isolated global config', async () => {
+  it('POST /api/config-policy/global is blocked because global config is manual-only', async () => {
     const server = createDashboardServer({ cwd: TMP_DIR });
     const res = await request(
       server,
@@ -851,13 +851,24 @@ describe('web-dashboard server', () => {
       '/api/config-policy/global',
       JSON.stringify({ patch: { planner: { model: 'qwen3-max', fallback: 'glm-5-turbo' } } }),
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
     const stored = JSON.parse(fs.readFileSync(path.join(GLOBAL_HOME, '.hive', 'config.json'), 'utf-8'));
-    expect(stored.tiers.planner.model).toBe('qwen3-max');
-    expect((res.data as any).save_result.path).toBe(path.join(GLOBAL_HOME, '.hive', 'config.json'));
+    expect(stored.tiers?.planner?.model).not.toBe('qwen3-max');
   });
 
-  it('POST /api/global-config persists model_blacklist and reflects it in model options', async () => {
+  it('GET /api/global-config marks global scope as read-only', async () => {
+    const server = createDashboardServer({ cwd: TMP_DIR });
+    const res = await request(
+      server,
+      'GET',
+      '/api/global-config',
+    );
+    expect(res.status).toBe(200);
+    expect((res.data as any).target.scope).toBe('global');
+    expect((res.data as any).target.writable).toBe(false);
+  });
+
+  it('POST /api/global-config blocks global model_blacklist writes', async () => {
     const server = createDashboardServer({ cwd: TMP_DIR });
     const saveRes = await request(
       server,
@@ -865,17 +876,17 @@ describe('web-dashboard server', () => {
       '/api/global-config',
       JSON.stringify({ patch: { model_blacklist: ['claude-*', ' claude-* '] } }),
     );
-    expect(saveRes.status).toBe(200);
+    expect(saveRes.status).toBe(403);
 
     const stored = JSON.parse(fs.readFileSync(path.join(GLOBAL_HOME, '.hive', 'config.json'), 'utf-8'));
-    expect(stored.model_blacklist).toEqual(['claude-*']);
+    expect(stored.model_blacklist).toBeUndefined();
 
     const modelRes = await request(createDashboardServer({ cwd: TMP_DIR }), 'GET', '/api/model-options');
     expect(modelRes.status).toBe(200);
-    expect((modelRes.data as any).models.some((model: any) => model.id.startsWith('claude-') && model.blacklisted)).toBe(true);
+    expect((modelRes.data as any).models.some((model: any) => model.id.startsWith('claude-') && model.blacklisted)).toBe(false);
   });
 
-  it('POST /api/global-config persists model_channel_map and reflects it in model routing', async () => {
+  it('POST /api/global-config blocks global model_channel_map writes', async () => {
     writeMmsRoutes({
       'gpt-5.4': {
         anthropic_base_url: 'http://82.156.121.141:4001',
@@ -902,20 +913,16 @@ describe('web-dashboard server', () => {
       '/api/global-config',
       JSON.stringify({ patch: { model_channel_map: { 'gpt-5.4': 'cpa' } } }),
     );
-    expect(saveRes.status).toBe(200);
+    expect(saveRes.status).toBe(403);
 
     const stored = JSON.parse(fs.readFileSync(path.join(GLOBAL_HOME, '.hive', 'config.json'), 'utf-8'));
-    expect(stored.model_channel_map).toEqual({ 'gpt-5.4': 'cpa' });
+    expect(stored.model_channel_map).toBeUndefined();
 
     const routingRes = await request(createDashboardServer({ cwd: TMP_DIR }), 'GET', '/api/model-routing');
     expect(routingRes.status).toBe(200);
     const row = (routingRes.data as any).routing.find((item: any) => item.model_id === 'gpt-5.4');
-    expect(row.effective_provider_id).toBe('us-cpa-local-codex');
-    expect(row.selection.mode).toBe('exact');
-    expect(row.available_channels.map((item: any) => item.provider_id)).toEqual(['xin', 'us-cpa-local-codex']);
-    expect(row.policy.pattern).toBe('gpt-5.4');
-    expect(row.policy.selector).toBe('cpa');
-    expect(row.policy.status).toBe('resolved');
+    expect(row.effective_provider_id).toBe('xin');
+    expect(row.selection.mode).not.toBe('exact');
   });
 
   it('POST /api/global-config?scope=project persists project model_channel_map without touching global config', async () => {
@@ -962,7 +969,7 @@ describe('web-dashboard server', () => {
     expect(row.effective_provider_id).toBe('us-cpa-local-codex');
   });
 
-  it('POST /api/global-config rejects ambiguous model_channel_map selectors', async () => {
+  it('POST /api/global-config rejects global writes before resolving selectors', async () => {
     writeMmsRoutes({
       'gpt-5.4': {
         anthropic_base_url: 'https://crs.adsconflux.xyz/openai',
@@ -987,8 +994,8 @@ describe('web-dashboard server', () => {
       '/api/global-config',
       JSON.stringify({ patch: { model_channel_map: { 'gpt-5.4': 'crs' } } }),
     );
-    expect(saveRes.status).toBe(400);
-    expect((saveRes.data as any).error).toContain('ambiguous');
+    expect(saveRes.status).toBe(403);
+    expect((saveRes.data as any).error).toContain('human-reviewed only');
   });
 
   it('GET /api/doctor returns report with current config and model diagnostics', async () => {
@@ -1066,5 +1073,24 @@ describe('web-dashboard server', () => {
         req.end();
       });
     });
+  });
+
+  it('startDashboardServer auto-picks an available port when none is specified', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const server = await startDashboardServer({ cwd: TMP_DIR });
+    try {
+      const addr = server.address() as { port: number } | null;
+      expect(addr && addr.port).toBeGreaterThan(0);
+      expect(logSpy.mock.calls.some((call) => String(call[0]).includes('http://127.0.0.1:'))).toBe(true);
+      expect(logSpy.mock.calls.some((call) => String(call[0]).includes('Auto-selected'))).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      logSpy.mockRestore();
+    }
   });
 });

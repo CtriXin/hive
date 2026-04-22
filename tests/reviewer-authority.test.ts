@@ -159,6 +159,49 @@ describe('reviewer authority path', () => {
     expect(result.findings.at(-1)?.issue).toContain('gpt-5.4 synthesis');
   });
 
+  it('fails closed when worker execution already failed before review starts', async () => {
+    const { runReview } = await import('../orchestrator/reviewer.js');
+    const registry = new ModelRegistry();
+    const task: SubTask = {
+      id: 'task-worker-failed',
+      description: 'Do not review failed worker output as pass',
+      category: 'docs',
+      complexity: 'low',
+      estimated_files: ['SMOKE.md'],
+      depends_on: [],
+      assigned_model: 'glm-5-turbo',
+      assignment_reason: 'test',
+      discuss_threshold: 0.7,
+    };
+    const plan: TaskPlan = {
+      id: 'plan-worker-failed',
+      goal: 'review failed worker boundary',
+      tasks: [task],
+      execution_order: [['task-worker-failed']],
+    };
+    const workerResult: WorkerResult = {
+      taskId: 'task-worker-failed',
+      model: 'glm-5-turbo',
+      worktreePath: '/tmp/authority-test',
+      branch: '',
+      sessionId: 'error-task-worker-failed',
+      output: [{ type: 'error', content: 'fatal: invalid reference: main', timestamp: Date.now() }],
+      changedFiles: [],
+      success: false,
+      duration_ms: 10,
+      token_usage: { input: 0, output: 0 },
+      discuss_triggered: false,
+      discuss_results: [],
+    };
+
+    const result = await runReview(workerResult, task, plan, registry);
+
+    expect(result.passed).toBe(false);
+    expect(result.failure_attribution).toBe('unknown');
+    expect(result.findings[0]?.issue).toContain('invalid reference: main');
+    expect(queryModelTextMock).not.toHaveBeenCalled();
+  });
+
   it('can tie-break to pass when the higher-confidence reviewer clears the change', async () => {
     queryModelTextMock
       .mockResolvedValueOnce({

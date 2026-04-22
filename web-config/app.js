@@ -12,7 +12,7 @@ const state = {
   // Step 2: model selection
   enabledModels: new Set(),
   hiddenModels: new Set(),
-  showHidden: true,
+  showHidden: (() => { try { return localStorage.getItem('hive-config-show-hidden') !== 'false'; } catch { return true; } })(),
   // Step 3: channel config
   familyDefaultChannel: {},
   modelChannelOverride: {},
@@ -287,7 +287,7 @@ function renderWelcome() {
           </div>
           <div style="display:flex;align-items:center;gap:10px;">
             <span style="width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent-hover);display:grid;place-items:center;font-size:11px;font-weight:700;flex-shrink:0;">4</span>
-            <span><strong>确认保存</strong> — 预览完整配置并写入 ~/.hive/config.json</span>
+            <span><strong>人工复核</strong> — 预览完整配置，导出 JSON，并在人工审查后手动更新 ~/.hive/config.json</span>
           </div>
         </div>
       </div>
@@ -377,7 +377,7 @@ function renderModelCard(m) {
       <div class="model-check"></div>
       <div class="model-card-head">
         <div style="min-width:0;">
-          <div class="model-name">${esc(m.display_name || m.id)}</div>
+          <div class="model-name">${esc(m.display_name || m.id)}${isHidden ? '<span class="hidden-badge">已隐藏</span>' : ''}</div>
           <div class="model-provider">${esc(m.provider || 'unknown')}</div>
         </div>
       </div>
@@ -401,8 +401,6 @@ function renderChannelConfig() {
   const enabled = getModels().filter((m) => state.enabledModels.has(m.id));
   const groups = groupByFamily(enabled);
   const familyOrder = ['kimi', 'qwen', 'glm', 'minimax', 'openai', 'gemini', 'mimo', 'claude', 'other'];
-
-  const hiddenEnabled = getModels().filter((m) => state.hiddenModels.has(m.id) && state.enabledModels.has(m.id));
 
   return `
     <div class="animate-in">
@@ -442,7 +440,7 @@ function renderChannelConfig() {
                     return `
                       <tr>
                         <td>
-                          <div style="font-weight:600;">${esc(m.display_name || m.id)}</div>
+                          <div style="font-weight:600;">${esc(m.display_name || m.id)} ${state.hiddenModels.has(m.id) ? '<span class="hidden-badge">已隐藏</span>' : ''}</div>
                           <div style="font-size:11px;color:var(--text-muted);">${esc(m.primary_provider)}</div>
                         </td>
                         <td>
@@ -472,31 +470,7 @@ function renderChannelConfig() {
         `;
       }).join('')}
 
-      ${hiddenEnabled.length > 0 ? `
-        <div class="unlock-section">
-          <div class="unlock-section-title">🔒 已启用但隐藏的模型</div>
-          <div class="text-secondary" style="font-size:12px;margin-bottom:10px;">这些模型已启用但被隐藏，需要配置通道才能进入正常轮替。</div>
-          <div style="display:flex;flex-direction:column;gap:8px;">
-            ${hiddenEnabled.map((m) => {
-              return `
-                <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;background:var(--surface);padding:10px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);">
-                  <div>
-                    <div style="font-weight:600;font-size:13px;">${esc(m.display_name || m.id)}</div>
-                    <div style="font-size:11px;color:var(--text-muted);">默认: ${esc(m.primary_provider)}</div>
-                  </div>
-                  <div style="display:flex;align-items:center;gap:10px;">
-                    <select class="select" style="width:160px;height:32px;" onchange="app.setModelChannel('${esc(m.id)}', this.value)">
-                      <option value="" ${!state.modelChannelOverride[m.id] ? 'selected' : ''}>${getFamilyDefaultChannel(getModelFamily(m.id)) ? `使用家族默认 (${esc(getFamilyDefaultChannel(getModelFamily(m.id)))})` : '使用 MMS 默认'}</option>
-                      ${providers.map((p) => `<option value="${esc(p.id)}" ${p.id === state.modelChannelOverride[m.id] ? 'selected' : ''}>${esc(p.display_name || p.id)}</option>`).join('')}
-                    </select>
-                    <button class="btn btn-sm btn-ok" style="height:32px;" onclick="app.unhideModel('${esc(m.id)}')">解锁显示</button>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
-        </div>
-      ` : ''}
+
     </div>
   `;
 }
@@ -646,16 +620,16 @@ function renderReview() {
       </details>
 
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <button class="btn btn-primary" style="height:44px;padding:0 28px;" onclick="app.saveConfig()" ${state.saved ? 'disabled' : ''}>
-          ${state.saved ? '✓ 已保存' : '💾 保存到 ~/.hive/config.json'}
+        <button class="btn btn-primary" style="height:44px;padding:0 28px;" onclick="app.saveConfig()">
+          ${state.saved ? '⬇ 重新导出待审 JSON' : '⬇ 导出待审 JSON'}
         </button>
         <button class="btn btn-ghost" onclick="app.downloadConfig()">下载 JSON</button>
       </div>
 
       ${state.saved ? `
         <div class="card mt-4" style="border-color:rgba(34,197,94,0.3);background:rgba(34,197,94,0.06);">
-          <div class="card-title" style="color:var(--ok);">配置已保存</div>
-          <div class="card-sub">文件已写入 ~/.hive/config.json。你可以关闭此页面，Hive 会在下次运行时读取新配置。</div>
+          <div class="card-title" style="color:var(--ok);">待审配置已导出</div>
+          <div class="card-sub">Hive 不会自动写入 ~/.hive/config.json。请先人工复核导出的 JSON，再手动更新该文件。</div>
         </div>
       ` : ''}
     </div>
@@ -689,7 +663,7 @@ function buildConfigOutput() {
     const family = getModelFamily(m.id);
     const override = state.modelChannelOverride[m.id];
     const familyDefault = state.familyDefaultChannel[family];
-    if (override && override !== m.primary_provider) {
+    if (override) {
       channelMap[m.id] = override;
     } else if (familyDefault && familyDefault !== m.primary_provider) {
       channelMap[m.id] = familyDefault;
@@ -707,6 +681,13 @@ function buildConfigOutput() {
   // model_hidden_list
   const allIds = models.map((m) => m.id);
   cfg.model_hidden_list = Array.from(state.hiddenModels).filter((id) => allIds.includes(id));
+
+  // Sync legacy fields so Hive backward-compat doesn't override tiers
+  cfg.orchestrator = cfg.tiers.planner.model || cfg.orchestrator || '';
+  cfg.high_tier = cfg.tiers.reviewer.final_review.model || cfg.high_tier || '';
+  cfg.review_tier = cfg.tiers.reviewer.arbitration.model || cfg.review_tier || '';
+  cfg.default_worker = cfg.tiers.executor.model || cfg.default_worker || '';
+  cfg.fallback_worker = cfg.tiers.executor.fallback || cfg.fallback_worker || '';
 
   return cfg;
 }
@@ -839,6 +820,7 @@ const app = {
   },
   toggleShowHidden() {
     state.showHidden = !state.showHidden;
+    try { localStorage.setItem('hive-config-show-hidden', String(state.showHidden)); } catch {}
     renderContent();
   },
   setFamilyEnabled(family, enabled) {
@@ -884,19 +866,10 @@ const app = {
     renderContent();
   },
   async saveConfig() {
-    const config = buildConfigOutput();
-    try {
-      await api('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config }),
-      });
-      state.saved = true;
-      showToast('配置已保存到 ~/.hive/config.json');
-      renderContent();
-    } catch (err) {
-      showToast('保存失败: ' + (err.message || String(err)), 'danger');
-    }
+    app.downloadConfig();
+    state.saved = true;
+    showToast('已导出配置。请人工复核后再手动更新 ~/.hive/config.json');
+    renderContent();
   },
   downloadConfig() {
     const config = buildConfigOutput();

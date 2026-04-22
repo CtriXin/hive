@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import {
   deepMerge, readJsonSafe, findRepoRoot, getBudgetWarning,
-  resolveFallback, DEFAULT_CONFIG,
+  resolveFallback, DEFAULT_CONFIG, loadConfig, recordSpending, writeJsonSafe,
 } from '../orchestrator/hive-config.js';
 import type { HiveConfig, SubTask } from '../orchestrator/types.js';
 
@@ -77,6 +79,46 @@ describe('hive-config (extended)', () => {
 
     it('returns null when limit is 0', () => {
       expect(getBudgetWarning(makeConfig({ monthly_limit_usd: 0 }))).toBeNull();
+    });
+
+    it('records runtime spending outside ~/.hive/config.json', () => {
+      const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-budget-state-'));
+      const oldHome = process.env.HOME;
+      const oldUser = process.env.USER;
+      const oldLogname = process.env.LOGNAME;
+      process.env.HOME = tmpHome;
+      delete process.env.USER;
+      delete process.env.LOGNAME;
+
+      try {
+        const configPath = path.join(tmpHome, '.hive', 'config.json');
+        writeJsonSafe(configPath, {
+          budget: {
+            ...DEFAULT_CONFIG.budget,
+            current_spent_usd: 1.25,
+            last_reset: new Date().toISOString(),
+            reset_day: 1,
+          },
+        });
+        const before = fs.readFileSync(configPath, 'utf-8');
+
+        const status = recordSpending(tmpHome, 2.5);
+
+        expect(status?.current_spent_usd).toBe(3.75);
+        expect(fs.readFileSync(configPath, 'utf-8')).toBe(before);
+
+        const runtimeState = JSON.parse(fs.readFileSync(path.join(tmpHome, '.hive', 'budget-state.json'), 'utf-8'));
+        expect(runtimeState.current_spent_usd).toBe(3.75);
+        expect(loadConfig(tmpHome).budget.current_spent_usd).toBe(3.75);
+      } finally {
+        if (oldHome === undefined) delete process.env.HOME;
+        else process.env.HOME = oldHome;
+        if (oldUser === undefined) delete process.env.USER;
+        else process.env.USER = oldUser;
+        if (oldLogname === undefined) delete process.env.LOGNAME;
+        else process.env.LOGNAME = oldLogname;
+        fs.rmSync(tmpHome, { recursive: true, force: true });
+      }
     });
   });
 

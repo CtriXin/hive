@@ -39,6 +39,15 @@ vi.mock('../orchestrator/mms-routes-loader.js', () => ({
   invalidateCache: () => {},
 }));
 
+const { recordRoutingIncidentMock, warnRoutingSelfHealMock } = vi.hoisted(() => ({
+  recordRoutingIncidentMock: vi.fn(),
+  warnRoutingSelfHealMock: vi.fn(),
+}));
+vi.mock('../orchestrator/routing-self-heal.js', () => ({
+  recordRoutingIncident: recordRoutingIncidentMock,
+  warnRoutingSelfHeal: warnRoutingSelfHealMock,
+}));
+
 import {
   quickPing,
   resolveProvider, resolveProviderForModel, reloadProviders,
@@ -68,6 +77,8 @@ describe('provider-resolver', () => {
     mockResolvedRoute = null;
     mockMmsRoutesTable = null;
     mockMmsChannels = [];
+    recordRoutingIncidentMock.mockReset();
+    warnRoutingSelfHealMock.mockReset();
     reloadProviders();
   });
 
@@ -98,6 +109,44 @@ describe('provider-resolver', () => {
       expect(result.baseUrl).toBe('http://127.0.0.1:4001/anthropic');
       expect(result.routeMode).toBe('direct');
       expect(result.providerId).toBe('glm-cn');
+    });
+
+    it('accepts OpenAI-compatible MMS routes for glm review workers', () => {
+      mockResolvedRoute = {
+        modelId: 'glm-5-turbo',
+        route: { anthropic_base_url: 'https://chat.adsconflux.xyz/openapi/v1', api_key: 'mms-key', provider_id: 'glm-cn' },
+      };
+      const result = resolveProvider('glm-cn', 'glm-5-turbo');
+      expect(result.baseUrl).toBe('https://chat.adsconflux.xyz/openapi/v1');
+      expect(result.routeMode).toBe('direct');
+      expect(result.providerId).toBe('glm-cn');
+    });
+
+    it('accepts OpenAI-compatible MMS routes for every non-claude family', () => {
+      const cases = [
+        ['glm-5-turbo', 'glm-cn'],
+        ['qwen3-max', 'qwen'],
+        ['kimi-for-coding', 'kimi'],
+        ['MiniMax-M2.5', 'minimax-cn'],
+        ['gpt-5.4', 'openai'],
+        ['gemini-2.5-pro', 'gemini'],
+        ['o3-mini', 'openai'],
+      ] as const;
+
+      for (const [modelId, providerId] of cases) {
+        mockResolvedRoute = {
+          modelId,
+          route: {
+            anthropic_base_url: `https://relay.example.com/${modelId}/openapi/v1`,
+            api_key: `key-${modelId}`,
+            provider_id: providerId,
+          },
+        };
+
+        const result = resolveProvider(providerId, modelId);
+        expect(result.baseUrl).toBe(`https://relay.example.com/${modelId}/openapi/v1`);
+        expect(result.providerId).toBe(providerId);
+      }
     });
 
     it('respects explicit provider pin by selecting matching fallback route', () => {
@@ -143,6 +192,60 @@ describe('provider-resolver', () => {
       expect(result.providerId).toBe('uscrsopenai');
     });
 
+    it('treats generic domestic provider pins as auto selection for MMS-routed models', () => {
+      const cases = [
+        ['glm-5-turbo', 'glm-cn', 'xin'],
+        ['qwen3.5-plus', 'qwen', 'xin'],
+        ['kimi-for-coding', 'kimi', 'xin'],
+        ['MiniMax-M2.5', 'minimax-cn', 'newapi-personal-tokyo'],
+      ] as const;
+
+      for (const [modelId, providerPin, actualProvider] of cases) {
+        mockResolvedRoute = {
+          modelId,
+          route: {
+            anthropic_base_url: `https://relay.example.com/${modelId}/openapi/v1`,
+            api_key: `key-${modelId}`,
+            provider_id: actualProvider,
+          },
+        };
+
+        const result = resolveProvider(providerPin, modelId);
+        expect(result.baseUrl).toBe(`https://relay.example.com/${modelId}/openapi/v1`);
+        expect(result.apiKey).toBe(`key-${modelId}`);
+        expect(result.providerId).toBe(actualProvider);
+      }
+    });
+
+    it('still honors configured model_channel_map when the caller passes a generic domestic provider pin', () => {
+      mockHiveConfig.model_channel_map = { 'glm-5-turbo': 'newapi-personal-tokyo' };
+      mockResolvedRoute = {
+        modelId: 'glm-5-turbo',
+        route: {
+          anthropic_base_url: 'http://82.156.121.141:4001',
+          api_key: 'primary-key',
+          provider_id: 'xin',
+          fallback_routes: [
+            {
+              anthropic_base_url: 'http://161.33.197.51:4001',
+              api_key: 'fallback-key',
+              provider_id: 'newapi-personal-tokyo',
+            },
+          ],
+        },
+      };
+      mockMmsRoutesTable = {
+        routes: {
+          'glm-5-turbo': mockResolvedRoute.route,
+        },
+      };
+
+      const result = resolveProvider('glm-cn', 'glm-5-turbo');
+      expect(result.baseUrl).toBe('http://161.33.197.51:4001');
+      expect(result.apiKey).toBe('fallback-key');
+      expect(result.providerId).toBe('newapi-personal-tokyo');
+    });
+
     it('respects configured model_channel_map when no explicit provider is passed', () => {
       mockHiveConfig.model_channel_map = { 'gpt-5.4': 'cpa' };
       mockResolvedRoute = {
@@ -165,6 +268,59 @@ describe('provider-resolver', () => {
       expect(result.baseUrl).toBe('http://127.0.0.1:18317/v1');
       expect(result.apiKey).toBe('cpa-key');
       expect(result.providerId).toBe('us-cpa-local-codex');
+    });
+
+    it('throws when configured selector no longer matches any MMS channel', () => {
+      mockHiveConfig.model_channel_map = { 'gpt-5.4': 'newapi-personal-tokyo' };
+      mockResolvedRoute = {
+        modelId: 'gpt-5.4',
+        route: {
+          anthropic_base_url: 'http://82.156.121.141:4001',
+          api_key: 'primary-key',
+          provider_id: 'xin',
+          fallback_routes: [],
+        },
+      };
+      mockMmsRoutesTable = {
+        routes: {
+          'gpt-5.4': mockResolvedRoute.route,
+        },
+      };
+
+      expect(() => resolveProvider('', 'gpt-5.4')).toThrow(
+        /did not match any current MMS channel.*Available providers: xin/i,
+      );
+      expect(recordRoutingIncidentMock).not.toHaveBeenCalled();
+      expect(warnRoutingSelfHealMock).not.toHaveBeenCalled();
+    });
+
+    it('throws when configured provider is not available for the model anymore', () => {
+      mockHiveConfig.model_channel_map = { 'gpt-5.4': 'cpa' };
+      mockResolvedRoute = {
+        modelId: 'gpt-5.4',
+        route: {
+          anthropic_base_url: 'http://82.156.121.141:4001',
+          api_key: 'primary-key',
+          provider_id: 'xin',
+          fallback_routes: [],
+        },
+      };
+      mockMmsRoutesTable = {
+        routes: {
+          'gpt-5.4': {
+            ...mockResolvedRoute.route,
+            fallback_routes: [
+              { anthropic_base_url: 'http://127.0.0.1:18317/v1', api_key: 'cpa-key', provider_id: 'us-cpa-local-codex' },
+            ],
+          },
+        },
+      };
+
+      expect(() => resolveProviderForModel('gpt-5.4')).toThrow(
+        /Configured provider "us-cpa-local-codex" is not available.*Available providers: xin/i,
+      );
+      expect(recordRoutingIncidentMock).not.toHaveBeenCalled();
+      expect(warnRoutingSelfHealMock).not.toHaveBeenCalled();
     });
 
     it('falls through to Level 2 when no MMS route', () => {
@@ -265,6 +421,80 @@ describe('provider-resolver', () => {
           }),
         }),
       );
+
+      fetchMock.mockRestore();
+    });
+
+    it('pings OpenAI-compatible domestic routes via /chat/completions', async () => {
+      mockResolvedRoute = {
+        modelId: 'glm-5-turbo',
+        route: {
+          anthropic_base_url: 'https://chat.adsconflux.xyz/openapi/v1',
+          api_key: 'glm-key',
+          provider_id: 'glm-cn',
+        },
+      };
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        status: 200,
+        ok: true,
+      } as any);
+
+      const result = await quickPing('glm-5-turbo', 1000, 'glm-cn');
+
+      expect(result.ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://chat.adsconflux.xyz/openapi/v1/chat/completions',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            Authorization: 'Bearer glm-key',
+            'x-api-key': 'glm-key',
+          }),
+        }),
+      );
+
+      fetchMock.mockRestore();
+    });
+
+    it('uses /chat/completions for every non-claude family when the route is OpenAI-compatible', async () => {
+      const cases = [
+        ['glm-5-turbo', 'glm-cn'],
+        ['qwen3-max', 'qwen'],
+        ['kimi-for-coding', 'kimi'],
+        ['MiniMax-M2.5', 'minimax-cn'],
+        ['gpt-5.4', 'openai'],
+        ['gemini-2.5-pro', 'gemini'],
+        ['o3-mini', 'openai'],
+      ] as const;
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        status: 200,
+        ok: true,
+      } as any);
+
+      for (const [modelId, providerId] of cases) {
+        fetchMock.mockClear();
+        mockResolvedRoute = {
+          modelId,
+          route: {
+            anthropic_base_url: `https://relay.example.com/${modelId}/openapi/v1`,
+            api_key: `key-${modelId}`,
+            provider_id: providerId,
+          },
+        };
+
+        const result = await quickPing(modelId, 1000, providerId);
+        expect(result.ok).toBe(true);
+        expect(fetchMock).toHaveBeenCalledWith(
+          `https://relay.example.com/${modelId}/openapi/v1/chat/completions`,
+          expect.objectContaining({
+            method: 'POST',
+            headers: expect.objectContaining({
+              Authorization: `Bearer key-${modelId}`,
+              'x-api-key': `key-${modelId}`,
+            }),
+          }),
+        );
+      }
 
       fetchMock.mockRestore();
     });

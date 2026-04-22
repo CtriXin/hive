@@ -45,6 +45,26 @@ function getWorktreesDir(cwd?: string): string {
   return path.join(getProjectRoot(cwd), WORKTREE_DIR);
 }
 
+function getCurrentWorktreeStartPoint(cwd?: string): string {
+  const gitOpts = cwd ? { encoding: 'utf-8' as const, cwd } : { encoding: 'utf-8' as const };
+  try {
+    const branch = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
+      ...gitOpts,
+      stdio: 'pipe',
+    }).trim();
+    if (branch) {
+      return branch;
+    }
+  } catch {
+    // Detached HEAD or symbolic ref unavailable — fall through to commit SHA.
+  }
+
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    ...gitOpts,
+    stdio: 'pipe',
+  }).trim();
+}
+
 export function listWorktrees(): WorktreeInfo[] {
   const root = getProjectRoot();
   const output = execSync('git worktree list --porcelain', { encoding: 'utf-8' });
@@ -230,10 +250,11 @@ export function createWorktree(
   const options = typeof optionsOrProjectRoot === 'string'
     ? { name: nameArg || 'worker', cwd: optionsOrProjectRoot }
     : optionsOrProjectRoot;
-  const { name, branch, fromBranch = 'main', cwd } = options;
+  const { name, branch, fromBranch, cwd } = options;
   const gitOpts = cwd ? { encoding: 'utf-8' as const, cwd } : { encoding: 'utf-8' as const };
   const worktreesDir = getWorktreesDir(cwd);
   const baseBranchName = branch || `worktree/${name}`;
+  const startPoint = fromBranch || getCurrentWorktreeStartPoint(cwd);
 
   // Ensure worktrees directory exists
   execSync(`mkdir -p "${worktreesDir}"`);
@@ -257,7 +278,7 @@ export function createWorktree(
   const worktreePath = path.join(worktreesDir, worktreeName);
 
   try {
-    execSync(`git worktree add -b "${branchName}" "${worktreePath}" "${fromBranch}"`, gitOpts);
+    execSync(`git worktree add -b "${branchName}" "${worktreePath}" "${startPoint}"`, gitOpts);
   } catch (error) {
     // If worktree already exists, just return info
     const existing = listWorktrees().find(w => w.name === worktreeName);
@@ -266,7 +287,7 @@ export function createWorktree(
   }
 
   // Copy untracked files into worktree so workers can see them
-  copyUntrackedFiles(cwd || process.cwd(), worktreePath, fromBranch);
+  copyUntrackedFiles(cwd || process.cwd(), worktreePath, startPoint);
 
   return {
     name: worktreeName,

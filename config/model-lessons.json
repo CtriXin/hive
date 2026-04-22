@@ -34,6 +34,17 @@
         "rule": "Reduce task scope or increase complexity rating",
         "severity": "medium",
         "created_at": "2026-04-13T15:31:49.394Z"
+      },
+      {
+        "id": "les-1776847823901-46gk",
+        "run_id": "plan-1776847597636",
+        "task_id": "task-a",
+        "category": "docs",
+        "failure_type": "partial_implementation",
+        "description": "Could not parse review response",
+        "rule": "Reduce task scope or increase complexity rating",
+        "severity": "medium",
+        "created_at": "2026-04-22T08:50:23.901Z"
       }
     ],
     "kimi-k2.5": [

@@ -42,6 +42,10 @@ export interface DashboardServerOptions {
   cwd: string;
 }
 
+function resolveListenPort(port?: number): number {
+  return Number.isFinite(port) && Number(port) > 0 ? Number(port) : 0;
+}
+
 function resolveWebDir(): string {
   const currentFile = fileURLToPath(import.meta.url);
   const currentDir = path.dirname(currentFile);
@@ -198,6 +202,10 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
 
     if (method === 'POST' && pathname === '/api/global-config') {
       const scope = resolveConfigScope(searchParams);
+      if (scope === 'global') {
+        sendError(res, 403, 'Refusing to auto-modify ~/.hive/config.json. Global config is human-reviewed only; use project scope here, or edit the file manually after review.');
+        return;
+      }
       const body = await readBody(req);
       let payload: { patch?: Record<string, unknown> } = {};
       try {
@@ -221,6 +229,10 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
 
     if (method === 'POST' && pathname === '/api/global-config/reset') {
       const scope = resolveConfigScope(searchParams);
+      if (scope === 'global') {
+        sendError(res, 403, 'Refusing to auto-modify ~/.hive/config.json. Global config is human-reviewed only; use project scope here, or edit the file manually after review.');
+        return;
+      }
       try {
         const surface = resetWebGlobalConfig(requestCwd, scope);
         sendJson(res, 200, surface);
@@ -294,6 +306,10 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
       }
 
       if (method === 'POST') {
+        if (scope === 'global') {
+          sendError(res, 403, 'Refusing to auto-modify ~/.hive/config.json. Global config is human-reviewed only; use project scope here, or edit the file manually after review.');
+          return;
+        }
         const body = await readBody(req);
         let payload: { patch?: RunModelPolicyPatch } = {};
         try {
@@ -316,6 +332,10 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
       }
 
       if (method === 'DELETE') {
+        if (scope === 'global') {
+          sendError(res, 403, 'Refusing to auto-modify ~/.hive/config.json. Global config is human-reviewed only; use project scope here, or edit the file manually after review.');
+          return;
+        }
         try {
           const policy = resetWebConfigPolicy(requestCwd, effectiveRunId, scope);
           sendJson(res, 200, { policy, save_result: consumePolicySaveResult() });
@@ -329,6 +349,10 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
     const configPolicyStageMatch = pathname.match(/^\/api\/config-policy\/(global|project)\/stages\/([^/]+)$/);
     if (method === 'DELETE' && configPolicyStageMatch) {
       const scope = configPolicyStageMatch[1] as 'global' | 'project';
+      if (scope === 'global') {
+        sendError(res, 403, 'Refusing to auto-modify ~/.hive/config.json. Global config is human-reviewed only; use project scope here, or edit the file manually after review.');
+        return;
+      }
       const stage = decodeURIComponent(configPolicyStageMatch[2]) as RunModelPolicyStage;
       const effectiveRunId = searchParams.get('runId') || listWebRuns(requestCwd)[0]?.id || '';
       try {
@@ -467,12 +491,24 @@ export function createDashboardServer(options: DashboardServerOptions): http.Ser
   return server;
 }
 
-export function startDashboardServer(options: DashboardServerOptions): http.Server {
-  const port = options.port || 3100;
+export async function startDashboardServer(options: DashboardServerOptions): Promise<http.Server> {
+  const requestedPort = resolveListenPort(options.port);
   const server = createDashboardServer(options);
-  server.listen(port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`Hive Web Dashboard running at http://localhost:${port}`);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(requestedPort, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
   });
+
+  const addr = server.address();
+  const actualPort = typeof addr === 'object' && addr ? addr.port : requestedPort;
+  // eslint-disable-next-line no-console
+  console.log(`Hive Web Dashboard running at http://127.0.0.1:${actualPort}`);
+  if (!requestedPort) {
+    // eslint-disable-next-line no-console
+    console.log('Auto-selected an available local port. Use --port <port> to pin one.');
+  }
   return server;
 }
