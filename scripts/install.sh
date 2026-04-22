@@ -51,7 +51,7 @@ if [ -n "${MMS_ROUTES_PATH:-}" ]; then
 fi
 
 if [ -f "$MMS_ROUTES" ]; then
-  ROUTE_COUNT=$(node -e "const r=JSON.parse(require('fs').readFileSync('$MMS_ROUTES','utf8')); console.log(Object.keys(r).length)" 2>/dev/null || echo "0")
+  ROUTE_COUNT=$(node -e "try{const raw=JSON.parse(require('fs').readFileSync('$MMS_ROUTES','utf8'));const routes=(raw&&typeof raw==='object'&&raw.routes&&typeof raw.routes==='object')?raw.routes:raw;console.log(Object.keys(routes||{}).length)}catch{console.log(0)}" 2>/dev/null)
   ok "model-routes.json found ($ROUTE_COUNT routes) at $MMS_ROUTES"
 else
   warn "model-routes.json not found at $MMS_ROUTES"
@@ -114,10 +114,10 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo " Installation complete!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo " Usage:"
-echo "   MCP server:  npm run start:mcp"
-echo "   CLI:         npx hive"
-echo "   Config:      npx hive-config"
+echo " Hive Config UI:  npx hive-config setup"
+echo " MCP server:      npm run start:mcp"
+echo " CLI:             npx hive"
+echo " Config CLI:      npx hive-config"
 echo ""
 echo " MCP config (add to Claude settings.json):"
 echo "   {"

@@ -1,6 +1,6 @@
 {
   "name": "hive",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "description": "Self-contained multi-model orchestration: Opus plans, domestic models execute, cascade reviews",
   "type": "module",
   "main": "dist/orchestrator/index.js",
@@ -13,6 +13,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start:mcp": "node dist/mcp-server/index.js",
+    "config": "node web-config/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:smoke": "bash scripts/smoke-test.sh",

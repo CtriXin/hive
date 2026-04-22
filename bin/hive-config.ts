@@ -158,6 +158,34 @@ async function main(): Promise<void> {
     case 'reset':
       resetConfig(cwd, useLocal, confirmed);
       return;
+    case 'setup': {
+      const { spawnSync } = await import('child_process');
+      const { fileURLToPath } = await import('url');
+      const path = await import('path');
+      const currentFile = fileURLToPath(import.meta.url);
+      const currentDir = path.dirname(currentFile);
+      const setupArgs = args.slice(1);
+      // Support both source (bin/) and compiled (dist/bin/) layouts
+      const candidates = [
+        path.join(currentDir, '..', '..', 'web-config', 'server.js'),
+        path.join(currentDir, '..', 'web-config', 'server.js'),
+      ];
+      const fs = await import('fs');
+      let serverPath = candidates.find((c) => fs.existsSync(c));
+      if (!serverPath) {
+        console.error('❌ web-config/server.js not found');
+        process.exit(1);
+      }
+      console.log('🐝 Starting Hive Config Server...');
+      const result = spawnSync(process.execPath, [serverPath, ...setupArgs], { stdio: 'inherit' });
+      if (result.error) {
+        throw result.error;
+      }
+      if ((result.status ?? 0) !== 0) {
+        process.exit(result.status ?? 1);
+      }
+      return;
+    }
     default:
       console.log([
         'Usage:',
@@ -167,6 +195,7 @@ async function main(): Promise<void> {
         '  hive-config models',
         '  hive-config pull-models',
         '  hive-config reset [--local] --yes',
+        '  hive-config setup [--port 3456] [--no-open]',
       ].join('\n'));
   }
 }

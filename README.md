@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh 
 Pin an exact release:
 
 ```bash
-HIVE_INSTALL_REF=v2.1.4 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+HIVE_INSTALL_REF=v2.1.5 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
 ```
 
 Bleeding edge from `main`:
@@ -44,6 +44,7 @@ HIVE_PURGE_CONFIG=1 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/ma
 
 > Installs to `~/.hive-orchestrator`. Custom location: `HIVE_HOME=/your/path curl -fsSL ... | bash`
 > Run the same install command again to upgrade.
+> 安装脚本不会自动常驻启动配置页面；需要时手动运行 `npx hive-config setup`。
 
 ## For AI Agents
 
@@ -60,7 +61,7 @@ UPGRADE:
   same command (defaults to latest stable tag)
 
 PIN:
-  HIVE_INSTALL_REF=v2.1.4 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
+  HIVE_INSTALL_REF=v2.1.5 curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/setup.sh | bash
 
 CLEAN:
   curl -fsSL https://raw.githubusercontent.com/CtriXin/hive/main/scripts/clean-install.sh | bash
@@ -97,6 +98,7 @@ CLI QUICK CHECK:
 - hive compact
 - hive shell
 - hive web --port 3100
+- hive-config setup
 
 MCP SETUP:
   claude mcp add hive -- node ~/.hive-orchestrator/dist/mcp-server/index.js
@@ -184,6 +186,12 @@ hive shell
 hive web --port 3100
 ```
 
+**Open the config UI**
+
+```bash
+npx hive-config setup
+```
+
 **Start the MCP server**
 
 ```bash
@@ -207,6 +215,7 @@ hive restore
 hive shell
 hive runs
 hive web --port 3100
+hive-config setup [--port 3456] [--no-open]
 ```
 
 ## Configuration and Policy Layers
@@ -237,7 +246,7 @@ Common configuration areas:
 
 ## Status
 
-`v2.1.4` is released. The current mainline includes the local Web decision surface, layered model policy controls, doctor/install improvements, and MMS route bridging fixes. Richer product features such as auth, websocket push, and broader multi-project workflow are still future work.
+`v2.1.5` is released. The current mainline includes the local Web decision surface, layered model policy controls, doctor/install improvements, MMS route bridging fixes, and a dedicated local Config UI. Richer product features such as auth, websocket push, and broader multi-project workflow are still future work.
 
 ## Contributing
 
@@ -320,6 +329,12 @@ hive shell
 hive web --port 3100
 ```
 
+**打开配置界面**
+
+```bash
+npx hive-config setup
+```
+
 **启动 MCP server**
 
 ```bash
@@ -341,6 +356,7 @@ hive restore
 hive shell
 hive runs
 hive web --port 3100
+hive-config setup [--port 3456] [--no-open]
 ```
 
 ### 配置与策略优先级
@@ -371,7 +387,7 @@ Web 里展示的是 `Run > Project > Global > Default`，运行时对 run 级改
 
 ### 当前状态
 
-`v2.1.4` 已正式发布。当前已经有本地 Web decision surface、分层模型策略控制、doctor / installer 改进，以及 MMS route bridging 修复；更完整的 auth、websocket push、广义 multi-project 产品化流程还属于后续工作。
+`v2.1.5` 已正式发布。当前已经有本地 Web decision surface、分层模型策略控制、doctor / installer 改进、MMS route bridging 修复，以及独立本地 Config UI；更完整的 auth、websocket push、广义 multi-project 产品化流程还属于后续工作。
 
 ### 参与贡献
 

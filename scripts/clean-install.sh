@@ -7,9 +7,9 @@ HIVE_HOME="${HIVE_HOME:-$HOME/.hive-orchestrator}"
 PURGE_CONFIG="${HIVE_PURGE_CONFIG:-0}"
 PURGE_RUNS="${HIVE_PURGE_RUNS:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_REF="v2.1.4"
+DEFAULT_REF="v2.1.5"
 if [ -f "$SCRIPT_DIR/../package.json" ]; then
-  DEFAULT_REF="v$(node -e "console.log(require('$SCRIPT_DIR/../package.json').version)" 2>/dev/null || echo 2.1.4)"
+  DEFAULT_REF="v$(node -e "console.log(require('$SCRIPT_DIR/../package.json').version)" 2>/dev/null || echo 2.1.5)"
 fi
 
 echo ""
