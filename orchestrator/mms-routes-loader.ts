@@ -45,73 +45,12 @@ interface RouteCache {
   table: MmsRouteTable;
 }
 
-function modelGatewayFamily(modelId: string): 'gpt' | 'gemini' | 'o-series' | null {
-  if (/^gpt-/i.test(modelId)) return 'gpt';
-  if (/^gemini-/i.test(modelId)) return 'gemini';
-  if (/^o[134]-/i.test(modelId)) return 'o-series';
-  return null;
-}
-
-function needsAnthropicShim(modelId: string): boolean {
-  return modelGatewayFamily(modelId) !== null;
-}
-
-function isOpenAIOnlyRoute(route: MmsRoute): boolean {
-  const raw = route.anthropic_base_url || '';
-  if (!raw) return false;
-
-  try {
-    const pathname = new URL(raw).pathname.toLowerCase();
-    return pathname === '/openai' || pathname.startsWith('/openai/');
-  } catch {
-    return /\/openai(?:\/|$)/i.test(raw);
-  }
-}
-
-function findAnthropicShimFallback(
-  table: MmsRouteTable,
-  targetModelId: string,
-): MmsRoute | null {
-  const family = modelGatewayFamily(targetModelId);
-  const candidates = Object.entries(table.routes)
-    .filter(([id, route]) => {
-      if (isOpenAIOnlyRoute(route)) return false;
-      if (!needsAnthropicShim(id)) return false;
-      return modelGatewayFamily(id) === family;
-    })
-    .sort((a, b) => (b[1].priority ?? 0) - (a[1].priority ?? 0));
-
-  if (candidates.length > 0) {
-    return candidates[0][1];
-  }
-
-  const genericGateway = Object.values(table.routes)
-    .filter((route) => !isOpenAIOnlyRoute(route))
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
-
-  return genericGateway[0] ?? null;
-}
-
-function normalizeResolvedRoute(
-  modelId: string,
-  route: MmsRoute,
-  table: MmsRouteTable,
-): MmsRoute {
-  if (!needsAnthropicShim(modelId) || !isOpenAIOnlyRoute(route)) {
-    return route;
-  }
-
-  const fallback = findAnthropicShimFallback(table, modelId);
-  if (!fallback) {
-    return route;
-  }
-
-  return {
-    ...route,
-    anthropic_base_url: fallback.anthropic_base_url,
-    api_key: fallback.api_key,
-    provider_id: fallback.provider_id,
-  };
+function normalizeResolvedRoute(route: MmsRoute): MmsRoute {
+  // Preserve the provider identity exported by MMS. GPT/O-series/Gemini routes
+  // that point at OpenAI-compatible endpoints are adapted later by buildSdkEnv +
+  // the model proxy, so rewriting them here can silently switch traffic onto a
+  // different fallback provider and make model_channel_map pins lie.
+  return route;
 }
 
 /**
@@ -222,14 +161,14 @@ export function resolveModelRouteFull(modelId: string): ResolvedModelRoute | nul
 
   // Exact match
   if (table.routes[modelId]) {
-    return { modelId, route: normalizeResolvedRoute(modelId, table.routes[modelId], table) };
+    return { modelId, route: normalizeResolvedRoute(table.routes[modelId]) };
   }
 
   // Case-insensitive match
   const lower = modelId.toLowerCase();
   for (const [key, route] of Object.entries(table.routes)) {
     if (key.toLowerCase() === lower) {
-      return { modelId: key, route: normalizeResolvedRoute(key, route, table) };
+      return { modelId: key, route: normalizeResolvedRoute(route) };
     }
   }
 
@@ -310,7 +249,7 @@ export function resolveModelByPrefix(
 
   // Fast path: exact match (no delegation needed)
   if (table.routes[prefix]) {
-    return { modelId: prefix, route: normalizeResolvedRoute(prefix, table.routes[prefix], table) };
+    return { modelId: prefix, route: normalizeResolvedRoute(table.routes[prefix]) };
   }
 
   // Delegate fuzzy matching to discuss-lib, passing the same routes file
@@ -318,7 +257,7 @@ export function resolveModelByPrefix(
     model_routes_path: getMmsRoutesPath(),
   });
   if (resolved && table.routes[resolved]) {
-    return { modelId: resolved, route: normalizeResolvedRoute(resolved, table.routes[resolved], table) };
+    return { modelId: resolved, route: normalizeResolvedRoute(table.routes[resolved]) };
   }
 
   return null;

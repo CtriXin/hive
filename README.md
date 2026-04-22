@@ -64,7 +64,7 @@ hive-config setup
 hive-config test
 ```
 
-`hive-config setup` exports a reviewed JSON template for `~/.hive/config.json`; apply it manually after review. `hive-config test` prints `tier -> model -> channel -> route` and runs a minimal runtime smoke check for the active config.
+`hive-config setup` exports a reviewed JSON template for `~/.hive/config.json`; apply it manually after review. `hive-config test` prints `tier -> model -> channel -> route` and runs a minimal runtime smoke check for the active config. OpenAI-compatible MMS routes keep their exported provider identity; Hive now adapts transport through the model proxy instead of silently rewriting them onto a different fallback channel.
 
 ## For AI Agents
 
@@ -416,7 +416,7 @@ hive-config setup
 hive-config test
 ```
 
-`hive-config setup` 会导出一份待审 JSON；人工确认后再手动更新 `~/.hive/config.json`。`hive-config test` 会显示当前 effective 配置对应的 `tier -> model -> channel -> route`，并补一轮最小 smoke check，避免先真实跑 Hive 才发现路由问题。
+`hive-config setup` 会导出一份待审 JSON；人工确认后再手动更新 `~/.hive/config.json`。`hive-config test` 会显示当前 effective 配置对应的 `tier -> model -> channel -> route`，并补一轮最小 smoke check，避免先真实跑 Hive 才发现路由问题。对于 OpenAI-compatible 的 MMS route，Hive 现在会保留 MMS 导出的 provider identity，并通过 model proxy 做 transport adaptation，不再静默改写到别的 fallback channel。
 
 **启动 MCP server**
 

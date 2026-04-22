@@ -78,6 +78,45 @@ const MOCK_V1_ROUTES = {
   },
 };
 
+const MOCK_COLLEAGUE_STYLE_V1_ROUTES = {
+  version: 1,
+  generated_at: '2026-04-22T00:00:00.000Z',
+  routes: {
+    'gpt-5.4': {
+      primary: {
+        provider_id: 'crs-openai',
+        anthropic_base_url: 'https://crs.adsconflux.xyz/openai/v1',
+        openai_base_url: 'https://crs.adsconflux.xyz/openai/v1',
+        api_key: 'sk-crs',
+      },
+      fallbacks: [
+        {
+          provider_id: 'newapi',
+          anthropic_base_url: 'https://chat.adsconflux.xyz/openapi/v1',
+          openai_base_url: 'https://chat.adsconflux.xyz/openapi/v1',
+          api_key: 'sk-newapi',
+        },
+      ],
+    },
+    'gpt-5.3-codex': {
+      primary: {
+        provider_id: 'crs-openai',
+        anthropic_base_url: 'https://crs.adsconflux.xyz/openai/v1',
+        openai_base_url: 'https://crs.adsconflux.xyz/openai/v1',
+        api_key: 'sk-crs',
+      },
+      fallbacks: [
+        {
+          provider_id: 'newapi',
+          anthropic_base_url: 'https://chat.adsconflux.xyz/openapi/v1',
+          openai_base_url: 'https://chat.adsconflux.xyz/openapi/v1',
+          api_key: 'sk-newapi',
+        },
+      ],
+    },
+  },
+};
+
 // Mock file system
 let mockFileContent: string | null = null;
 
@@ -150,12 +189,12 @@ describe('mms-routes-loader', () => {
       expect(route!.provider_id).toBe('xin');
     });
 
-    it('normalizes OpenAI-only gpt route to an Anthropic-compatible gateway route', () => {
+    it('keeps OpenAI-compatible gpt routes on their exported provider identity', () => {
       const route = resolveModelRoute('gpt-5.4');
       expect(route).not.toBeNull();
-      expect(route!.anthropic_base_url).toBe('http://gateway');
-      expect(route!.api_key).toBe('gpt-gateway');
-      expect(route!.provider_id).toBe('xin');
+      expect(route!.anthropic_base_url).toBe('https://example.com/openai');
+      expect(route!.api_key).toBe('gpt-direct');
+      expect(route!.provider_id).toBe('companycrsopenai');
     });
 
     it('case-insensitive match', () => {
@@ -187,11 +226,22 @@ describe('mms-routes-loader', () => {
       expect(result!.modelId).toBe('kimi-k2.5');
     });
 
-    it('keeps original modelId while normalizing the route transport', () => {
+    it('keeps original modelId and provider when the route is OpenAI-compatible', () => {
       const result = resolveModelRouteFull('gpt-5.4');
       expect(result).not.toBeNull();
       expect(result!.modelId).toBe('gpt-5.4');
-      expect(result!.route.anthropic_base_url).toBe('http://gateway');
+      expect(result!.route.anthropic_base_url).toBe('https://example.com/openai');
+      expect(result!.route.provider_id).toBe('companycrsopenai');
+    });
+
+    it('preserves a colleague-style CRS primary instead of rewriting it to newapi fallback', () => {
+      mockFileContent = JSON.stringify(MOCK_COLLEAGUE_STYLE_V1_ROUTES);
+      const result = resolveModelRouteFull('gpt-5.4');
+      expect(result).not.toBeNull();
+      expect(result!.modelId).toBe('gpt-5.4');
+      expect(result!.route.provider_id).toBe('crs-openai');
+      expect(result!.route.anthropic_base_url).toBe('https://crs.adsconflux.xyz/openai/v1');
+      expect(result!.route.fallback_routes?.map((item) => item.provider_id)).toEqual(['newapi']);
     });
   });
 
