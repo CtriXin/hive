@@ -190,5 +190,6 @@ describe('config-preflight', () => {
     expect(text).toContain('orphan-model | tiers=policy-only');
     expect(text).toContain('== Runtime Smoke ==');
     expect(text).toContain('planner -> gpt-5.4');
+    expect(text).toContain('route fail models: orphan-model');
   });
 });

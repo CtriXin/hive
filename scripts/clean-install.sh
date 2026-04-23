@@ -10,9 +10,9 @@ PURGE_PROJECT="${HIVE_PURGE_PROJECT:-0}"
 PROJECT_ROOT="${HIVE_PROJECT_ROOT:-}"
 DRY_RUN="${HIVE_DRY_RUN:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_REF="v3.0.0"
+DEFAULT_REF="v3.0.2"
 if [ -f "$SCRIPT_DIR/../package.json" ]; then
-  DEFAULT_REF="v$(node -e "console.log(require('$SCRIPT_DIR/../package.json').version)" 2>/dev/null || echo 3.0.0)"
+  DEFAULT_REF="v$(node -e "console.log(require('$SCRIPT_DIR/../package.json').version)" 2>/dev/null || echo 3.0.2)"
 fi
 
 remove_path() {

@@ -331,10 +331,12 @@ export async function buildConfigPreflightReport(cwd: string = process.cwd()): P
 
 export function renderConfigPreflightReport(report: ConfigPreflightReport): string {
   const lines: string[] = [];
+  const routeFailures = report.models.filter((row) => row.resolution_error || row.ping_ok === false);
+  const runtimeFailures = report.probes.filter((probe) => !probe.ok);
   const pingPass = report.models.filter((row) => row.ping_ok).length;
-  const pingFail = report.models.filter((row) => row.resolution_error || row.ping_ok === false).length;
+  const pingFail = routeFailures.length;
   const probePass = report.probes.filter((probe) => probe.ok).length;
-  const probeFail = report.probes.filter((probe) => !probe.ok).length;
+  const probeFail = runtimeFailures.length;
 
   lines.push('== Hive Config Test ==');
   lines.push(`- cwd: ${report.cwd}`);
@@ -406,9 +408,14 @@ export function renderConfigPreflightReport(report: ConfigPreflightReport): stri
   lines.push('== Summary ==');
   lines.push(`- route checks: ${pingPass} ok / ${pingFail} fail`);
   lines.push(`- runtime smoke: ${probePass} ok / ${probeFail} fail`);
+  if (routeFailures.length > 0) {
+    lines.push(`- route fail models: ${routeFailures.map((row) => `${row.model_id} (${row.resolution_error || row.ping_error || 'ping failed'})`).join(', ')}`);
+  }
+  if (runtimeFailures.length > 0) {
+    lines.push(`- runtime fail models: ${runtimeFailures.map((probe) => `${probe.model_id} (${probe.error || 'probe failed'})`).join(', ')}`);
+  }
   if (!report.session.anthropic_base_url || !report.session.anthropic_auth_token) {
     lines.push('- note: current shell does not look like an MMS-started Claude CLI session; route checks still work, but session env is not inherited.');
   }
   return lines.join('\n');
 }
-
