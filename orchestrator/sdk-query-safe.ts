@@ -39,6 +39,7 @@ export async function safeQuery(opts: SafeQueryOptions): Promise<SafeQueryResult
   if (!opts.options.model) {
     throw new Error('safeQuery requires explicit options.model to avoid implicit Claude fallback');
   }
+  assertClaudeDisabled(opts.options.model);
   opts.options.env = await prepareSdkEnvForQuery(opts.options.model, opts.options.env);
   assertClaudeManualOnlyGuard(opts.options.model, opts.options.env);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
@@ -84,6 +85,11 @@ async function prepareSdkEnvForQuery(modelId: string, env: Record<string, string
   delete nextEnv.HIVE_MODEL_PROXY_BASE_URL;
   delete nextEnv.HIVE_MODEL_PROXY_API_KEY;
   return nextEnv;
+}
+
+function assertClaudeDisabled(modelId: string): void {
+  if (!modelId.startsWith('claude-')) return;
+  throw new Error(`Claude model "${modelId}" is globally disabled in Hive runtime.`);
 }
 
 function assertClaudeManualOnlyGuard(modelId: string, env: Record<string, string>): void {

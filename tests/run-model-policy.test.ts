@@ -68,7 +68,7 @@ describe('run-model-policy', () => {
     expect(effective.run_override?.planner?.model).toBe('qwen3-max');
     expect(effective.runtime_override?.planner?.model).toBe('kimi-for-coding');
     expect(effective.effective_policy.planner.model).toBe('kimi-for-coding');
-    expect(effective.effective_policy.reviewer.final_review.model).toBe('claude-opus-4-6');
+    expect(effective.effective_policy.reviewer.final_review.model).not.toMatch(/^claude-/);
     expect(effective.stages.find((stage) => stage.stage === 'planner')?.source).toBe('runtime-next-stage');
   });
 

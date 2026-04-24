@@ -50,6 +50,10 @@ describe('hive-config (extended)', () => {
       expect(DEFAULT_CONFIG.budget.monthly_limit_usd).toBe(100);
       expect(DEFAULT_CONFIG.budget.block).toBe(false);
     });
+
+    it('forces Claude family into the default blacklist', () => {
+      expect(DEFAULT_CONFIG.model_blacklist).toContain('claude-*');
+    });
   });
 
   describe('getBudgetWarning', () => {

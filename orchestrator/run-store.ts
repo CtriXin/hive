@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import type { RunSpec, RunState, TaskPlan, OrchestratorResult } from './types.js';
 import { trackRunSpec, trackRunState } from './global-run-registry.js';
+import { syncHandoffSurfaces } from './handoff-surfaces.js';
 
 function runsDir(cwd: string): string {
   return path.join(cwd, '.ai', 'runs');
@@ -34,6 +35,7 @@ function readJson<T>(filePath: string): T | null {
 export function saveRunSpec(cwd: string, spec: RunSpec): void {
   writeJson(path.join(runDir(cwd, spec.id), 'spec.json'), spec);
   trackRunSpec(cwd, spec);
+  syncHandoffSurfaces(cwd, spec.id);
 }
 
 export function loadRunSpec(cwd: string, runId: string): RunSpec | null {
@@ -47,6 +49,7 @@ export function saveRunState(cwd: string, state: RunState): void {
   };
   writeJson(path.join(runDir(cwd, state.run_id), 'state.json'), payload);
   trackRunState(cwd, payload);
+  syncHandoffSurfaces(cwd, state.run_id);
 }
 
 export function loadRunState(cwd: string, runId: string): RunState | null {
@@ -55,6 +58,7 @@ export function loadRunState(cwd: string, runId: string): RunState | null {
 
 export function saveRunPlan(cwd: string, runId: string, plan: TaskPlan): void {
   writeJson(path.join(runDir(cwd, runId), 'plan.json'), plan);
+  syncHandoffSurfaces(cwd, runId);
 }
 
 export function loadRunPlan(cwd: string, runId: string): TaskPlan | null {
@@ -63,6 +67,7 @@ export function loadRunPlan(cwd: string, runId: string): TaskPlan | null {
 
 export function saveRunResult(cwd: string, runId: string, result: OrchestratorResult): void {
   writeJson(path.join(runDir(cwd, runId), 'result.json'), result);
+  syncHandoffSurfaces(cwd, runId);
 }
 
 export function loadRunResult(cwd: string, runId: string): OrchestratorResult | null {

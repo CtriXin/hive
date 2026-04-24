@@ -33,6 +33,24 @@ docs/examples/
 
 # Benchmark raw outputs — contain personal paths
 benchmark/round4-raw/
+benchmark/round5-results.md
+benchmark/round6-*/
+benchmark/round6-*.json
+benchmark/round6-*.md
+benchmark/round6-*.zip
+
+# Local experiment / operator artifacts
+.playwright-cli/
+.sessions/
+.tmp-execute-plan.json
+gbrain/
+scripts/__pycache__/
+scripts/benchmark-round6-*.mjs
+scripts/benchmark-round6-*.py
+scripts/test-models-ping.mjs
+web/index.html.bak
+bin.zip
+pnpm-lock.yaml
 
 # Secrets
 .env

@@ -513,6 +513,7 @@ export async function main() {
 
     if (runId) {
       const { loadRunSpec, loadRunState } = await import('./run-store.js');
+      const { loadHandoffSurfaceBundle } = await import('./handoff-surfaces.js');
       const sSpec = loadRunSpec(cwd, runId);
       const sState = loadRunState(cwd, runId);
       const plan = loadRunPlan(cwd, runId);
@@ -523,6 +524,7 @@ export async function main() {
       const workerSnapshot = loadWorkerStatusSnapshot(cwd, runId);
       const { loadRunScoreHistory } = await import('./score-history.js');
       const latestScore = loadRunScoreHistory(cwd, runId)?.rounds.at(-1);
+      const handoffBundle = loadHandoffSurfaceBundle(cwd, runId);
 
       if (!sSpec || !sState) {
         if (!workerSnapshot && !latestScore) {
@@ -530,12 +532,15 @@ export async function main() {
           process.exit(1);
         }
         const counts = workerSnapshot ? summarizeWorkerSnapshot(workerSnapshot) : null;
-        const inferredStatus = counts
+        const inferredStatus = handoffBundle?.human_progress.status || (counts
           ? (counts.active > 0 ? 'executing' : counts.failed > 0 ? 'partial' : 'done')
-          : 'unknown';
+          : 'unknown');
         console.log(`🟡 Run: ${runId}`);
         console.log(`📊 status: ${inferredStatus}`);
         console.log(`🔁 round: ${workerSnapshot?.round ?? latestScore?.round ?? 0}`);
+        if (handoffBundle?.human_progress.why_not_moving) {
+          console.log(`🧭 why: ${handoffBundle.human_progress.why_not_moving}`);
+        }
         console.log(`📋 plan tasks: ${workerSnapshot?.workers.length || 0}`);
         console.log('🧪 verification checks: 0');
         console.log('🧾 summary: artifact-only run');
@@ -553,6 +558,18 @@ export async function main() {
       }
       console.log(`🟡 Run: ${runId}`);
       console.log(`📊 status: ${sState.status}`);
+      if (handoffBundle) {
+        console.log(`🧶 progress: ${handoffBundle.human_progress.status}`);
+        if (handoffBundle.human_progress.why_not_moving) {
+          console.log(`🧭 why: ${handoffBundle.human_progress.why_not_moving}`);
+        }
+        console.log(`📍 next: ${handoffBundle.human_progress.next_action}`);
+        const counts = handoffBundle.human_progress.counters;
+        console.log(`🧮 counters: done=${counts.done} failed=${counts.failed} running=${counts.running} pending=${counts.pending} queued_retry=${counts.queued_retry} blocked=${counts.blocked} fallback=${counts.fallback} request_human=${counts.request_human}`);
+        if (handoffBundle.packet.task_id || handoffBundle.packet.owner || handoffBundle.packet.model) {
+          console.log(`🤝 handoff: ${handoffBundle.packet.task_id || '-'} | ${handoffBundle.packet.owner || '-'} | ${handoffBundle.packet.model || '-'}`);
+        }
+      }
       console.log(`🔁 round: ${sState.round}`);
       if (progress) {
         console.log(`🧭 phase: ${progress.phase} — ${progress.reason}`);

@@ -1,6 +1,7 @@
 // orchestrator/provider-resilience.ts — Provider failure taxonomy, circuit breaker, retry/backoff, fallback
 import fs from 'fs';
 import path from 'path';
+import { syncHandoffSurfaces } from './handoff-surfaces.js';
 import type {
   ProviderFailureSubtype,
   CircuitBreakerState,
@@ -468,6 +469,9 @@ export class ProviderHealthStore {
       };
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
       this.dirty = false;
+      const runId = path.basename(this.runDir);
+      const cwd = path.dirname(path.dirname(path.dirname(this.runDir)));
+      syncHandoffSurfaces(cwd, runId);
     } catch {
       // Non-critical: health persistence failure
     }

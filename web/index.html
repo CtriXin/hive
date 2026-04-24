@@ -931,6 +931,7 @@
     init: '初始化中', planning: '规划中', executing: '执行中', verifying: '验证中',
     repairing: '修复中', replanning: '重新规划中', running: '运行中', paused: '已暂停',
     blocked: '已阻塞', partial: '部分完成', done: '已完成', completed: '已完成',
+    waiting: '等待中', queued_retry: '已排队重试', fallback: '切换备用中', request_human: '需人工处理',
     success: '已完成', failed: '失败', failure: '失败', unknown: '未知', pending: '待处理',
     applied: '已应用', rejected: '已拒绝', suppressed: '已忽略', expired: '已过期',
   };
@@ -971,8 +972,8 @@
   function humanizeAction(action) { return actionMap[action] || action || '操作'; }
   function badgeClass(status) {
     if (['done','completed','success','healthy','merged','verified','applied'].includes(status)) return 'ok';
-    if (['failed','failure','blocked','worker_failed','merge_blocked','rejected'].includes(status)) return 'danger';
-    if (['partial','paused','review_failed','degraded','expired'].includes(status)) return 'warn';
+    if (['failed','failure','blocked','worker_failed','merge_blocked','rejected','request_human'].includes(status)) return 'danger';
+    if (['partial','paused','review_failed','degraded','expired','waiting','queued_retry','fallback'].includes(status)) return 'warn';
     if (['running','init','planning','executing','verifying','repairing','replanning','pending'].includes(status)) return 'info';
     return 'muted';
   }
@@ -1404,9 +1405,14 @@
     const snapshot = state.snapshot;
     const verdict = snapshot.verdict;
     const severity = verdict.severity === 'critical' ? 'danger' : verdict.severity === 'warning' ? 'warn' : verdict.severity === 'ok' ? 'ok' : 'info';
-    const statusBadge = `<span class="badge ${badgeClass(snapshot.truth.status)}">${esc(humanizeStatus(snapshot.truth.status))}</span>`;
+    const progressStatus = snapshot.progress?.status || snapshot.truth.status;
+    const statusBadge = `<span class="badge ${badgeClass(progressStatus)}">${esc(humanizeStatus(progressStatus))}</span>`;
+    const rawStatusBadge = progressStatus !== snapshot.truth.status
+      ? `<span class="badge muted">run=${esc(snapshot.truth.status)}</span>`
+      : '';
     const updated = relativeTime(snapshot.updated_at);
     const nextAction = snapshot.truth.next_action && snapshot.truth.next_action !== '-' ? snapshot.truth.next_action : '无';
+    const handoffMeta = [snapshot.handoff?.task_id, snapshot.handoff?.owner, snapshot.handoff?.model].filter(Boolean).join(' · ');
     const actionBtn = verdict.suggested_action && verdict.suggested_action.action_type
       ? `<button class="btn primary" data-hero-action="${esc(verdict.suggested_action.action_type)}">${esc(verdict.suggested_action.label)}</button>`
       : '<span class="badge muted">无需操作</span>';
@@ -1416,6 +1422,7 @@
         <div style="display:grid;gap:10px;min-width:0">
           <div class="hero-meta">
             ${statusBadge}
+            ${rawStatusBadge}
             <span class="badge muted">${esc(snapshot.project.name)}</span>
             <span class="badge muted">${esc(updated)}</span>
           </div>
@@ -1427,7 +1434,9 @@
       <div class="kv">
         <div><div class="kv-label">目标</div><div class="kv-value">${esc(snapshot.truth.goal)}</div></div>
         <div><div class="kv-label">下一步</div><div class="kv-value">${esc(nextAction)}</div></div>
+        <div><div class="kv-label">人类进度</div><div class="kv-value">${esc(snapshot.progress?.status || '—')}${snapshot.progress?.why_stopped ? ' · ' + esc(snapshot.progress.why_stopped) : ''}</div></div>
         <div><div class="kv-label">轮次</div><div class="kv-value">${snapshot.truth.round}${snapshot.truth.max_rounds ? ' / ' + snapshot.truth.max_rounds : ''}</div></div>
+        <div><div class="kv-label">交接焦点</div><div class="kv-value">${esc(handoffMeta || '—')}</div></div>
         <div><div class="kv-label">最优分数</div><div class="kv-value">${snapshot.truth.score_best == null ? '—' : snapshot.truth.score_best}</div></div>
       </div>
     `;
@@ -1730,11 +1739,15 @@
       : '<div class="card"><div class="card-title">Provider</div><div class="card-sub">无异常数据</div></div>';
     const steering = (snapshot.steering || []).map(item => `${humanizeAction(item.action_type)} · ${humanizeStatus(item.status)}${item.outcome ? ' · ' + item.outcome : ''}`).join('\n') || '无干预记录';
     const truth = `目标：${snapshot.truth.goal}\n状态：${snapshot.truth.status}\n轮次：${snapshot.truth.round}${snapshot.truth.max_rounds ? '/' + snapshot.truth.max_rounds : ''}\n下一步：${snapshot.truth.next_action}\n原因：${snapshot.truth.next_reason}\n摘要：${snapshot.truth.summary}`;
+    const progress = `状态：${snapshot.progress?.status || '-'}\n原因：${snapshot.progress?.why_stopped || '-'}\n下一步：${snapshot.progress?.next_action || '-'}\ndone=${snapshot.progress?.counters?.done || 0} failed=${snapshot.progress?.counters?.failed || 0} running=${snapshot.progress?.counters?.running || 0} pending=${snapshot.progress?.counters?.pending || 0}\nqueued_retry=${snapshot.progress?.counters?.queued_retry || 0} blocked=${snapshot.progress?.counters?.blocked || 0} fallback=${snapshot.progress?.counters?.fallback || 0} request_human=${snapshot.progress?.counters?.request_human || 0}`;
+    const handoff = `task：${snapshot.handoff?.task_id || '-'}\nowner：${snapshot.handoff?.owner || '-'}\nmodel：${snapshot.handoff?.model || '-'}\nrefs：${(snapshot.handoff?.refs || []).join('\n') || '-'}`;
     const compact = snapshot.compact ? snapshot.compact.markdown : '无 compact 数据';
     el.detailGrid.innerHTML = `
       <div class="card"><div class="card-title">全部任务</div><div class="card-grid card-grid-2" style="margin-top:10px">${allTasks}</div></div>
       ${provider}
       <div class="card"><div class="card-title">当前状态</div><pre style="margin:8px 0 0;background:var(--panel-2);padding:10px;border-radius:var(--radius-sm);font-size:11px;line-height:1.5;">${esc(truth)}</pre></div>
+      <div class="card"><div class="card-title">人类进度</div><pre style="margin:8px 0 0;background:var(--panel-2);padding:10px;border-radius:var(--radius-sm);font-size:11px;line-height:1.5;">${esc(progress)}</pre></div>
+      <div class="card"><div class="card-title">接手提示</div><pre style="margin:8px 0 0;background:var(--panel-2);padding:10px;border-radius:var(--radius-sm);font-size:11px;line-height:1.5;">${esc(handoff)}</pre></div>
       <div class="card"><div class="card-title">干预记录</div><pre style="margin:8px 0 0;background:var(--panel-2);padding:10px;border-radius:var(--radius-sm);font-size:11px;line-height:1.5;">${esc(steering)}</pre></div>
       <div class="card" style="grid-column:1/-1;">
         <details><summary style="font-size:13px;color:var(--muted);cursor:pointer;">Compact Markdown</summary>
@@ -1943,13 +1956,12 @@
     el.globalMiscEditor.innerHTML = `
       <div class="card">
         <div class="card-title">模型黑名单</div>
-        <div class="card-sub" style="margin-top:6px;">支持精确 ID 或通配符；例如 <code>claude-*</code> 表示整条 Claude family 禁用。保存后写入当前 ${esc(settingsScopeLabel())} layer。</div>
+        <div class="card-sub" style="margin-top:6px;">支持精确 ID 或通配符。注意：<code>claude-*</code> 已由 Hive runtime 固定禁用，这里只需要管理其他模型规则。保存后写入当前 ${esc(settingsScopeLabel())} layer。</div>
         <div class="field">
           <label>Patterns</label>
           <textarea id="cfgModelBlacklist" rows="5" style="width:100%;resize:vertical;">${esc(currentBlacklistPatterns().join('\n'))}</textarea>
         </div>
         <div class="flex flex-wrap gap-2">
-          <button class="tiny-btn danger" type="button" id="applyClaudeBlacklistBtn">禁用全部 Claude</button>
           <button class="tiny-btn" type="button" id="clearBlacklistBtn">清空黑名单</button>
         </div>
         <div class="card-sub" style="margin-top:8px;">当前共 ${currentBlacklistPatterns().length} 条规则。</div>
@@ -1993,12 +2005,6 @@
       </div>
     `;
 
-    document.getElementById('applyClaudeBlacklistBtn')?.addEventListener('click', () => {
-      const input = document.getElementById('cfgModelBlacklist');
-      if (!input) return;
-      const merged = parseBlacklistInput(`${input.value || ''}\nclaude-*`);
-      input.value = merged.join('\n');
-    });
     document.getElementById('clearBlacklistBtn')?.addEventListener('click', () => {
       const input = document.getElementById('cfgModelBlacklist');
       if (!input) return;

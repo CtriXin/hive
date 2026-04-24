@@ -30,8 +30,8 @@ describe('hive-config', () => {
       expect(result).toBe('kimi-k2.5');
     });
 
-    it('returns model directly when not auto', () => {
-      const result = resolveTierModel('claude-opus-4-6', () => 'should-not-be-called');
+    it('returns model directly when not auto and not blocked', () => {
+      const result = resolveTierModel('claude-opus-4-6', () => 'should-not-be-called', undefined, undefined, { model_blacklist: [] });
       expect(result).toBe('claude-opus-4-6');
     });
 
@@ -164,11 +164,11 @@ describe('hive-config', () => {
   });
 
   describe('ensureStageModelAllowed', () => {
-    it('allows explicit claude for planner and final_review only', () => {
-      expect(() => ensureStageModelAllowed('planner', 'claude-opus-4-6')).not.toThrow();
-      expect(() => ensureStageModelAllowed('final_review', 'claude-opus-4-6')).not.toThrow();
-      expect(() => ensureStageModelAllowed('executor', 'claude-opus-4-6')).toThrow(/not allowed/);
-      expect(() => ensureStageModelAllowed('cross_review', 'claude-sonnet-4-6')).toThrow(/not allowed/);
+    it('rejects explicit claude for every stage', () => {
+      expect(() => ensureStageModelAllowed('planner', 'claude-opus-4-6', { model_blacklist: [] })).toThrow(/disabled/i);
+      expect(() => ensureStageModelAllowed('final_review', 'claude-opus-4-6', { model_blacklist: [] })).toThrow(/disabled/i);
+      expect(() => ensureStageModelAllowed('executor', 'claude-opus-4-6', { model_blacklist: [] })).toThrow(/disabled/i);
+      expect(() => ensureStageModelAllowed('cross_review', 'claude-sonnet-4-6', { model_blacklist: [] })).toThrow(/disabled/i);
     });
 
     it('rejects models matched by model_blacklist', () => {

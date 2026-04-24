@@ -19,7 +19,8 @@ describe('model-registry claude filter', () => {
     it('planning auto selector falls back to an allowed planner model', () => {
       const model = registry.selectForPlanning();
       expect(model).toBeTruthy();
-      expect(model.startsWith('claude-') || registry.canResolveForModel(model)).toBe(true);
+      expect(model).not.toMatch(/^claude-/);
+      expect(registry.canResolveForModel(model)).toBe(true);
     });
 
     it('arbitration auto selector never returns a claude-* model', () => {
@@ -29,7 +30,8 @@ describe('model-registry claude filter', () => {
     it('final review auto selector falls back to an allowed final-review model', () => {
       const model = registry.selectForFinalReview();
       expect(model).toBeTruthy();
-      expect(model.startsWith('claude-') || registry.canResolveForModel(model)).toBe(true);
+      expect(model).not.toMatch(/^claude-/);
+      expect(registry.canResolveForModel(model)).toBe(true);
     });
 
     it('discuss auto partner never returns a claude-* model', () => {

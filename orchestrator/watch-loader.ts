@@ -10,6 +10,8 @@ import type {
   RunState,
   SteeringAction,
 } from './types.js';
+import type { HumanProgressStatus } from './handoff-surfaces.js';
+import { loadHandoffSurfaceBundle } from './handoff-surfaces.js';
 import { normalizeExecutionMode } from './mode-policy.js';
 import type { LoopProgress } from './loop-progress-store.js';
 import { readLoopProgress } from './loop-progress-store.js';
@@ -61,6 +63,9 @@ export interface WatchModeSummary {
 export interface WatchData {
   run_id: string;
   status: string;
+  progress_status?: HumanProgressStatus;
+  progress_next_action?: string;
+  progress_why?: string;
   round: number;
   max_rounds?: number;
   phase?: string;
@@ -75,6 +80,12 @@ export interface WatchData {
   updated_at: string;
   artifacts_available: string[];
   artifacts_missing: string[];
+  handoff?: {
+    task_id?: string;
+    owner?: string;
+    model?: string;
+    refs: string[];
+  };
   // Phase 10A: collaboration cues for task-level signals
   taskCues: TaskCollabCue[];
 }
@@ -221,6 +232,7 @@ export function loadWatchData(cwd: string, runId: string): WatchData | null {
   const healthData = loadProviderHealth(cwd, runId);
   const steeringStore = loadSteeringStore(cwd, runId);
   const latestRoute = latestTaskRoute(cwd, runId);
+  const handoffBundle = loadHandoffSurfaceBundle(cwd, runId);
 
   if (!spec && !state && !progress) return null;
 
@@ -252,6 +264,9 @@ export function loadWatchData(cwd: string, runId: string): WatchData | null {
   return {
     run_id: effectiveRunId,
     status: state?.status ?? 'unknown',
+    progress_status: handoffBundle?.human_progress.status,
+    progress_next_action: handoffBundle?.human_progress.next_action,
+    progress_why: handoffBundle?.human_progress.why_not_moving,
     round: state?.round ?? progress?.round ?? 0,
     max_rounds: spec?.max_rounds,
     phase: progress?.phase,
@@ -268,6 +283,14 @@ export function loadWatchData(cwd: string, runId: string): WatchData | null {
     updated_at: progress?.updated_at ?? state?.updated_at ?? new Date().toISOString(),
     artifacts_available: artifactsAvailable,
     artifacts_missing: artifactsMissing,
+    handoff: handoffBundle
+      ? {
+        task_id: handoffBundle.packet.task_id,
+        owner: handoffBundle.packet.owner,
+        model: handoffBundle.packet.model,
+        refs: handoffBundle.packet.refs.slice(0, 4),
+      }
+      : undefined,
     taskCues,
   };
 }

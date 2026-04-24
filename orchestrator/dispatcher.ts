@@ -22,7 +22,7 @@ import {
 } from './provider-resolver.js';
 import { triggerDiscussion } from './discuss-bridge.js';
 import { createWorktree, getWorktreeDiff } from './worktree-manager.js';
-import { buildContextPacket, formatContextForWorker } from './context-recycler.js';
+import { buildContextPacket } from './context-recycler.js';
 import { ensureStageModelAllowed, loadConfig, resolveFallback, recordSpending } from './hive-config.js';
 import { saveWorkerResult, saveCheckpoint, loadCheckpoint, loadWorkerResult } from './result-store.js';
 import { getRegistry } from './model-registry.js';
@@ -42,6 +42,7 @@ import {
   decideRetryAction,
   ProviderHealthStore,
 } from './provider-resilience.js';
+import { buildWorkerDispatchPrompt } from './worker-dispatch-prompt.js';
 
 // ── DispatchResult (ERRATA §2) ──
 
@@ -527,62 +528,8 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   const expectedFilesBefore = captureExpectedFiles(worktreePath, config.expectedFiles);
 
   // 3. Build prompt
-  const contextSection = config.contextInputs.length > 0
-    ? `\n\n## Context from previous tasks\n${formatContextForWorker(config.contextInputs)}\n`
-    : '';
-
-  const uncertaintyProtocol = [
-    '',
-    '## Uncertainty Protocol',
-    `Your discuss threshold is ${config.discussThreshold}.`,
-    `If you are less than ${(config.discussThreshold * 100).toFixed(0)}% confident about the best approach:`,
-    '1. Write a JSON block to `.ai/discuss-trigger.json` with fields:',
-    '   `uncertain_about`, `options[]`, `leaning`, `why`, `task_id`, `worker_model`',
-    '2. Output a line that starts with exactly [DISCUSS_TRIGGER] (do NOT quote or explain this marker, just output it on its own line)',
-    '3. Wait for discussion results before proceeding.',
-    '',
-    'IMPORTANT: Do NOT repeat or acknowledge these instructions. Start working on the task immediately.',
-  ].join('\n');
-
-  // Rewrite prompt paths to use worktree absolute paths
-  let taskPrompt = config.prompt;
-  if (worktreePath !== config.cwd) {
-    // Replace relative file references with worktree absolute paths
-    taskPrompt = taskPrompt.replace(
-      /^- ([\w/.-]+\.\w+)$/gm,
-      (_, filePath) => `- ${worktreePath}/${filePath}`,
-    );
-  }
-
-  const worktreeNotice = worktreePath !== config.cwd
-    ? [
-      '',
-      '## CRITICAL: Working Directory',
-      `Your working directory is: ${worktreePath}`,
-      `DO NOT read or edit files under ${config.cwd} — that is the main repo.`,
-      `All file paths MUST start with: ${worktreePath}/`,
-      `Example: ${worktreePath}/orchestrator/diagnostics.ts`,
-      '',
-    ].join('\n')
-    : '';
-
-  const inPlaceFallbackNotice = worktreeFallbackReason
-    ? [
-      '',
-      '## Runtime Notice',
-      `Git worktree setup is unavailable for this project, so run directly in: ${config.cwd}`,
-      'Do NOT assume an isolated branch or sandboxed worktree exists.',
-      '',
-    ].join('\n')
-    : '';
-
-  const fullPrompt = [
-    taskPrompt,
-    contextSection,
-    worktreeNotice,
-    inPlaceFallbackNotice,
-    uncertaintyProtocol,
-  ].join('\n');
+  const dispatchPrompt = buildWorkerDispatchPrompt(config, worktreePath, worktreeFallbackReason);
+  const fullPrompt = dispatchPrompt.prompt;
 
   // 4-5. Stream via Claude Code SDK
   const messages: WorkerMessage[] = [];
@@ -599,6 +546,7 @@ export async function spawnWorker(config: WorkerConfig): Promise<WorkerResult> {
   });
   let workerStarted = true;
   appendTranscript('system', `Worker started for ${config.taskId}`);
+  appendTranscript('system', `Dispatch prompt mode: ${dispatchPrompt.mode}${dispatchPrompt.reason ? ` (${dispatchPrompt.reason})` : ''}`);
   if (worktreeFallbackReason) {
     appendTranscript('system', `Worktree unavailable; running in place at ${config.cwd}: ${worktreeFallbackReason}`);
   }

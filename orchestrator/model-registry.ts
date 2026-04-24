@@ -276,10 +276,7 @@ export class ModelRegistry {
     }).filter((c) => !c.model.startsWith('claude-'));
     const directDomestic = ranked.find((c) => !c.blocked_by?.length)?.model;
     if (directDomestic) return directDomestic;
-
-    const claudeFallback = this.getClaudeTier('sonnet')?.id || this.getClaudeTier('opus')?.id;
-    return claudeFallback
-      || this.firstKnownModel(['claude-sonnet-4-6', 'qwen3-max', 'kimi-for-coding', 'glm-5-turbo']);
+    return this.firstKnownModel(['qwen3-max', 'kimi-for-coding', 'glm-5-turbo']);
   }
 
   selectForArbitration(): string {
@@ -298,10 +295,7 @@ export class ModelRegistry {
     }).filter((c) => !c.model.startsWith('claude-'));
     const directDomestic = ranked.find((c) => !c.blocked_by?.length)?.model;
     if (directDomestic) return directDomestic;
-
-    const claudeFallback = this.getClaudeTier('sonnet')?.id || this.getClaudeTier('opus')?.id;
-    return claudeFallback
-      || this.firstKnownModel(['claude-sonnet-4-6', 'qwen3-max', 'kimi-for-coding', 'kimi-k2.5']);
+    return this.firstKnownModel(['qwen3-max', 'kimi-for-coding', 'kimi-k2.5']);
   }
 
   selectForReporter(): string {

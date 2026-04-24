@@ -1,6 +1,6 @@
 {
   "name": "hive",
-  "version": "3.0.2",
+  "version": "3.1.0",
   "description": "Self-contained multi-model orchestration: Opus plans, domestic models execute, cascade reviews",
   "type": "module",
   "main": "dist/orchestrator/index.js",

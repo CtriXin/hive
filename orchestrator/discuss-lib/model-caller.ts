@@ -79,6 +79,9 @@ export function createDefaultCaller(): ModelCaller {
         timeoutMs = 180_000,
       } = options;
       const canonicalModelId = normalizeModelId(modelId);
+      if (canonicalModelId.startsWith('claude-')) {
+        throw new Error(`Claude model "${canonicalModelId}" is globally disabled in Hive runtime.`);
+      }
 
       const env: Record<string, string> = {
         ANTHROPIC_MODEL: canonicalModelId,

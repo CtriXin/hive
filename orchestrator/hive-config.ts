@@ -35,10 +35,12 @@ export const DEFAULT_TIERS: TiersConfig = {
   reporter: { model: 'auto', fallback: 'kimi-for-coding' },
 };
 
+export const FORCED_MODEL_BLACKLIST = ['claude-*'];
+
 export const DEFAULT_CONFIG: HiveConfig = {
-  orchestrator: 'claude-opus',
-  high_tier: 'claude-opus',
-  review_tier: 'claude-sonnet',
+  orchestrator: 'qwen3-max',
+  high_tier: 'qwen3-max',
+  review_tier: 'kimi-for-coding',
   default_worker: 'kimi-for-coding',
   fallback_worker: 'glm-5-turbo',
   overrides: {},
@@ -51,7 +53,7 @@ export const DEFAULT_CONFIG: HiveConfig = {
   },
   host: 'claude-code',
   tiers: DEFAULT_TIERS,
-  model_blacklist: [],
+  model_blacklist: FORCED_MODEL_BLACKLIST,
   channel_blacklist: [],
   model_channel_map: {},
 };
@@ -335,7 +337,10 @@ export function loadConfig(cwd: string = process.cwd()): HiveConfig {
     }
   }
 
-  merged.model_blacklist = normalizeModelBlacklist(merged.model_blacklist);
+  merged.model_blacklist = normalizeModelBlacklist([
+    ...(merged.model_blacklist || []),
+    ...FORCED_MODEL_BLACKLIST,
+  ]);
   merged.channel_blacklist = normalizeChannelBlacklist(merged.channel_blacklist);
   merged.model_channel_map = normalizeModelChannelMap(merged.model_channel_map);
 
@@ -455,9 +460,8 @@ export function ensureStageModelAllowed(
     throw new Error(`Model "${modelId}" is blocked by model_blacklist pattern "${blockedPattern}"`);
   }
   if (!isClaudeModel(modelId)) return;
-  if (stage === 'planner' || stage === 'final_review') return;
   throw new Error(
-    `Claude model "${modelId}" is not allowed in stage "${stage}". Only planner and final_review may use explicit Claude models.`,
+    `Claude model "${modelId}" is globally disabled in Hive runtime and cannot run in stage "${stage}".`,
   );
 }
 

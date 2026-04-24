@@ -68,6 +68,10 @@ function mapStatusToOverallState(status: string, steering?: { is_paused: boolean
   return 'running';
 }
 
+function renderProgressLabel(data: WatchData): string {
+  return data.progress_status || data.status || 'unknown';
+}
+
 /** Format a full watch snapshot — conclusion-first, operator-briefing style */
 export function formatWatch(data: WatchData, now?: string, opts?: { reviewResults?: ReviewResult[] }): string {
   const timestamp = now || new Date().toISOString();
@@ -80,6 +84,7 @@ export function formatWatch(data: WatchData, now?: string, opts?: { reviewResult
   // ── 1. CONCLUSION: state, human attention, next action, blocker ──
   const conclusionLines: string[] = [];
   conclusionLines.push(`${stateIcon(overallState)} run: ${data.run_id} | ${overallState}`);
+  conclusionLines.push(`progress: ${renderProgressLabel(data)}`);
   conclusionLines.push(`round: ${data.round}${data.max_rounds ? `/${data.max_rounds}` : ''}`);
   conclusionLines.push(`${modeIcon(data.mode.current_mode)} mode: ${data.mode.current_mode}${data.mode.escalated ? ' [ESCALATED]' : ''}`);
 
@@ -102,6 +107,20 @@ export function formatWatch(data: WatchData, now?: string, opts?: { reviewResult
   // Phase / latest reason (only if useful)
   if (data.phase && overallState === 'running') {
     conclusionLines.push(`phase: ${data.phase}${data.phase_reason ? ` | ${truncate(data.phase_reason, 80)}` : ''}`);
+  }
+  if (data.progress_why) {
+    conclusionLines.push(`why: ${truncate(data.progress_why, 100)}`);
+  }
+  if (data.progress_next_action && data.progress_next_action !== '-') {
+    conclusionLines.push(`next: ${truncate(data.progress_next_action, 90)}`);
+  }
+  if (data.handoff?.task_id || data.handoff?.owner || data.handoff?.model) {
+    const handoffParts = [
+      data.handoff.task_id || '-',
+      data.handoff.owner || '-',
+      data.handoff.model || '-',
+    ];
+    conclusionLines.push(`handoff: ${handoffParts.join(' | ')}`);
   }
 
   conclusionLines.push(`updated: ${data.updated_at}`);
@@ -220,8 +239,9 @@ export function formatWatchCompact(data: WatchData): string {
   const provider = data.provider.any_unhealthy ? ' \uD83D\uDFE1 provider' : '';
   const escalated = data.mode.escalated ? ' \u26A1 escalated' : '';
   const focus = data.focus_task ? ` | ${data.focus_task}` : '';
+  const progress = renderProgressLabel(data);
 
-  return `[${data.run_id}] ${data.status}${phase} r${data.round} | ${data.mode.current_mode}${focus}${paused}${provider}${escalated}`;
+  return `[${data.run_id}] ${progress}${phase} r${data.round} | ${data.mode.current_mode}${focus}${paused}${provider}${escalated}`;
 }
 
 import type { AuthoritySurfaceResult } from './authority-surface.js';

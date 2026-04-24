@@ -539,6 +539,9 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
   const { buildSdkEnv } = await import('./project-paths.js');
 
   const agentModel = modelId;
+  if (agentModel.startsWith('claude-')) {
+    throw new Error(`Claude model "${agentModel}" is globally disabled in Hive runtime.`);
+  }
   let env: Record<string, string>;
   let resolvedBaseUrl: string | null = null;
   let providerResolveFailed: string | null = null;
@@ -549,17 +552,12 @@ export async function runClaudePlanner(prompt: string, cwd: string, modelId: str
     env = buildSdkEnv(agentModel, resolved.baseUrl, resolved.apiKey);
   } catch (err: any) {
     providerResolveFailed = err.message;
-    if (!agentModel.startsWith('claude-')) {
-      throw new Error(
-        `Planner model "${agentModel}" has no resolvable provider route. Refusing implicit Claude fallback. ${providerResolveFailed}`,
-      );
-    }
-    env = buildSdkEnv(agentModel);
+    throw new Error(
+      `Planner model "${agentModel}" has no resolvable provider route. Refusing implicit Claude fallback. ${providerResolveFailed}`,
+    );
   }
 
-  // Non-Claude models should return JSON directly without tool use.
-  // Claude models may benefit from reading files before planning.
-  const maxTurns = agentModel.startsWith('claude-') ? 8 : 1;
+  const maxTurns = 1;
   const plannerPrompt = buildPlannerPrompt(prompt, agentModel);
   const timeoutMs = getPlannerTimeoutMs(agentModel);
   const result = await safeQuery({

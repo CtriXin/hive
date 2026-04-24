@@ -1,6 +1,6 @@
 # Planning Phase Rules (Tier 1)
 
-> Applies to: planner.ts (Tier 1 — Claude Opus)
+> Applies to: planner.ts (Tier 1 — domestic planner path)
 
 ## 5-Dimension Preflight
 
@@ -15,7 +15,7 @@ Every plan must pass before execution:
 
 - Each sub-task must be self-contained (executable without additional context)
 - Max 10 tasks per plan
-- Security-critical tasks: complexity = "high" → handled by Opus directly
+- Security-critical tasks: complexity = "high" → handled by the best allowed domestic model
 - Different files → parallel tasks
 - Same file → sequential with context flow
 
@@ -29,10 +29,10 @@ Every plan must pass before execution:
 
 | Level | Model Tier | Timeout |
 |-------|-----------|---------|
-| low | haiku / domestic | 30s |
-| medium | sonnet / domestic | 60s |
-| medium-high | opus / top domestic | 120s |
-| high | opus (direct) | 300s |
+| low | fast domestic | 30s |
+| medium | domestic | 60s |
+| medium-high | top domestic | 120s |
+| high | top domestic | 300s |
 
 ## Output
 

@@ -100,6 +100,8 @@ When switching between AI models:
 - Workers run in isolated git worktrees
 - Worker uncertainty → `[DISCUSS_TRIGGER]` → cross-model discussion
 - Review cascade: cross-review → a2a → Sonnet → Opus
+- `claude-*` models are globally disabled in Hive runtime; do not add new Claude model paths, planner shortcuts, or review exceptions
+- Never rely on ambient/global Claude OAuth; runtime must not penetrate into parent/global OAuth state
 
 ## 12. State Persistence
 

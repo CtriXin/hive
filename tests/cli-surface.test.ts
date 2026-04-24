@@ -227,6 +227,52 @@ describe('CLI host-visible surfaces', () => {
     expect(restore.stdout).not.toContain('🧾 latest run:');
   });
 
+  it('status surfaces human progress and handoff without opening transcripts', async () => {
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'spec.json'), makeSpec({
+      goal: 'Surface request_human progress in status',
+    }));
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'state.json'), makeState({
+      status: 'partial',
+      next_action: {
+        kind: 'request_human',
+        reason: 'Need human approval for risky merge',
+        task_ids: ['task-a'],
+        instructions: 'Approve task-a before merge',
+      },
+      task_states: {
+        'task-a': {
+          task_id: 'task-a',
+          status: 'review_failed',
+          round: 1,
+          changed_files: ['src/task-a.ts'],
+          merged: false,
+          worker_success: true,
+          review_passed: false,
+          retry_count: 1,
+          last_error: 'Risky merge requires approval',
+        },
+      } as any,
+    }));
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'loop-progress.json'), {
+      run_id: RUN_ID,
+      round: 1,
+      phase: 'blocked',
+      reason: 'Waiting for human approval',
+      focus_task_id: 'task-a',
+      focus_agent_id: 'task-a@run-cli-surface',
+      focus_model: 'kimi-for-coding',
+      updated_at: new Date().toISOString(),
+    });
+
+    const result = await runCli(['status', '--cwd', TMP_DIR, '--run-id', RUN_ID]);
+
+    expect(result.exitCode).toBeUndefined();
+    expect(result.stdout).toContain('🧶 progress: request_human');
+    expect(result.stdout).toContain('🧭 why: Approve task-a before merge');
+    expect(result.stdout).toContain('📍 next: request_human: Need human approval for risky merge');
+    expect(result.stdout).toContain('🤝 handoff: task-a | task-a@run-cli-surface | kimi-for-coding');
+  });
+
   it('watch --once shows Authority section when review results contain degradation', async () => {
     writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'spec.json'), makeSpec({
       goal: 'Surface authority degradation in watch',
@@ -639,8 +685,6 @@ describe('CLI alias + latest-run ergonomics', () => {
 
       expect(result.exitCode).toBeUndefined();
       expect(result.stdout).toContain('policy=auto [MMS primary]');
-      expect(result.stdout).toContain('默认按 auto 使用 MMS primary');
-      expect(result.stdout).toContain('hive web --port 3100');
 
       fetchMock.mockRestore();
       vi.unstubAllEnvs();

@@ -258,12 +258,13 @@ export function resolveEffectiveRunModelPolicy(cwd: string, runId?: string): Eff
   const runtimeOverride = overrides?.runtime_next_stage || null;
   const withRunOverride = applyPatch(base, runOverride);
   const effective = applyPatch(withRunOverride, runtimeOverride);
-  const stages = stageConfigList(base, runOverride, runtimeOverride, effective);
+  const resolvedEffective = resolvePolicyModels(effective, config, new ModelRegistry());
+  const stages = stageConfigList(base, runOverride, runtimeOverride, resolvedEffective);
   return {
     base_policy: base,
     run_override: runOverride,
     runtime_override: runtimeOverride,
-    effective_policy: effective,
+    effective_policy: resolvedEffective,
     stages,
     override_active: stages.some((stage) => stage.overridden),
     override_summary: overrideSummary(stages),
@@ -285,67 +286,71 @@ function resolveDiscussModels(
   ));
 }
 
+function resolvePolicyModels(
+  effective: EffectiveRunModelPolicy['effective_policy'],
+  config: HiveConfig,
+  registry: ModelRegistry,
+): EffectiveRunModelPolicy['effective_policy'] {
+  return {
+    translator: {
+      model: resolveTierModel(effective.translator.model, () => registry.selectTranslator(), registry, 'translation', config),
+      fallback: effective.translator.fallback,
+    },
+    planner: {
+      model: resolveTierModel(effective.planner.model, () => registry.selectForPlanning(), registry, 'planning', config),
+      fallback: effective.planner.fallback,
+    },
+    executor: {
+      model: resolveTierModel(effective.executor.model, () => registry.assignModel({
+        id: 'preview',
+        description: 'preview',
+        complexity: 'medium',
+        category: 'general',
+        assigned_model: 'kimi-for-coding',
+        assignment_reason: '',
+        estimated_files: [],
+        acceptance_criteria: [],
+        discuss_threshold: 0.7,
+        depends_on: [],
+        review_scale: 'auto',
+      }), registry, 'implementation', config),
+      fallback: effective.executor.fallback,
+    },
+    discuss: {
+      model: resolveDiscussModels(effective.discuss.model, registry, config),
+      fallback: effective.discuss.fallback,
+      mode: effective.discuss.mode,
+    },
+    reviewer: {
+      cross_review: {
+        model: resolveTierModel(effective.reviewer.cross_review.model, () => registry.selectReviewer(), registry, 'review', config),
+        fallback: effective.reviewer.cross_review.fallback,
+      },
+      arbitration: {
+        model: resolveTierModel(effective.reviewer.arbitration.model, () => registry.selectReviewer(), registry, 'review', config),
+        fallback: effective.reviewer.arbitration.fallback,
+      },
+      final_review: {
+        model: resolveTierModel(effective.reviewer.final_review.model, () => registry.selectForFinalReview(), registry, 'review', config),
+        fallback: effective.reviewer.final_review.fallback,
+      },
+    },
+  };
+}
+
 export function previewResolvedModelPolicy(cwd: string, patch?: RunModelPolicyPatch | null): EffectiveRunModelPolicy {
   const config = loadConfig(cwd);
   const base = basePolicy(config);
   const normalizedPatch = normalizePatch(patch);
   const effective = applyPatch(base, normalizedPatch);
   const registry = new ModelRegistry();
-  const resolvedStages = stageConfigList(base, normalizedPatch, null, effective).map((stage) => ({
-    ...stage,
-    effective: stage.stage === 'translator'
-      ? {
-        model: resolveTierModel(effective.translator.model, () => registry.selectTranslator(), registry, 'translation', config),
-        fallback: effective.translator.fallback,
-      }
-      : stage.stage === 'planner'
-        ? {
-          model: resolveTierModel(effective.planner.model, () => registry.selectForPlanning(), registry, 'planning', config),
-          fallback: effective.planner.fallback,
-        }
-        : stage.stage === 'executor'
-          ? {
-            model: resolveTierModel(effective.executor.model, () => registry.assignModel({
-              id: 'preview',
-              description: 'preview',
-              complexity: 'medium',
-              category: 'general',
-              assigned_model: 'kimi-for-coding',
-              assignment_reason: '',
-              estimated_files: [],
-              acceptance_criteria: [],
-              discuss_threshold: 0.7,
-              depends_on: [],
-              review_scale: 'auto',
-            }), registry, 'implementation', config),
-            fallback: effective.executor.fallback,
-          }
-          : stage.stage === 'discuss'
-            ? {
-              model: resolveDiscussModels(effective.discuss.model, registry, config),
-              fallback: effective.discuss.fallback,
-              mode: effective.discuss.mode,
-            }
-            : stage.stage === 'reviewer.cross_review'
-              ? {
-                model: resolveTierModel(effective.reviewer.cross_review.model, () => registry.selectReviewer(), registry, 'review', config),
-                fallback: effective.reviewer.cross_review.fallback,
-              }
-              : stage.stage === 'reviewer.arbitration'
-                ? {
-                  model: resolveTierModel(effective.reviewer.arbitration.model, () => registry.selectReviewer(), registry, 'review', config),
-                  fallback: effective.reviewer.arbitration.fallback,
-                }
-                : {
-                  model: resolveTierModel(effective.reviewer.final_review.model, () => registry.selectForFinalReview(), registry, 'review', config),
-                  fallback: effective.reviewer.final_review.fallback,
-                },
-  }));
+  const resolvedEffective = resolvePolicyModels(effective, config, registry);
+  const resolvedStages = stageConfigList(base, normalizedPatch, null, resolvedEffective);
   return {
     base_policy: base,
     run_override: normalizedPatch,
     runtime_override: null,
-    effective_policy: effective,
+    effective_policy: resolvedEffective,
     stages: resolvedStages,
     override_active: Boolean(normalizedPatch),
     override_summary: overrideSummary(resolvedStages),

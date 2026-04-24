@@ -10,6 +10,8 @@ import {
   loadHiveShellDashboard,
   resolveHiveShellRunId,
 } from './hiveshell-dashboard.js';
+import type { HumanProgressStatus } from './handoff-surfaces.js';
+import { loadHandoffSurfaceBundle } from './handoff-surfaces.js';
 import { submitSteeringAction } from './steering-store.js';
 import { buildCompactPacket, renderCompactPacket } from './compact-packet.js';
 import { generateRunSummary } from './operator-summary.js';
@@ -1257,6 +1259,27 @@ export interface WebDashboardSnapshot {
     score?: number;
     score_best?: number;
   };
+  progress: {
+    status: HumanProgressStatus;
+    why_stopped?: string;
+    next_action: string;
+    counters: {
+      done: number;
+      failed: number;
+      running: number;
+      pending: number;
+      queued_retry: number;
+      blocked: number;
+      fallback: number;
+      request_human: number;
+    };
+  };
+  handoff: {
+    task_id?: string;
+    owner?: string;
+    model?: string;
+    refs: string[];
+  };
   authority: {
     mode?: string;
     members?: string[];
@@ -1339,17 +1362,39 @@ function buildVerdict(
   status: string,
   attention: WebDashboardSnapshot['attention'],
   nextAction: { kind?: string; reason?: string } | undefined,
+  progress?: WebDashboardSnapshot['progress'],
 ): WebDashboardSnapshot['verdict'] {
   const s = status || 'unknown';
+  const progressStatus = progress?.status || s;
 
   let state: WebVerdictState = 'unknown';
   let headline = '状态未知';
   let severity: WebVerdictSeverity = 'info';
 
-  if (s === 'done' || s === 'completed' || s === 'success') {
+  if (progressStatus === 'done' || s === 'done' || s === 'completed' || s === 'success') {
     state = 'success';
     headline = '运行完成';
     severity = 'ok';
+  } else if (progressStatus === 'request_human') {
+    state = 'blocked';
+    headline = '需要人工处理';
+    severity = 'warning';
+  } else if (progressStatus === 'queued_retry') {
+    state = 'running';
+    headline = '已排队重试';
+    severity = 'warning';
+  } else if (progressStatus === 'fallback') {
+    state = 'running';
+    headline = '正在切换备用通道';
+    severity = 'warning';
+  } else if (progressStatus === 'waiting') {
+    state = 'running';
+    headline = '正在等待';
+    severity = 'warning';
+  } else if (progressStatus === 'failed') {
+    state = 'failure';
+    headline = '运行失败';
+    severity = 'critical';
   } else if (s === 'init' || s === 'planning') {
     state = 'running';
     headline = '正在准备运行';
@@ -1378,6 +1423,7 @@ function buildVerdict(
 
   const whyParts: string[] = [];
   if (attention.paused) whyParts.push('运行已被手动暂停');
+  if (progress?.why_stopped) whyParts.push(progress.why_stopped);
   if (attention.primary_blocker) whyParts.push(attention.primary_blocker);
   if (attention.authority_degradation) whyParts.push(`评审异常：${attention.authority_degradation}`);
 
@@ -1386,7 +1432,7 @@ function buildVerdict(
     if (state === 'success') why_stopped = '目标已达成';
     else if (state === 'failure') why_stopped = humanizeReason(nextAction?.reason) || '执行过程中出现错误';
     else if (state === 'blocked') why_stopped = humanizeReason(nextAction?.reason) || '等待外部条件或用户确认';
-    else if (state === 'running') why_stopped = humanizeReason(nextAction?.reason) || (s === 'init' || s === 'planning' ? '正在准备计划和执行环境' : '正在执行中');
+    else if (state === 'running') why_stopped = humanizeReason(progress?.why_stopped || nextAction?.reason) || (s === 'init' || s === 'planning' ? '正在准备计划和执行环境' : '正在执行中');
     else why_stopped = '暂无更多信息';
   }
 
@@ -1406,12 +1452,14 @@ function buildVerdict(
   let suggested_action: { label: string; action_type?: string } = { label: '刷新状态' };
   if (attention.paused) {
     suggested_action = { label: '继续运行', action_type: 'resume_run' };
-  } else if (nextAction?.kind === 'request_human' || state === 'blocked') {
+  } else if (progressStatus === 'request_human' || nextAction?.kind === 'request_human' || state === 'blocked') {
     suggested_action = { label: '查看并处理', action_type: undefined };
   } else if (state === 'failure') {
     suggested_action = { label: '请求重新规划', action_type: 'request_replan' };
   } else if (state === 'success') {
     suggested_action = { label: '运行已完成' };
+  } else if (progressStatus === 'queued_retry' || progressStatus === 'fallback' || progressStatus === 'waiting') {
+    suggested_action = { label: '刷新状态' };
   } else if (state === 'running') {
     suggested_action = { label: '暂停运行', action_type: 'pause_run' };
   }
@@ -1776,7 +1824,7 @@ export function listWebActiveRuns(baseCwd?: string): WebActiveRunListItem[] {
           name: project.name,
         },
         run_id: run.id,
-        status: snapshot?.truth.status || run.status,
+        status: snapshot?.progress.status || snapshot?.truth.status || run.status,
         goal: snapshot?.truth.goal || run.goal,
         updated_at: snapshot?.updated_at || run.updated_at,
         source: run.source,
@@ -1858,8 +1906,31 @@ export function loadWebDashboardSnapshot(
     authority_degradation: failures.length > 0 ? failures.join('; ') : undefined,
     pending_steering: pendingSteering,
   };
+  const handoffBundle = loadHandoffSurfaceBundle(cwd, data.runId);
+  const progress = handoffBundle
+    ? {
+      status: handoffBundle.human_progress.status,
+      why_stopped: handoffBundle.human_progress.why_not_moving,
+      next_action: handoffBundle.human_progress.next_action,
+      counters: handoffBundle.human_progress.counters,
+    }
+    : {
+      status: 'pending' as HumanProgressStatus,
+      why_stopped: undefined,
+      next_action: nextAction?.kind || '-',
+      counters: {
+        done: 0,
+        failed: 0,
+        running: 0,
+        pending: 0,
+        queued_retry: 0,
+        blocked: 0,
+        fallback: 0,
+        request_human: 0,
+      },
+    };
 
-  const verdict = buildVerdict(surfaceStatus, attention, nextAction);
+  const verdict = buildVerdict(surfaceStatus, attention, nextAction, progress);
   const attentionTasks = buildAttentionTasks(data);
 
   return {
@@ -1881,6 +1952,13 @@ export function loadWebDashboardSnapshot(
       summary: truncate(summary, 200),
       score: latestScore?.score,
       score_best: data.scoreHistory?.best_score ?? latestScore?.score,
+    },
+    progress,
+    handoff: {
+      task_id: handoffBundle?.packet.task_id,
+      owner: handoffBundle?.packet.owner,
+      model: handoffBundle?.packet.model,
+      refs: handoffBundle?.packet.refs.slice(0, 4) || [],
     },
     authority: {
       mode: authority?.mode,

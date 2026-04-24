@@ -4,6 +4,7 @@
 import fs from 'fs';
 import path from 'path';
 import type { CollabStatusSnapshot } from './types.js';
+import { syncHandoffSurfaces } from './handoff-surfaces.js';
 
 export type LoopPhase =
   | 'planning'
@@ -58,6 +59,7 @@ export function writeLoopProgress(
     planner_discuss_conclusion: progress.planner_discuss_conclusion || existing?.planner_discuss_conclusion,
   };
   fs.writeFileSync(filePath, JSON.stringify(full, null, 2));
+  syncHandoffSurfaces(cwd, runId);
 }
 
 export function readLoopProgress(

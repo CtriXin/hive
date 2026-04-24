@@ -15,7 +15,7 @@ Do NOT call plan_tasks or any other tool. Just output raw JSON text directly.
 
 ## Rules:
 1. **Complexity**: Use exactly one of: "low" | "medium" | "medium-high" | "high"
-2. **Security/High-complexity tasks**: Assign to "claude-opus"
+2. **Security/High-complexity tasks**: Mark as "high"; Hive runtime will route to the best allowed domestic model
 3. **Task count**: Maximum 10 tasks
 4. **Parallelism**: Tasks that work on different files can be done in parallel
 5. **Dependencies**: Only specify if absolutely necessary

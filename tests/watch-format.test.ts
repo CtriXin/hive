@@ -68,6 +68,41 @@ describe('watch-format', () => {
       expect(output).toContain('worker-1');
     });
 
+    it('shows exact queued_retry progress without reading transcripts', () => {
+      const data = baseData();
+      data.progress_status = 'queued_retry';
+      data.progress_why = 'queued for retry in 5m';
+      data.progress_next_action = 'retry_task: Retry after provider cooldown';
+      data.handoff = {
+        task_id: 'task-a',
+        owner: 'task-a@run-test-001',
+        model: 'glm-5-turbo',
+        refs: ['.ai/plan/handoff.md'],
+      };
+      const output = formatWatch(data);
+      expect(output).toContain('progress: queued_retry');
+      expect(output).toContain('why: queued for retry in 5m');
+      expect(output).toContain('handoff: task-a | task-a@run-test-001 | glm-5-turbo');
+    });
+
+    it('shows exact fallback progress without reading transcripts', () => {
+      const data = baseData();
+      data.progress_status = 'fallback';
+      data.progress_why = 'channel fallback to provider-b';
+      const output = formatWatch(data);
+      expect(output).toContain('progress: fallback');
+      expect(output).toContain('why: channel fallback to provider-b');
+    });
+
+    it('shows exact request_human progress without reading transcripts', () => {
+      const data = baseData();
+      data.progress_status = 'request_human';
+      data.progress_why = 'Approve risky change before merge';
+      const output = formatWatch(data);
+      expect(output).toContain('progress: request_human');
+      expect(output).toContain('why: Approve risky change before merge');
+    });
+
     it('shows escalated mode indicator', () => {
       const data = baseData();
       data.mode.escalated = true;
@@ -215,6 +250,13 @@ describe('watch-format', () => {
       data.mode.escalated = true;
       const output = formatWatchCompact(data);
       expect(output).toContain('escalated');
+    });
+
+    it('prefers progress status in compact output', () => {
+      const data = baseData();
+      data.progress_status = 'queued_retry';
+      const output = formatWatchCompact(data);
+      expect(output).toContain('queued_retry');
     });
   });
 

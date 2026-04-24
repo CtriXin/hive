@@ -79,7 +79,7 @@ export function buildWorkerDiscussBrief(
     options: [...trigger.options],
     leaning: trigger.leaning,
     why: trigger.why,
-    task_description: workerConfig.prompt.slice(0, 200),
+    task_description: (workerConfig.taskDescription || workerConfig.prompt).slice(0, 200),
   };
 }
 

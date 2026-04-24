@@ -110,6 +110,69 @@ describe('watch-loader', () => {
     expect(data!.focus_task).toBe('task-a');
     expect(data!.focus_agent).toBe('worker-1');
     expect(data!.focus_summary).toBe('Implementing auth middleware');
+    expect(data!.progress_status).toBe('running');
+    expect(data!.progress_next_action).toContain('execute');
+  });
+
+  it('surfaces queued_retry progress and handoff packet fields', () => {
+    saveRunSpec(tmpDir, baseSpec(tmpDir));
+    saveRunState(tmpDir, baseState({
+      next_action: { kind: 'retry_task', reason: 'Retry after provider cooldown', task_ids: ['task-a'] },
+      task_states: {
+        'task-a': {
+          task_id: 'task-a',
+          status: 'worker_failed',
+          round: 2,
+          changed_files: [],
+          merged: false,
+          worker_success: false,
+          review_passed: false,
+          retry_count: 1,
+          last_error: 'timeout',
+        },
+      },
+    }));
+    writeLoopProgress(tmpDir, TEST_RUN_ID, {
+      run_id: TEST_RUN_ID,
+      round: 2,
+      phase: 'executing',
+      reason: 'Waiting for retry window',
+      focus_task_id: 'task-a',
+      focus_agent_id: 'task-a@run-watch-test-001',
+      focus_model: 'glm-5-turbo',
+    });
+    fs.writeFileSync(path.join(tmpDir, '.ai', 'runs', TEST_RUN_ID, 'provider-health.json'), JSON.stringify({
+      providers: {
+        providerA: {
+          breaker: 'degraded',
+          last_failure_subtype: 'timeout',
+          consecutive_failures: 1,
+          cycle_failures: 1,
+          last_failure_at: Date.now() - 1000,
+          last_success_at: Date.now() - 5000,
+          probe_count: 0,
+        },
+      },
+      decisions: [
+        {
+          provider: 'providerA',
+          failure_subtype: 'timeout',
+          action: 'cooldown',
+          action_reason: 'queued for retry in 5m',
+          dispatch_affected: true,
+          backoff_ms: 300000,
+          attempt: 1,
+          timestamp: Date.now() - 1000,
+        },
+      ],
+      updated_at: new Date().toISOString(),
+    }, null, 2));
+
+    const data = loadWatchData(tmpDir, TEST_RUN_ID);
+    expect(data!.progress_status).toBe('queued_retry');
+    expect(data!.progress_why).toContain('queued for retry in 5m');
+    expect(data!.handoff?.task_id).toBe('task-a');
+    expect(data!.handoff?.model).toBe('glm-5-turbo');
   });
 
   it('includes steering summary', () => {

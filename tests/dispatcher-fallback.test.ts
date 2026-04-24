@@ -116,6 +116,29 @@ function makeSuccessMessage() {
   };
 }
 
+function writeDispatcherPacketRefs(cwd: string, runId: string): void {
+  fs.mkdirSync(path.join(cwd, '.ai/plan'), { recursive: true });
+  fs.mkdirSync(path.join(cwd, '.ai/runs', runId), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.ai/plan/current.md'), '# Current\n', 'utf-8');
+  fs.writeFileSync(path.join(cwd, '.ai/plan/handoff.md'), '# Handoff\n', 'utf-8');
+  fs.writeFileSync(path.join(cwd, '.ai/runs', runId, 'human-progress.md'), '# Progress\n', 'utf-8');
+  fs.writeFileSync(path.join(cwd, '.ai/plan/packet.json'), JSON.stringify({
+    version: 1,
+    run_id: runId,
+    status: 'running',
+    goal: 'Test packet-first dispatch',
+    next_action: 'execute task',
+    constraints: ['max_rounds=2'],
+    refs: [
+      '.ai/plan/packet.json',
+      '.ai/plan/handoff.md',
+      '.ai/plan/current.md',
+      `.ai/runs/${runId}/human-progress.md`,
+    ],
+    expected_output: ['worker succeeds'],
+  }, null, 2), 'utf-8');
+}
+
 describe('dispatcher same-provider retry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -185,6 +208,48 @@ describe('dispatcher same-provider retry', () => {
       const healthFile = path.join(cwd, '.ai', 'runs', 'run-retry', 'provider-health.json');
       const health = JSON.parse(fs.readFileSync(healthFile, 'utf-8'));
       expect(health.decisions.some((d: any) => d.action === 'bounded_retry')).toBe(true);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('retries with the same packet-first prompt without re-inlining task bulk', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-dispatch-packet-retry-'));
+    const runId = 'run-packet-retry';
+    const longTaskMarker = 'RETRY_PACKET_LONG_PROMPT_'.repeat(160);
+    writeDispatcherPacketRefs(cwd, runId);
+    safeQueryMock
+      .mockRejectedValueOnce(new Error('API Error: 500 Internal Server Error'))
+      .mockResolvedValueOnce({
+        messages: [makeAssistantMessage('done'), makeSuccessMessage()],
+        exitError: null,
+      });
+
+    try {
+      const result = await spawnWorker({
+        taskId: 'task-packet-retry',
+        model: 'kimi-for-coding',
+        provider: 'kimi',
+        prompt: `## Task\n${longTaskMarker}`,
+        cwd,
+        worktree: false,
+        contextInputs: [],
+        discussThreshold: 0.7,
+        maxTurns: 4,
+        runId,
+        taskDescription: 'Packet-first retry task',
+        expectedFiles: ['src/retry.ts'],
+      });
+
+      const firstPrompt = safeQueryMock.mock.calls[0]?.[0]?.prompt as string;
+      const secondPrompt = safeQueryMock.mock.calls[1]?.[0]?.prompt as string;
+      expect(result.success).toBe(true);
+      expect(firstPrompt).toContain('./.ai/plan/packet.json');
+      expect(firstPrompt).toContain('./.ai/plan/handoff.md');
+      expect(firstPrompt).not.toContain(longTaskMarker);
+      expect(secondPrompt).toBe(firstPrompt);
+      expect(fs.readFileSync(path.join(cwd, '.ai/runs', runId, 'dispatch/task-packet-retry-task-brief.md'), 'utf-8'))
+        .toContain(longTaskMarker);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

@@ -321,12 +321,113 @@ describe('web-dashboard adapter', () => {
     const snapshot = loadWebDashboardSnapshot(TMP_DIR, RUN_ID);
     expect(snapshot).not.toBeNull();
     expect(snapshot!.verdict.state).toBe('blocked');
-    expect(snapshot!.verdict.headline).toBe('运行被阻塞');
+    expect(snapshot!.verdict.headline).toBe('需要人工处理');
     expect(snapshot!.verdict.severity).toBe('warning');
     expect(snapshot!.verdict.needs_user).toBe(true);
     expect(snapshot!.verdict.why_stopped).toContain('waiting for user input');
     expect(snapshot!.verdict.suggested_action.label).toBe('查看并处理');
     expect(snapshot!.focus.scope).toBe('run');
+  });
+
+  it('loadWebDashboardSnapshot exposes queued_retry progress and handoff metadata', () => {
+    const spec = makeSpec();
+    const state = makeState({
+      status: 'executing',
+      next_action: { kind: 'retry_task', reason: 'Retry after provider cooldown', task_ids: ['task-a'] },
+      task_states: {
+        'task-a': {
+          task_id: 'task-a',
+          status: 'worker_failed',
+          round: 2,
+          changed_files: [],
+          merged: false,
+          worker_success: false,
+          review_passed: false,
+          retry_count: 1,
+          last_error: 'timeout',
+        } as any,
+      },
+    });
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'spec.json'), spec);
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'state.json'), state);
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'loop-progress.json'), {
+      run_id: RUN_ID,
+      round: 2,
+      phase: 'executing',
+      reason: 'Waiting for retry window',
+      focus_task_id: 'task-a',
+      focus_agent_id: 'task-a@run-web-test',
+      focus_model: 'glm-5-turbo',
+      updated_at: new Date().toISOString(),
+    });
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'provider-health.json'), {
+      providers: {
+        kimi: {
+          breaker: 'degraded',
+          last_failure_subtype: 'timeout',
+          consecutive_failures: 1,
+          cycle_failures: 1,
+          last_failure_at: Date.now() - 1000,
+          last_success_at: Date.now() - 5000,
+          probe_count: 0,
+        },
+      },
+      decisions: [
+        {
+          provider: 'kimi',
+          failure_subtype: 'timeout',
+          action: 'cooldown',
+          action_reason: 'queued for retry in 5m',
+          dispatch_affected: true,
+          backoff_ms: 300000,
+          attempt: 1,
+          timestamp: Date.now() - 1000,
+        },
+      ],
+      updated_at: new Date().toISOString(),
+    });
+
+    const snapshot = loadWebDashboardSnapshot(TMP_DIR, RUN_ID);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.progress.status).toBe('queued_retry');
+    expect(snapshot!.progress.why_stopped).toContain('queued for retry in 5m');
+    expect(snapshot!.handoff.task_id).toBe('task-a');
+    expect(snapshot!.handoff.owner).toBe('task-a@run-web-test');
+    expect(snapshot!.handoff.model).toBe('glm-5-turbo');
+    expect(snapshot!.verdict.headline).toBe('已排队重试');
+  });
+
+  it('loadWebDashboardSnapshot surfaces fallback progress in web snapshot', () => {
+    const spec = makeSpec();
+    const state = makeState({
+      status: 'executing',
+      next_action: { kind: 'execute', reason: 'Fallback to backup provider', task_ids: ['task-a'] },
+    });
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'spec.json'), spec);
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'state.json'), state);
+    writeJson(path.join(TMP_DIR, '.ai', 'runs', RUN_ID, 'worker-status.json'), {
+      run_id: RUN_ID,
+      plan_id: 'plan-1',
+      round: 2,
+      updated_at: new Date().toISOString(),
+      workers: [
+        {
+          task_id: 'task-a',
+          status: 'running',
+          assigned_model: 'gpt-5.4',
+          active_model: 'gpt-5.4',
+          provider: 'backup-provider',
+          provider_fallback_used: true,
+          task_summary: 'Fallback worker running',
+          updated_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const snapshot = loadWebDashboardSnapshot(TMP_DIR, RUN_ID);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.progress.status).toBe('fallback');
+    expect(snapshot!.verdict.headline).toBe('正在切换备用通道');
   });
 
   it('loadWebDashboardSnapshot verdict for paused run suggests resume', () => {
@@ -883,7 +984,7 @@ describe('web-dashboard server', () => {
 
     const modelRes = await request(createDashboardServer({ cwd: TMP_DIR }), 'GET', '/api/model-options');
     expect(modelRes.status).toBe(200);
-    expect((modelRes.data as any).models.some((model: any) => model.id.startsWith('claude-') && model.blacklisted)).toBe(false);
+    expect((modelRes.data as any).models.some((model: any) => model.id.startsWith('claude-') && model.blacklisted)).toBe(true);
   });
 
   it('POST /api/global-config blocks global model_channel_map writes', async () => {

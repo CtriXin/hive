@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { trackWorkerSnapshot } from './global-run-registry.js';
+import { syncHandoffSurfaces } from './handoff-surfaces.js';
 import type {
   CollabStatusSnapshot,
   WorkerTranscriptEntry,
@@ -361,6 +362,8 @@ export function updateWorkerStatus(
       transcript_path: nextEntry.transcript_path,
     });
   }
+
+  syncHandoffSurfaces(cwd, runId);
 
   return nextSnapshot;
 }

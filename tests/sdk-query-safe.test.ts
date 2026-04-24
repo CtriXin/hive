@@ -32,7 +32,7 @@ function singleMessageStream(message: Record<string, unknown>) {
   })();
 }
 
-describe('safeQuery Claude manual-only guard', () => {
+describe('safeQuery Claude hard-disable guard', () => {
   beforeEach(() => {
     queryMock.mockReset();
     ensureModelProxyMock.mockClear();
@@ -40,7 +40,7 @@ describe('safeQuery Claude manual-only guard', () => {
     registerModelProxyRouteMock.mockClear();
   });
 
-  it('blocks Claude launches without explicit route env', async () => {
+  it('blocks Claude launches before any SDK query starts', async () => {
     await expect(safeQuery({
       prompt: 'hello',
       options: {
@@ -51,34 +51,9 @@ describe('safeQuery Claude manual-only guard', () => {
         },
         model: 'claude-sonnet-4-6',
       },
-    })).rejects.toThrow(/manual-only/i);
+    })).rejects.toThrow(/globally disabled/i);
 
     expect(queryMock).not.toHaveBeenCalled();
-  });
-
-  it('allows Claude launches with explicit route env and isolated config env', async () => {
-    queryMock.mockReturnValue(singleMessageStream({
-      type: 'result',
-      usage: { input_tokens: 1, output_tokens: 1 },
-    }));
-
-    const result = await safeQuery({
-      prompt: 'hello',
-      options: {
-        cwd: '/tmp/hive-safe-query',
-        env: {
-          HOME: '/tmp/hive-safe-query/home',
-          CLAUDE_CONFIG_DIR: '/tmp/hive-safe-query/home/.claude',
-          ANTHROPIC_BASE_URL: 'https://relay.example.com',
-          ANTHROPIC_AUTH_TOKEN: 'route-token',
-        },
-        model: 'claude-sonnet-4-6',
-      },
-    });
-
-    expect(queryMock).toHaveBeenCalledTimes(1);
-    expect(result.exitError).toBeNull();
-    expect(result.messages).toHaveLength(1);
   });
 
   it('rewrites OpenAI bridge routes to the local model proxy before query', async () => {
